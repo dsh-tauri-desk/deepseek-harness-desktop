@@ -25,7 +25,7 @@ export { harness } from './modules/harness'
 export type {
   InstallerState,
   InstallProgress,
-  PreinstallLogPayload,
+  PluginCommandLogPayload,
   PreinstallPlugin,
   SetupStatus,
   SidebarBusyAction,

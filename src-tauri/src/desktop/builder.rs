@@ -187,6 +187,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::skip_preinstall_plugins,
         crate::bridge::cmd::open_preinstall_repo,
         crate::bridge::cmd::get_dsh_plugins,
+        crate::bridge::cmd::remove_dsh_plugin,
         crate::bridge::cmd::proxy_health_check,
         crate::bridge::cmd::get_runtime_info,
         crate::bridge::cmd::runtime_ready,

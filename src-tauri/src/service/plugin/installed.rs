@@ -11,6 +11,15 @@ use super::preset::{load_presets, PreinstallPluginInfo};
 
 /// 预装插件安装到的 profile（与 dsh 服务启动的 profile 一致）
 pub(crate) const PREINSTALL_PROFILE: &str = "web";
+/// 桌面端运行所依赖的核心 Bundle，不允许通过冲突恢复移除。
+pub(crate) fn is_protected_bundle(id: &str) -> bool {
+    matches!(
+        id,
+        "@deepseek-ai/dsh-base"
+            | "@deepseek-ai/dsh-web-app"
+            | "@deepseek-ai/dsh-headless"
+    )
+}
 
 /// 用于强类型解析 profile 下 package.json 的辅助结构
 /// （字段 pub(crate)：供 watch 模块解析已安装插件清单复用）

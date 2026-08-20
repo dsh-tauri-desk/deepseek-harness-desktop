@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use super::installed::{profile_dir, ProfilePackageJson};
+use super::installed::{is_protected_bundle, profile_dir, ProfilePackageJson};
 use super::preset::{load_presets, PreinstallPluginInfo};
 
 /// 前端监听的事件名（插件列表变化时推送）
@@ -43,6 +43,8 @@ pub struct DshPlugin {
     pub repo_url: String,
     /// 是否在 `dsh.profile.bundles` 中（启动时自动加载）
     pub bundled: bool,
+    /// 是否允许从启动冲突恢复流程移除（核心 Bundle 为 false）
+    pub removable: bool,
     /// 预设清单中的「推荐」标记（绿色 chip）
     pub recommended: bool,
     /// 预设清单中的「修复」标记（黄色 chip）
@@ -161,6 +163,7 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
                     .unwrap_or_default(),
                 repo_url,
                 bundled: bundled.contains(id.as_str()),
+                removable: !is_protected_bundle(id.as_str()),
                 recommended: preset.map(|p| p.recommended).unwrap_or(false),
                 fix: preset.map(|p| p.fix).unwrap_or(false),
             })

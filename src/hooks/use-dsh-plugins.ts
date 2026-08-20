@@ -16,6 +16,8 @@ export interface DshPlugin {
   repo_url: string
   /** 是否在 dsh.profile.bundles 中（启动时自动加载） */
   bundled: boolean
+  /** 是否允许从启动冲突恢复流程移除（核心 Bundle 为 false） */
+  removable: boolean
   /** 预设清单中的「推荐」标记 */
   recommended: boolean
   /** 预设清单中的「修复」标记 */

@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -38,13 +39,16 @@ pub fn is_port_in_use(port: u16) -> bool {
     TcpListener::bind(addr).is_err()
 }
 
-/// 在独立线程中读取子进程的输出，同时写入日志文件
+/// 在独立线程中读取子进程的输出，同时写入日志文件。
 ///
-/// # 参数
-/// - `stdout`: 子进程的标准输出
-/// - `stderr`: 子进程的标准错误输出
-/// - `log_path`: 前端日志面板读取的日志文件
-pub fn spawn_output_readers<R1, R2>(stdout: Option<R1>, stderr: Option<R2>, log_path: PathBuf)
+/// `on_stdout_line` 用于接收 dsh 的启动就绪信号；它不参与日志写入，
+/// 因此回调失败或缺失都不会影响输出转发。
+pub fn spawn_output_readers<R1, R2>(
+    stdout: Option<R1>,
+    stderr: Option<R2>,
+    log_path: PathBuf,
+    on_stdout_line: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+)
 where
     R1: Read + Send + 'static,
     R2: Read + Send + 'static,
@@ -57,6 +61,9 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
+                        if let Some(on_stdout_line) = &on_stdout_line {
+                            on_stdout_line(&line);
+                        }
                         log::info!("[dsh::stdout]: {}", line);
                         append_log(&log_path, &line);
                     }

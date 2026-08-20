@@ -17,14 +17,22 @@ use crate::service::workflow;
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
-/// 前端监听的控制台事件名（进程输出行）
-pub(crate) const PREINSTALL_LOG_EVENT: &str = "preinstall-log";
+/// 前端监听的插件命令控制台事件名（dsh plugin 进程与桌面端编排输出）
+pub(crate) const PLUGIN_COMMAND_LOG_EVENT: &str = "dsh-plugin-command-log";
 
-/// 进程输出行事件载荷
+/// 插件命令控制台输出载荷
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PreinstallLogPayload {
+pub struct PluginCommandLogPayload {
     pub line: String,
+}
+
+/// 向前端转发一行插件命令控制台输出。
+pub(crate) fn emit_plugin_log(window: &WebviewWindow, line: impl Into<String>) {
+    let _ = window.emit(
+        PLUGIN_COMMAND_LOG_EVENT,
+        PluginCommandLogPayload { line: line.into() },
+    );
 }
 
 /// Windows 进程句柄包装：原始句柄是 `*mut c_void`（非 Send），
@@ -48,7 +56,7 @@ pub(crate) async fn run_plugin_process(
     {
         let (stdout, stderr, handle) =
             workflow::win_spawn::spawn_with_hidden_console_tracked(node, args, Some(cwd), envs)
-                .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
+                .map_err(|e| format!("PLUGIN_COMMAND_SPAWN: {e}"))?;
 
         spawn_line_emitter(stdout, window.clone());
         spawn_line_emitter(stderr, window.clone());
@@ -71,7 +79,7 @@ pub(crate) async fn run_plugin_process(
             }
         })
         .await
-        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        .map_err(|e| format!("PLUGIN_COMMAND_WAIT: {e}"))?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok(exit_code)
@@ -87,7 +95,7 @@ pub(crate) async fn run_plugin_process(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
+            .map_err(|e| format!("PLUGIN_COMMAND_SPAWN: {e}"))?;
 
         if let Some(stdout) = child.stdout.take() {
             spawn_line_emitter(stdout, window.clone());
@@ -100,25 +108,20 @@ pub(crate) async fn run_plugin_process(
             child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
         })
         .await
-        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        .map_err(|e| format!("PLUGIN_COMMAND_WAIT: {e}"))?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok(exit_code)
     }
 }
 
-/// 在独立线程中逐行读取进程输出并通过 `preinstall-log` 事件转发。
+/// 在独立线程中逐行读取进程输出并通过插件命令事件转发。
 /// 使用静态泛型约束 `R: Read + Send + 'static` 避免动态派发（Box<dyn Read>）堆分配。
 fn spawn_line_emitter<R: Read + Send + 'static>(reader: R, window: WebviewWindow) {
     std::thread::spawn(move || {
         let buf = BufReader::new(reader);
         for line in buf.lines().map_while(Result::ok) {
-            let _ = window.emit(
-                PREINSTALL_LOG_EVENT,
-                PreinstallLogPayload {
-                    line: line.trim_end().to_string(),
-                },
-            );
+            emit_plugin_log(&window, line.trim_end().to_string());
         }
     });
 }

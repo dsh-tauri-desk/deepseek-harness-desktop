@@ -16,12 +16,15 @@ use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use tauri::Manager;
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
 static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
 /// 当前进程内由桌面端创建的 Harness 根进程 PID；0 表示没有持有的实例。
 static OWNED_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
+/// dsh 完成 Loader 组合并打印服务地址后才视为启动就绪。
+static OWNED_PROCESS_READY: AtomicBool = AtomicBool::new(false);
 /// Windows 进程句柄用于确认 PID 仍指向原进程，消除 PID 复用误杀窗口。
 #[cfg(windows)]
 static OWNED_PROCESS_HANDLE: AtomicUsize = AtomicUsize::new(0);
@@ -50,6 +53,7 @@ fn find_available_port(start: u16) -> Result<u16, String> {
 
 /// 只结束本应用当前进程创建并仍持有的 Harness 进程树。
 fn terminate_owned_process() {
+    OWNED_PROCESS_READY.store(false, Ordering::SeqCst);
     let pid = OWNED_PROCESS_ID.swap(0, Ordering::SeqCst);
     if pid == 0 {
         return;
@@ -97,6 +101,10 @@ fn terminate_owned_process() {
 
 pub fn has_owned_process() -> bool {
     OWNED_PROCESS_ID.load(Ordering::SeqCst) != 0
+}
+/// dsh 已完成插件 Loader 组合并宣布 Web 服务地址。
+pub fn is_owned_process_ready() -> bool {
+    has_owned_process() && OWNED_PROCESS_READY.load(Ordering::SeqCst)
 }
 
 /// 检测并启动 Harness 服务
@@ -178,6 +186,8 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let _launch_guard = LaunchGuard;
+    OWNED_PROCESS_READY.store(false, Ordering::SeqCst);
+
 
     // 端口冲突时从当前值开始逐个递增，并持久化最终选择供所有调用方复用。
     let available_port = find_available_port(setting.port)?;
@@ -277,12 +287,17 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     } else {
                         log::warn!("Owned Harness process {pid} exited (exit code unavailable)");
                     }
-                    let _ = OWNED_PROCESS_ID.compare_exchange(
-                        pid,
-                        0,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    );
+                    let owns_process = OWNED_PROCESS_ID
+                        .compare_exchange(
+                            pid,
+                            0,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok();
+                    if owns_process {
+                        OWNED_PROCESS_READY.store(false, Ordering::SeqCst);
+                    }
                     let owns_handle = OWNED_PROCESS_HANDLE
                         .compare_exchange(handle_value, 0, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok();
@@ -326,12 +341,17 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     } else {
                         log::warn!("Owned Harness process {pid} exited (no exit code)");
                     }
-                    let _ = OWNED_PROCESS_ID.compare_exchange(
-                        pid,
-                        0,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    );
+                    let owns_process = OWNED_PROCESS_ID
+                        .compare_exchange(
+                            pid,
+                            0,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok();
+                    if owns_process {
+                        OWNED_PROCESS_READY.store(false, Ordering::SeqCst);
+                    }
                 });
                 (stdout, stderr, pid)
             })
@@ -344,7 +364,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 "Harness process started successfully: pid={pid}, port={}",
                 setting.port
             );
-            spawn_output_readers(stdout, stderr, log_path);
+            let on_stdout_line: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|line: &str| {
+                if line.trim_start().starts_with("dsh web:") {
+                    OWNED_PROCESS_READY.store(true, Ordering::SeqCst);
+                }
+            });
+            spawn_output_readers(stdout, stderr, log_path, Some(on_stdout_line));
             Ok(())
         }
         Err(e) => {
@@ -523,10 +548,12 @@ pub async fn install(
     Ok(())
 }
 
-/// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 pub async fn proxy_health_check(port: u16) -> Result<String, String> {
     if !has_owned_process() {
         return Err("HARNESS_NOT_OWNED: no Harness process is owned by this app".to_string());
+    }
+    if !is_owned_process_ready() {
+        return Err("HARNESS_NOT_READY: Harness process is still loading plugins".to_string());
     }
     let client = reqwest::Client::builder()
         .timeout(config::HEALTH_CHECK_TIMEOUT)

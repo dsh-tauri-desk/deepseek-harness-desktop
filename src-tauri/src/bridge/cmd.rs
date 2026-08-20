@@ -227,7 +227,7 @@ pub async fn get_preinstall_plugins(
 }
 
 /// 安装选中的预装插件（`dsh plugin --profile web add <ids...>`），
-/// 进程输出实时通过 `preinstall-log` 事件推送；成功后标记引导完成并记录预设指纹。
+/// 进程输出实时通过 `dsh-plugin-command-log` 事件推送；成功后标记引导完成并记录预设指纹。
 #[tauri::command]
 pub async fn install_preinstall_plugins(
     app_handle: AppHandle,
@@ -285,7 +285,11 @@ pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(
 pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
     plugin::watch::list(&app_handle)
 }
-
+/// 从当前 profile 移除一个已加载且可移除的用户插件，并由后端校验包名。
+#[tauri::command]
+pub async fn remove_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
+    plugin::remove(&app_handle, &id).await
+}
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 #[tauri::command]

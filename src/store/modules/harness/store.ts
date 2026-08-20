@@ -2,7 +2,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import type {
   InstallerState,
   InstallProgress,
-  PreinstallLogPayload,
+  PluginCommandLogPayload,
   PreinstallPlugin,
   SetupStatus,
   SidebarBusyAction,
@@ -19,11 +19,23 @@ const IFRAME_LOAD_TIMEOUT = 20000
 const LOG_TAIL_MAX_BYTES = 16 * 1024
 /** 日志中常见的错误标记，用于失败时挑出真正的问题行而不是整个堆栈 */
 const ERROR_LINE_MARKERS = /error|duplicate|fatal|panic|throw|✖|exception|failed/i
+const PLUGIN_CONFLICT_MARKERS = [
+  'duplicate prefix route',
+  'duplicate exact route',
+  'duplicate upgrade route',
+  'multiple fallback owners',
+] as const
+const STARTUP_DIAGNOSTIC_RETRIES = 6
+const STARTUP_DIAGNOSTIC_RETRY_DELAY = 150
 
-/** 启动失败错误：附带从 dsh 服务日志中读取的真实错误行与可选的冲突提示 */
+function hasPluginConflict(lines: readonly string[]): boolean {
+  const text = lines.join('\n').toLowerCase()
+  return PLUGIN_CONFLICT_MARKERS.some(marker => text.includes(marker))
+}
+
+/** 启动失败错误：附带从 dsh 服务日志中读取的真实错误行 */
 interface StartupError extends Error {
   logs?: string[]
-  pluginConflictHint?: string
 }
 
 const initialInstaller: InstallerState = {
@@ -113,17 +125,25 @@ function pickErrorLines(lines: string[]): string[] {
   return errored.length > 0 ? errored : lines.slice(-8)
 }
 
-/** 失败时把服务日志的真实错误行与冲突提示挂到错误对象上 */
+/** 失败时把服务日志的真实错误行挂到错误对象上；已识别的路由冲突可提前停止重读。 */
 async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
   const startupError = err as StartupError
-  if (!startupError.logs) {
-    const lines = await readServiceLogTail()
-    startupError.logs = pickErrorLines(lines)
-    // 识别插件路由冲突（如 `duplicate prefix route "/sidebar/api"`），给出可操作的提示
-    if (lines.join('\n').includes('duplicate prefix route')) {
-      startupError.pluginConflictHint = i18next.t('errors.plugin_route_conflict')
-    }
+  let lines = startupError.logs ?? []
+  let hasKnownPluginConflict = false
+
+  // 子进程输出由独立线程逐行写入日志；进程退出与最后一行落盘之间存在竞态。
+  // 失败后短暂重读，避免错误页只拿到启动 URL 而漏掉真正的错误。
+  for (let attempt = 0; attempt <= STARTUP_DIAGNOSTIC_RETRIES; attempt++) {
+    const latestLines = await readServiceLogTail()
+    if (latestLines.length > 0)
+      lines = latestLines
+    hasKnownPluginConflict = hasKnownPluginConflict || hasPluginConflict(lines)
+    if (hasKnownPluginConflict || attempt === STARTUP_DIAGNOSTIC_RETRIES)
+      break
+    await new Promise(resolve => setTimeout(resolve, STARTUP_DIAGNOSTIC_RETRY_DELAY))
   }
+
+  startupError.logs = pickErrorLines(lines)
   return startupError
 }
 
@@ -142,8 +162,6 @@ export const harness = defineStore({
     errorMsg: '',
     /** 启动失败时从 dsh 服务日志中读取的真实错误行（Loadable 错误态日志面板） */
     errorLogs: [] as string[],
-    /** 识别到插件路由冲突时的针对性提示（Loadable children 展示） */
-    pluginConflictHint: '',
     /** 预装插件引导状态：列表/安装进度/日志/错误 */
     preinstall: {
       plugins: [] as PreinstallPlugin[],
@@ -217,7 +235,6 @@ export const harness = defineStore({
       this.status = 'ready'
       this.installer = initialInstaller
       this.errorLogs = []
-      this.pluginConflictHint = ''
       this.serviceHealthy = false
       this.iframeLoaded = false
       this.iframeError = false
@@ -316,7 +333,7 @@ export const harness = defineStore({
           return
         console.error('[Harness] startup failed:', err)
         const startupError = await attachStartupDiagnostics(err)
-        this.fail(String(startupError), startupError.logs, startupError.pluginConflictHint)
+        this.fail(String(startupError), startupError.logs)
       }
       finally {
         unlistenInstall?.()
@@ -330,10 +347,9 @@ export const harness = defineStore({
     },
 
     /** 进入错误态（供本模块与 updater 模块共用） */
-    fail(message: string, logs?: string[], pluginConflictHint?: string) {
+    fail(message: string, logs?: string[]) {
       this.errorMsg = message
       this.errorLogs = logs ?? []
-      this.pluginConflictHint = pluginConflictHint ?? ''
       this.status = 'error'
       this.serviceRunning = false
     },
@@ -377,7 +393,6 @@ export const harness = defineStore({
       this.status = 'error'
       this.errorMsg = i18next.t('ui.stopped')
       this.errorLogs = []
-      this.pluginConflictHint = ''
     },
 
     /** 服务未运行时点击"重试"：重新拉起服务并等待健康检查 */
@@ -387,6 +402,30 @@ export const harness = defineStore({
       this.busyAction = 'start'
       try {
         await this.boot()
+      }
+      finally {
+        this.busyAction = null
+      }
+    },
+    /** 移除用户选定的冲突插件，完成后等待用户手动重启服务 */
+    async recoverPluginConflict(id: string): Promise<boolean> {
+      if (this.busyAction)
+        return false
+      this.busyAction = 'pluginRecovery'
+      try {
+        await invoke('remove_dsh_plugin', { id })
+        this.serviceRunning = false
+        this.serviceHealthy = false
+        this.iframeLoaded = false
+        return true
+      }
+      catch (err) {
+        console.error('[Harness] plugin conflict recovery failed:', err)
+        this.errorMsg = String(err)
+        this.status = 'error'
+        this.serviceRunning = false
+        this.serviceHealthy = false
+        return false
       }
       finally {
         this.busyAction = null
@@ -426,9 +465,9 @@ export const harness = defineStore({
       return this.preinstall.plugins
     },
 
-    /** 预装安装日志流：dsh plugin 进程输出逐行追加 */
-    async listenPreinstallLog(): Promise<UnlistenFn> {
-      return listen<PreinstallLogPayload>('preinstall-log', (e) => {
+    /** 插件命令日志流：dsh plugin 进程与桌面端编排输出逐行追加 */
+    async listenPluginCommandLog(): Promise<UnlistenFn> {
+      return listen<PluginCommandLogPayload>('dsh-plugin-command-log', (e) => {
         this.preinstall.logs = [...this.preinstall.logs, e.payload.line].slice(-200)
       })
     },
@@ -442,7 +481,7 @@ export const harness = defineStore({
       this.preinstall.logs = []
       let unlisten: UnlistenFn | null = null
       try {
-        unlisten = await this.listenPreinstallLog()
+        unlisten = await this.listenPluginCommandLog()
         await invoke('install_preinstall_plugins', { ids })
         await this.continueAfterPreinstall()
       }

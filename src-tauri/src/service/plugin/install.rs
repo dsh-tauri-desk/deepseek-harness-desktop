@@ -44,12 +44,20 @@ const MIN_TRUSTED_PNPM_MAJOR: u32 = 10;
 
 /// 校验并安装选中的预装插件：`dsh plugin --profile <当前档案> add <ids...>`
 pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), String> {
+    log::info!("install: entry ids={ids:?} active_profile={} DSH_HOME={}", active_profile(app_handle), config::get_dsh_data_path(app_handle).display());
+    let _ = app_handle
+        .get_webview_window("main")
+        .map(|w| w.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload { line: format!("[pnpm] install 入口 ids={ids:?} profile={} DSH_HOME={}", active_profile(app_handle), config::get_dsh_data_path(app_handle).display()) },
+        ));
     if ids.is_empty() {
         return Err("PREINSTALL_EMPTY: no plugins selected".to_string());
     }
 
     // 单次读取预设并构建查找表，提升算法效率至 O(N)
     let presets = load_presets(app_handle);
+    log::info!("install: loaded {} presets from resources/preset-plugins.json", presets.len());
     let preset_map: HashMap<&str, &PreinstallPluginInfo> = presets
         .iter()
         .map(|p| (p.id.as_str(), p))
@@ -60,25 +68,65 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         let preset = preset_map
             .get(id.as_str())
             .ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
-        // 内置插件改为从随包分发的捆绑目录安装（`file:` 本地依赖，见
-        // preset::file_dep_spec），其余沿用清单声明的 spec；随后统一把
-        // `github:user/repo` 规范为显式 `git+https://...`，绕开 pnpm 对
-        // GitHub 简写「HTTPS 探测失败即回退 SSH」的已知缺陷（pnpm issue
-        // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
-        // 的桌面机上必然 `Host key verification failed` / `Permission denied (publickey)`。
-        specs.push(normalize_git_spec(&preset_spec_for_install(preset, bundled_dir_of(app_handle, preset))?));
+        let bd = bundled_dir_of(app_handle, preset);
+        let spec_raw = preset_spec_for_install(preset, bd.clone())?;
+        let spec = normalize_git_spec(&spec_raw);
+        log::info!(
+            "install: id={} internal={} spec_raw={} normalized={} bundled_dir={:?} exists={}",
+            id,
+            preset.internal,
+            spec_raw,
+            spec,
+            bd,
+            bd.as_ref().map(|p| p.exists()).unwrap_or(false)
+        );
+        specs.push(spec);
     }
+    log::info!("install: resolved specs={specs:?} ids={ids:?}");
 
     // 确保 pnpm/dsh shim 存在
-    cli::ensure_shims(app_handle)?;
+    let bin_dir = cli::get_bin_dir(app_handle);
+    let pnpm_shim = bin_dir.join(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" });
+    let dsh_shim = bin_dir.join(if cfg!(windows) { "dsh.cmd" } else { "dsh" });
+    log::info!(
+        "install: ensure_shims start bin_dir={} pnpm_shim={} exists={} dsh_shim={} exists={}",
+        bin_dir.display(),
+        pnpm_shim.display(),
+        pnpm_shim.exists(),
+        dsh_shim.display(),
+        dsh_shim.exists()
+    );
+    cli::ensure_shims(app_handle).map_err(|e| {
+        log::error!("install: ensure_shims failed bin_dir={} err={e}", bin_dir.display());
+        e
+    })?;
+    log::info!(
+        "install: ensure_shims done bin_dir={} pnpm_shim_exists={} dsh_shim_exists={} pnpm_cjs_exists={} node_exists={}",
+        bin_dir.display(),
+        pnpm_shim.exists(),
+        dsh_shim.exists(),
+        config::get_pnpm_binary_path(app_handle).exists(),
+        config::get_node_binary_path(app_handle).exists()
+    );
 
     let node = config::get_node_binary_path(app_handle);
     // 活动核心的 dsh 入口：本地核心存在时用本地 CLI，否则预打包
     let dsh_bin = core::active_dsh_binary(app_handle);
+    log::info!(
+        "install: runtime node={} exists={} dsh_bin={} exists={} cwd(dsh_install)={} exists={}",
+        node.display(),
+        node.exists(),
+        dsh_bin.display(),
+        dsh_bin.exists(),
+        config::get_dsh_install_path(app_handle).display(),
+        config::get_dsh_install_path(app_handle).exists()
+    );
     if !node.exists() {
+        log::error!("install: NODE_NOT_FOUND node={}", node.display());
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());
     }
     if !dsh_bin.exists() {
+        log::error!("install: HARNESS_NOT_FOUND dsh_bin={}", dsh_bin.display());
         return Err("HARNESS_NOT_FOUND: dsh CLI missing".to_string());
     }
 
@@ -87,7 +135,11 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         .ok_or("WINDOW_NOT_FOUND: main window missing")?;
 
     // 选定/补齐安装用的 pnpm：返回是否应强制使用捆绑版（版本感知，见 ensure_pnpm）
-    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
+    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await.map_err(|e| {
+        log::error!("install: ensure_pnpm failed err={e}");
+        e
+    })?;
+    log::info!("install: ensure_pnpm done prefer_bundled={prefer_bundled_pnpm}");
 
     // 安装前停止运行中的服务，避免资源冲突
     if workflow::has_owned_process() {
@@ -105,6 +157,13 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     }
 
     let envs = build_plugin_envs(app_handle, prefer_bundled_pnpm);
+    log::info!(
+        "install: envs built prefer_bundled={} DSH_HOME={:?} PATH_len={} DSH_PREFER={:?}",
+        prefer_bundled_pnpm,
+        envs.get("DSH_HOME"),
+        envs.get("PATH").map(|p| p.len()).unwrap_or(0),
+        envs.get("DSH_PREFER_BUNDLED_PNPM")
+    );
 
     // 拼装命令行参数
     let mut args = vec![
@@ -118,7 +177,22 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     let cwd = config::get_dsh_install_path(app_handle);
     // 日志打印实际传给 dsh 的 spec（此前打印 id 会误导排查：安装用的是 spec）
-    log::info!("Running dsh plugin install for {specs:?}");
+    log::info!(
+        "Running dsh plugin install for {specs:?} cwd={} node={} dsh_bin={} profile={} prefer_bundled={} args_len={}",
+        cwd.display(),
+        node.display(),
+        dsh_bin.display(),
+        active_profile(app_handle),
+        prefer_bundled_pnpm,
+        args.len()
+    );
+    let args_preview: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: format!("[pnpm] dsh plugin add specs={specs:?} cwd={} args={args_preview:?}", cwd.display()),
+        },
+    );
 
     // `dsh plugin add` 在 profile 目录里驱动 pnpm。pnpm v11 会拦下 git 托管
     // 插件的 prepare 构建与传递原生依赖（见模块头注），其允许键不可预知，因此
@@ -136,13 +210,51 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     )
     .await?;
 
+    // 退出码与 pnpm 输出落盘：用于定位「退出 0 却未下载」的静默成功
+    // 场景——此前仅失败时记录输出，成功时无迹可查，无法判断 pnpm 是否真实执行
+    log::info!(
+        "install: dsh plugin exit_code={exit_code} output_len={} profile={} cwd={}",
+        last_output.len(),
+        active_profile(app_handle),
+        cwd.display()
+    );
+    if !last_output.is_empty() {
+        let head: String = last_output.chars().take(1000).collect();
+        let tail: String = last_output.chars().rev().take(1500).collect::<String>().chars().rev().collect();
+        log::info!("install: last_output head(1000)={}", head.replace('\n', "\\n"));
+        if last_output.len() > 1000 {
+            log::info!("install: last_output tail(1500)={}", tail.replace('\n', "\\n"));
+        }
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: format!("[pnpm] 安装输出 tail={}", tail.chars().take(600).collect::<String>().replace('\n', " ")),
+            },
+        );
+    } else {
+        log::warn!("install: last_output empty exit={exit_code} — 可能是 pnpm 未被调用或输出被截断");
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: "[pnpm] 警告: 安装进程无输出（可能 pnpm 未执行或被静默跳过）".to_string(),
+            },
+        );
+    }
+
     if exit_code != 0 {
-        log::error!("dsh plugin install failed with exit code {exit_code}");
+        // 失败分支：区分 git 传输层与 allowBuilds，避免误导
+        // 输出中若含 git ssh 特征则提示用户网络/SSH 问题，否则视为构建门禁
+        log::error!(
+            "install: dsh plugin install failed exit={exit_code} output_len={} hint_check={:?}",
+            last_output.len(),
+            git_transport_hint(&last_output)
+        );
         // 区分 git 传输层失败与 allowBuilds 构建门禁：前者是 pnpm 走了 git+ssh
         // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
         // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
         let hint = git_transport_hint(&last_output);
         let message = pick_error_message(&last_output, hint);
+        log::warn!("install: pick_error_message len={} hint={:?} msg_head={}", message.len(), hint, message.chars().take(300).collect::<String>().replace('\n', "\\n"));
         // 批量安装失败时给本次选中的每个插件记一条错误（前端据此展示异常标记，
         // 可针对单个插件重试更新/卸载）
         for id in ids {
@@ -167,7 +279,96 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         ));
     }
 
-    // 安装成功：清除这些插件的历史错误记录
+    // 成功分支：此前仅以退出码 0 判定成功，未校验产物是否真实落盘
+    // 导致「日志显示成功但 node_modules 为空」的静默失败无法被发现
+    // 此处对 profile 落盘结果做二次核验，为后续自愈提供依据
+    log::info!("install: exit 0, start post-install verification ids={ids:?}");
+    let profile = profile_dir(app_handle);
+    let pkg_path = profile.join("package.json");
+    let nm_path = profile.join("node_modules");
+    log::info!(
+        "install: verify profile={} pkg_exists={} pkg={} nm_exists={} nm={}",
+        profile.display(),
+        pkg_path.exists(),
+        pkg_path.display(),
+        nm_path.exists(),
+        nm_path.display()
+    );
+    if pkg_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pkg_path) {
+            let head: String = content.chars().take(800).collect();
+            log::info!("install: verify package.json head(800)={}", head.replace('\n', "\\n"));
+            for id in ids {
+                let present = content.contains(id);
+                log::info!("install: verify package.json contains id={} -> {}", id, present);
+            }
+        } else {
+            log::warn!("install: verify read package.json failed path={}", pkg_path.display());
+        }
+    } else {
+        log::warn!("install: verify package.json missing profile={}", profile.display());
+    }
+    for id in ids {
+        // 插件包名可能与 id 不一致（如 scoped 包），按 preset 的 package 字段核验
+        let pkg_name = preset_map.get(id.as_str()).and_then(|p| p.package.as_deref()).unwrap_or(id.as_str());
+        let mod_pkg = nm_path.join(pkg_name).join("package.json");
+        let mod_exists = mod_pkg.exists();
+        let mod_dir_exists = nm_path.join(pkg_name).exists();
+        log::info!(
+            "install: verify plugin id={} pkg_name={} mod_dir_exists={} mod_pkg_exists={} mod_pkg={}",
+            id,
+            pkg_name,
+            mod_dir_exists,
+            mod_exists,
+            mod_pkg.display()
+        );
+        if !mod_exists {
+            log::warn!(
+                "install: verify missing product for id={} pkg={} — 退出 0 但产物缺失，可能 pnpm 未下载或被跳过",
+                id,
+                pkg_name
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!("[pnpm] 警告: {id} ({pkg_name}) 安装后产物缺失 {}", mod_pkg.display()),
+                },
+            );
+        }
+    }
+    // pnpm 产物与 shim 联动核验：确保后续 dsh 能解析到插件
+    // 额外核验 pnpm-workspace.yaml 与 .modules.yaml，定位 allowBuilds 是否生效及 store 是否创建
+    let ws_path = profile.join("pnpm-workspace.yaml");
+    let ws_exists = ws_path.exists();
+    let ws_content = std::fs::read_to_string(&ws_path).unwrap_or_else(|e| format!("<read failed: {e}>"));
+    log::info!(
+        "install: verify pnpm-workspace exists={} path={} content_head(1000)={}",
+        ws_exists,
+        ws_path.display(),
+        ws_content.chars().take(1000).collect::<String>().replace('\n', "\\n")
+    );
+    let modules_yaml_path = nm_path.join(".modules.yaml");
+    let modules_exists = modules_yaml_path.exists();
+    let modules_content = std::fs::read_to_string(&modules_yaml_path).unwrap_or_else(|_| "<no file>".to_string());
+    log::info!(
+        "install: verify .modules.yaml exists={} path={} head(500)={}",
+        modules_exists,
+        modules_yaml_path.display(),
+        modules_content.chars().take(500).collect::<String>().replace('\n', "\\n")
+    );
+    // 从 pnpm 输出提取全局 store 路径，核对 pnpm 实际使用的 store 版本（v10/v11）与选型是否一致
+    let store_line = last_output.lines().find(|l| l.contains("Content-addressable store")).unwrap_or("<no store line>");
+    log::info!("install: pnpm global store line from output: {}", store_line.trim());
+    let pnpm_bundled = config::get_pnpm_binary_path(app_handle);
+    let pnpm_user = cli::find_user_pnpm(app_handle);
+    log::info!(
+        "install: verify done pnpm_bundled={} exists={} pnpm_user={:?} output_len={} store_line={}",
+        pnpm_bundled.display(),
+        pnpm_bundled.exists(),
+        pnpm_user,
+        last_output.len(),
+        store_line.trim()
+    );
     for id in ids {
         if let Err(e) = errors::clear(app_handle, id) {
             log::warn!("failed to clear plugin error for {id}: {e}");
@@ -185,11 +386,11 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     let _ = window.emit(
         PREINSTALL_LOG_EVENT,
         PreinstallLogPayload {
-            line: format!("[harness] 已安装 {} 个插件", ids.len()),
+            line: format!("[harness] 已安装 {} 个插件（已核验）", ids.len()),
         },
     );
 
-    log::info!("Preinstall plugins installed successfully: {ids:?}");
+    log::info!("Preinstall plugins installed successfully: {ids:?} profile={} cwd={} output_len={}", profile.display(), cwd.display(), last_output.len());
     Ok(())
 }
 
@@ -231,12 +432,13 @@ fn preset_spec_for_install(
 pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: bool) -> HashMap<String, String> {
     let node = config::get_node_binary_path(app_handle);
     let bin_dir = cli::get_bin_dir(app_handle);
+    let dsh_home = config::get_dsh_data_path(app_handle);
+    let pnpm_bundled = config::get_pnpm_binary_path(app_handle);
+    let pnpm_user = cli::find_user_pnpm(app_handle);
     let mut envs = HashMap::from([
         (
             "DSH_HOME".to_string(),
-            config::get_dsh_data_path(app_handle)
-                .to_string_lossy()
-                .into_owned(),
+            dsh_home.to_string_lossy().into_owned(),
         ),
         ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
         ("NO_COLOR".to_string(), "1".to_string()),
@@ -246,8 +448,22 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     if prefer_bundled_pnpm {
         envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
     }
+    // 环境快照日志：记录 DSH_HOME、node 位置、用户/捆绑 pnpm 路径及是否存在
+    // 用于排查“DSH_HOME 隔离或 pnpm 路径错误”导致的安装静默失败
+    log::info!(
+        "build_plugin_envs: prefer_bundled={} DSH_HOME={} DSH_PREFER_BUNDLED_PNPM={} node={} node_exists={} bin_dir={} pnpm_user={:?} pnpm_bundled={} pnpm_bundled_exists={}",
+        prefer_bundled_pnpm,
+        dsh_home.display(),
+        if prefer_bundled_pnpm { "1" } else { "<unset>" },
+        node.display(),
+        node.exists(),
+        bin_dir.display(),
+        pnpm_user,
+        pnpm_bundled.display(),
+        pnpm_bundled.exists()
+    );
 
-    let mut paths = vec![bin_dir];
+    let mut paths = vec![bin_dir.clone()];
     if let Some(node_dir) = node.parent() {
         paths.push(node_dir.to_path_buf());
     }
@@ -255,8 +471,19 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
 
-    if let Ok(joined) = std::env::join_paths(paths) {
+    // PATH 拼接日志：验证 shim 目录与 node 目录是否正确前置，排查 shim 未生效
+    if let Ok(joined) = std::env::join_paths(paths.clone()) {
+        let preview: String = joined.to_string_lossy().chars().take(800).collect();
+        log::info!(
+            "build_plugin_envs: PATH front bin_dir={} node_dir={:?} PATH_preview={} total_entries={}",
+            bin_dir.display(),
+            node.parent().map(|p| p.display().to_string()),
+            preview,
+            paths.len()
+        );
         envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
+    } else {
+        log::warn!("build_plugin_envs: join_paths failed, PATH not injected");
     }
     envs
 }
@@ -283,34 +510,139 @@ async fn run_plugin_with_allow_build_retry(
     action: &str,
 ) -> Result<(i32, String), String> {
     let mut retries = 0usize;
+    // 初始输出为空：首次覆盖前未读取属正常，抑制未使用赋值警告
+    #[allow(unused_assignments)]
     let mut last_output = String::new();
+    // 入口日志：完整命令与环境关键字段，帮助定位「退出 0 却未下载」时的 pnpm 链路
+    let args_preview: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let cwd_exists = cwd.exists();
+    let cwd_display = cwd.display().to_string();
+    log::info!(
+        "run_plugin_with_allow_build_retry: action={action} node={} cwd={} cwd_exists={} args={:?} DSH_PREFER_BUNDLED_PNPM={:?} DSH_HOME={:?} PATH_len={}",
+        node.display(),
+        cwd_display,
+        cwd_exists,
+        args_preview,
+        envs.get("DSH_PREFER_BUNDLED_PNPM"),
+        envs.get("DSH_HOME"),
+        envs.get("PATH").map(|p| p.len()).unwrap_or(0)
+    );
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: format!(
+                "[pnpm] 执行 dsh plugin {action} cwd={cwd_display} node={} args={:?}",
+                node.display(),
+                args_preview
+            ),
+        },
+    );
     let exit_code = loop {
+        let attempt = retries + 1;
+        // 单次尝试开始：记录重试序号，便于关联后续输出与 allowBuilds 写入
+        log::info!("run_plugin_with_allow_build_retry: attempt {attempt} action={action} cwd={cwd_display}");
         let (code, captured) = run_plugin_process(node, args, cwd, envs, window).await?;
+        let out_len = captured.len();
+        let out_tail: String = captured.chars().rev().take(1200).collect::<String>().chars().rev().collect();
+        let out_head: String = captured.chars().take(1200).collect();
+        // 尝试结果快照：落盘退出码与捕获长度，前后 1200 字符用于判断 pnpm 是否真实执行
+        log::info!(
+            "run_plugin_with_allow_build_retry: attempt {attempt} exit={code} captured_len={out_len} cwd={cwd_display}"
+        );
+        if out_len > 0 {
+            log::info!("run_plugin_with_allow_build_retry: attempt {attempt} captured_head(1200)={}", out_head.replace('\n', "\\n"));
+            if out_len > 1200 {
+                log::info!("run_plugin_with_allow_build_retry: attempt {attempt} captured_tail(1200)={}", out_tail.replace('\n', "\\n"));
+            }
+            // 完整输出落盘：避免截断导致 allowBuilds 键丢失，写入临时日志文件供排查
+            // 路径在用户数据目录 logs/pnpm-try-{attempt}.log，便于复现后直接查看完整 pnpm 输出
+            let log_dir = config::get_base_dir(app_handle).join("logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let dump_path = log_dir.join(format!("pnpm-{}-attempt{}.log", action, attempt));
+            if let Err(e) = std::fs::write(&dump_path, &captured) {
+                log::warn!("run_plugin_with_allow_build_retry: failed to dump pnpm output to {} err={e}", dump_path.display());
+            } else {
+                log::info!("run_plugin_with_allow_build_retry: full output dumped to {} len={}", dump_path.display(), out_len);
+                let _ = window.emit(
+                    PREINSTALL_LOG_EVENT,
+                    PreinstallLogPayload {
+                        line: format!("[pnpm] 完整输出已落盘 {} ({} bytes)", dump_path.display(), out_len),
+                    },
+                );
+            }
+            // pnpm 关键错误标记检测：即使退出码 0 也可能含构建阻断错误（本次日志即为 exit 0 却含 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED）
+            let has_pnpm_err = captured.contains("ERR_PNPM_") || captured.contains("needs to execute build scripts") || captured.contains("Failed to prepare git-hosted package");
+            if has_pnpm_err {
+                log::warn!("run_plugin_with_allow_build_retry: detected pnpm ERR marker in output attempt {attempt} code={code} has_err={has_pnpm_err}");
+            }
+        } else {
+            // 空输出告警：为空时极可能是 pnpm 未被调度或 shim 转发失败
+            log::warn!("run_plugin_with_allow_build_retry: attempt {attempt} captured empty! action={action} code={code}");
+        }
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: format!("[pnpm] attempt {attempt} exit={code} captured_len={out_len}"),
+            },
+        );
+        // 关键修复：无论退出码是否为 0，都先解析 allowBuilds 白名单
+        // 原因：本次日志显示 pnpm 在 allowBuilds 阻断时仍以 exit 0 退出，仅靠退出码无法触发重试
+        let new_keys = parse_allowlist_keys(&captured);
+        log::info!(
+            "run_plugin_with_allow_build_retry: attempt {attempt} parse_allowlist_keys={new_keys:?} retries={retries} max={MAX_ALLOW_LIST_RETRIES} code={code}"
+        );
+        if !new_keys.is_empty() {
+            if retries >= MAX_ALLOW_LIST_RETRIES {
+                log::error!(
+                    "dsh plugin {action} failed: allowBuilds retry limit reached retries={retries} code={code} keys={new_keys:?} output_tail={}",
+                    captured.chars().rev().take(2000).collect::<String>().chars().rev().collect::<String>().replace('\n', "\\n")
+                );
+                last_output = captured;
+                break code;
+            }
+            retries += 1;
+            // 写入 allowBuilds 并重试：记录写入前后的 workspace 配置以便核对
+            let ws_path = profile_dir(app_handle).join("pnpm-workspace.yaml");
+            let before = std::fs::read_to_string(&ws_path).unwrap_or_else(|_| "<no file>".to_string());
+            log::info!("run_plugin_with_allow_build_retry: pnpm-workspace.yaml before retry {retries}: {}", before.chars().take(800).collect::<String>().replace('\n', "\\n"));
+            log::info!("run_plugin_with_allow_build_retry: writing allowBuilds {new_keys:?} for retry {retries}");
+            add_allow_build_keys(app_handle, &new_keys)?;
+            let after = std::fs::read_to_string(&ws_path).unwrap_or_else(|_| "<read failed>".to_string());
+            log::info!("run_plugin_with_allow_build_retry: pnpm-workspace.yaml after retry {retries}: {}", after.chars().take(800).collect::<String>().replace('\n', "\\n"));
+            log::info!(
+                "pnpm allowBuilds updated with {new_keys:?}, retrying {action} ({retries})"
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!("[pnpm] 已放行插件构建（allowBuilds={new_keys:?}），重试{action}… ({retries})"),
+                },
+            );
+            // 不保留本次 allowBuilds 触发的中间输出，仅保留最终成功/失败的完整输出
+            continue;
+        }
         if code == 0 {
+            // 无 allowBuilds 且退出码 0 才是真正成功；保留输出供核验“假成功”
+            last_output = captured;
+            let snippet: String = last_output.chars().rev().take(2000).collect::<String>().chars().rev().collect();
+            log::info!("run_plugin_with_allow_build_retry: action={action} succeeded attempt {attempt} output_tail(2000)={}", snippet.replace('\n', "\\n"));
             break 0;
         }
+        // 退出码非 0 且无可补充白名单：记录失败并退出循环
         last_output = captured;
-
-        let new_keys = parse_allowlist_keys(&last_output);
-        if new_keys.is_empty() || retries >= MAX_ALLOW_LIST_RETRIES {
-            log::error!(
-                "dsh plugin {action} failed with exit code {code}; no more allowBuilds entries to add"
-            );
-            break code;
-        }
-
-        retries += 1;
-        add_allow_build_keys(app_handle, &new_keys)?;
-        log::info!(
-            "pnpm allowBuilds updated with {new_keys:?}, retrying {action} ({retries})"
+        log::error!(
+            "dsh plugin {action} failed with exit code {code}; no allowBuilds entries to add retries={retries} output_tail={}",
+            last_output.chars().rev().take(2000).collect::<String>().chars().rev().collect::<String>().replace('\n', "\\n")
         );
         let _ = window.emit(
             PREINSTALL_LOG_EVENT,
             PreinstallLogPayload {
-                line: format!("[pnpm] 已放行插件构建（allowBuilds），重试{action}…"),
+                line: format!("[pnpm] {action} 失败 exit={code} allowBuilds_keys={new_keys:?}"),
             },
         );
+        break code;
     };
+    // 返回最终退出码与最后一次输出，供上层区分“假成功”与“真实失败”
     Ok((exit_code, last_output))
 }
 
@@ -521,43 +853,116 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
     // 档案的 node_modules 由哪个 pnpm 主版本创建（.modules.yaml 的 storeDir 段）
     let store_major = profile_store_major(app_handle);
     let user_major = user_pnpm_major_version(app_handle);
-
+    let bundled_major = bundled_pnpm_major(app_handle);
+    let bundled_bin = config::get_pnpm_binary_path(app_handle);
+    let user_pnpm_path = cli::find_user_pnpm(app_handle);
+    let profile = profile_dir(app_handle);
+    // 入口选型日志：一次性记录 store/user/bundled 三方版本与路径，帮助定位
+    // “选择了错误 pnpm 或捆绑缺失”导致的静默失败；前端面板同步提示选型结果
+    log::info!(
+        "ensure_pnpm: entry store_major={store_major:?} user_major={user_major:?} bundled_major={bundled_major:?} bundled_exists={} bundled_bin={} user_pnpm={:?} profile={}",
+        bundled_bin.exists(),
+        bundled_bin.display(),
+        user_pnpm_path,
+        profile.display()
+    );
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: format!(
+                "[pnpm] 选型: store={store_major:?} user={user_major:?} bundled={bundled_major:?} user_path={:?}",
+                user_pnpm_path.as_ref().map(|p| p.display().to_string())
+            ),
+        },
+    );
     // 1) store 主版本已知 → 优先选与 store 一致的 pnpm（用户版或捆绑版）
     if let Some(store) = store_major {
         if user_major == Some(store) {
-            log::info!("Reusing user-installed pnpm (major {store}) matching profile store");
+            log::info!(
+                "ensure_pnpm: decision=reuse_user store={store} user_pnpm={:?} bundled_major={bundled_major:?}",
+                user_pnpm_path
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!("[pnpm] 复用用户 pnpm v{store}（匹配 store） path={:?}", user_pnpm_path),
+                },
+            );
             return Ok(false);
         }
-        if bundled_pnpm_major(app_handle) == Some(store) {
-            log::info!("Using bundled pnpm (major {store}) matching profile store");
+        if bundled_major == Some(store) {
+            log::info!(
+                "ensure_pnpm: decision=use_bundled store={store} bundled={} user={user_major:?}",
+                bundled_bin.display()
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!("[pnpm] 使用捆绑 pnpm v{store}（匹配 store） path={}", bundled_bin.display()),
+                },
+            );
             return Ok(true);
         }
         log::warn!(
-            "No pnpm matches profile store major {store} (user {user_major:?}), falling back to user pnpm"
+            "ensure_pnpm: no match for store {store} (user {user_major:?} bundled {bundled_major:?} user_path={:?}), falling back to user pnpm logic",
+            user_pnpm_path
         );
     }
 
     // 2) store 未知（全新档案/未装过依赖）或无可匹配版本 → 用户 pnpm ≥ 10 优先
     match user_major {
         Some(major) if major >= MIN_TRUSTED_PNPM_MAJOR => {
-            log::info!("Reusing user-installed pnpm (major {major}) for plugin install");
+            log::info!(
+                "ensure_pnpm: decision=reuse_user (store unknown) user_major={major} user_path={:?} bundled_major={bundled_major:?}",
+                user_pnpm_path
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!("[pnpm] 复用用户 pnpm v{major}（全新档案，用户优先） path={:?}", user_pnpm_path),
+                },
+            );
             return Ok(false);
         }
         Some(major) => {
+            // 用户 pnpm 版本过旧：旧版不读取 pnpm-workspace.yaml 的 autoInstallPeers
+            // 且存在 workspace-root 安装门槛，继续使用会导致伪失败，切到捆绑版
             log::warn!(
-                "User pnpm major {major} < {MIN_TRUSTED_PNPM_MAJOR} (missing autoInstallPeers/workspace-root semantics), using bundled pnpm"
+                "ensure_pnpm: user pnpm major {major} < {MIN_TRUSTED_PNPM_MAJOR} (missing autoInstallPeers/workspace-root semantics), using bundled pnpm user_path={:?} bundled={} bundled_major={bundled_major:?}",
+                user_pnpm_path,
+                bundled_bin.display()
             );
         }
         None => {
-            log::warn!("User pnpm version not detectable (broken/blocked shim?), using bundled pnpm");
+            log::warn!(
+                "ensure_pnpm: user pnpm not detectable (broken/blocked shim?) user_path={:?} bundled={} exists={} bundled_major={bundled_major:?}, using bundled pnpm",
+                user_pnpm_path,
+                bundled_bin.display(),
+                bundled_bin.exists()
+            );
         }
     }
 
     // 捆绑版已存在 → 直接用（零额外下载）；否则下载。
-    if config::get_pnpm_binary_path(app_handle).exists() {
+    if bundled_bin.exists() {
+        log::info!(
+            "ensure_pnpm: decision=use_bundled (user unusable, bundled exists) path={} bundled_major={bundled_major:?}",
+            bundled_bin.display()
+        );
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: format!("[pnpm] 使用已存在的捆绑 pnpm path={} version={:?}", bundled_bin.display(), bundled_major),
+            },
+        );
         return Ok(true);
     }
 
+    log::info!(
+        "ensure_pnpm: bundled pnpm missing, need download dest={} url_base={}",
+        download::Pnpm.get_install_path(app_handle).display(),
+        download::Pnpm.get_download_url().unwrap_or_else(|_| "<url_err>".to_string())
+    );
     let _ = window.emit(
         PREINSTALL_LOG_EVENT,
         PreinstallLogPayload {
@@ -568,21 +973,34 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
     let tracker = download::ProgressTracker::new(window, 2);
     let url = download::Pnpm.get_download_url()?;
     let name = url.split('/').next_back().unwrap_or(&url).to_string();
-    let buffer = download::download_file(&tracker, url)
+    log::info!("ensure_pnpm: downloading bundled pnpm url={url} name={name}");
+    let buffer = download::download_file(&tracker, url.clone())
         .await
-        .map_err(|e| format!("PNPM_DOWNLOAD_FAILED: {e}"))?;
+        .map_err(|e| {
+            log::error!("ensure_pnpm: PNPM_DOWNLOAD_FAILED url={url} err={e}");
+            format!("PNPM_DOWNLOAD_FAILED: {e}")
+        })?;
+    log::info!("ensure_pnpm: downloaded {} bytes, verifying sha256", buffer.len());
     download::verify_sha256(&buffer, config::PNPM_SHA256)
-        .map_err(|e| format!("PNPM_INTEGRITY_FAILED: {e}"))?;
+        .map_err(|e| {
+            log::error!("ensure_pnpm: PNPM_INTEGRITY_FAILED err={e}");
+            format!("PNPM_INTEGRITY_FAILED: {e}")
+        })?;
+    log::info!("ensure_pnpm: sha256 ok, extracting to dest={}", download::Pnpm.get_install_path(app_handle).display());
     let dest = download::Pnpm.get_install_path(app_handle);
 
-    download::ensure_extract(&tracker, name, buffer, dest)
+    download::ensure_extract(&tracker, name.clone(), buffer, dest.clone())
         .await
-        .map_err(|e| format!("PNPM_EXTRACT_FAILED: {e}"))?;
+        .map_err(|e| {
+            log::error!("ensure_pnpm: PNPM_EXTRACT_FAILED dest={} name={name} err={e}", dest.display());
+            format!("PNPM_EXTRACT_FAILED: {e}")
+        })?;
 
+    log::info!("ensure_pnpm: bundled pnpm ready at {} name={name}", dest.display());
     let _ = window.emit(
         PREINSTALL_LOG_EVENT,
         PreinstallLogPayload {
-            line: "[pnpm] bundled pnpm ready".to_string(),
+            line: format!("[pnpm] bundled pnpm ready at {} ({name})", dest.display()),
         },
     );
     Ok(true)
@@ -593,7 +1011,19 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 ///
 /// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
 pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
-    let pnpm = cli::find_user_pnpm(app_handle)?;
+    // 用户 pnpm 路径探测：先在 PATH（排除 shim 目录）中查找，避免误判自身 shim
+    let pnpm = match cli::find_user_pnpm(app_handle) {
+        Some(p) => {
+            // 找到用户 pnpm，记录路径供后续选型与问题排查
+            log::info!("user_pnpm_major_version: found user pnpm at {}", p.display());
+            p
+        }
+        None => {
+            // 未找到用户 pnpm，说明用户未安装或 PATH 未包含，落盘当前 bin_dir
+            log::info!("user_pnpm_major_version: no user pnpm found on PATH (excluding shim dir) bin_dir={}", cli::get_bin_dir(app_handle).display());
+            return None;
+        }
+    };
     // 打包版是 GUI 进程（无控制台）：直接运行 pnpm（控制台子系统）会新建一个
     // 可见的黑色 cmd 窗口。`harness_prefer_bundled_pnpm` 在每次服务启动都会调本
     // 函数探测用户 pnpm，若不隐藏窗口则每次打开应用都会闪一个黑窗。此处与
@@ -605,27 +1035,63 @@ pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            // 执行失败：可能是权限/被杀毒拦截或 shim 损坏，记录路径与错误
+            log::warn!("user_pnpm_major_version: failed to run pnpm --version path={} err={e}", pnpm.display());
+            return None;
+        }
+    };
     if !output.status.success() {
+        // 非零退出：常见为 corepack shim 未启用导致的 ERR_INVALID_THIS
+        log::warn!(
+            "user_pnpm_major_version: pnpm --version non-zero path={} status={:?} stdout={} stderr={}",
+            pnpm.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.split('.').next()?.trim().parse::<u32>().ok()
+    let raw = stdout.trim().to_string();
+    match raw.split('.').next()?.trim().parse::<u32>() {
+        Ok(v) => {
+            // 版本解析成功：记录原始版本与主版本，用于与 store 的兼容性比对
+            log::info!("user_pnpm_major_version: pnpm {} at {} parsed major={}", raw, pnpm.display(), v);
+            Some(v)
+        }
+        Err(e) => {
+            // 解析失败：版本格式异常，记录原始输出与错误
+            log::warn!("user_pnpm_major_version: parse major failed raw={raw} path={} err={e}", pnpm.display());
+            None
+        }
+    }
 }
-
-/// 档案 `node_modules` 使用的 pnpm store 主版本（`<profile>/node_modules/.modules.yaml`
-/// 的 `storeDir` 路径段，如 `...\store\v10` → 10）。
-///
-/// pnpm 10 与 11 的 store 布局互不兼容：用与 store 主版本不一致的 pnpm 更新
-/// 已装插件会 `ERR_PNPM_UNEXPECTED_STORE` 退出。档案尚未安装过依赖（没有
-/// node_modules）时返回 `None`，由调用方走"全新档案"逻辑。
-/// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用。
 pub(crate) fn profile_store_major(app_handle: &AppHandle) -> Option<u32> {
     let modules_yaml = profile_dir(app_handle)
         .join("node_modules")
         .join(".modules.yaml");
-    let content = std::fs::read_to_string(modules_yaml).ok()?;
-    parse_store_major_from_modules_yaml(&content)
+    let exists = modules_yaml.exists();
+    // store 版本探测：检查 .modules.yaml 是否存在，判断是否为全新档案
+    log::info!("profile_store_major: check path={} exists={}", modules_yaml.display(), exists);
+    let content = match std::fs::read_to_string(&modules_yaml) {
+        Ok(c) => c,
+        Err(e) => {
+            // 无法读取：全新档案或文件被删除，返回 None 走“用户优先”逻辑
+            log::info!("profile_store_major: no modules.yaml at {} err={e} -> None (fresh profile)", modules_yaml.display());
+            return None;
+        }
+    };
+    let parsed = parse_store_major_from_modules_yaml(&content);
+    // 解析结果落盘：记录路径、解析值与文件头，便于定位 store 解析失败
+    log::info!(
+        "profile_store_major: path={} parsed={parsed:?} content_head={}",
+        modules_yaml.display(),
+        content.chars().take(400).collect::<String>().replace('\n', "\\n")
+    );
+    parsed
 }
 
 /// 从 `.modules.yaml` 文本解析 store 主版本（纯函数，便于单测）。
@@ -639,7 +1105,12 @@ fn parse_store_major_from_modules_yaml(content: &str) -> Option<u32> {
         .rsplit(['\\', '/'])
         .next()?
         .strip_prefix('v')?;
-    major.parse().ok()
+    let v = major.parse().ok();
+    if v.is_none() {
+        // 解析失败：storeDir 格式异常，记录便于定位文件损坏
+        log::warn!("parse_store_major_from_modules_yaml: failed to parse storeDir={store_dir} major={major}");
+    }
+    v
 }
 
 /// 捆绑版 pnpm 的主版本（读 `dependencies/pnpm/package.json` 的 version 字段）；
@@ -648,15 +1119,33 @@ fn parse_store_major_from_modules_yaml(content: &str) -> Option<u32> {
 /// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
 pub(crate) fn bundled_pnpm_major(app_handle: &AppHandle) -> Option<u32> {
     let manifest = config::get_pnpm_install_path(app_handle).join("package.json");
-    let content = std::fs::read_to_string(manifest).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    value
-        .get("version")?
-        .as_str()?
-        .split('.')
-        .next()?
-        .parse()
-        .ok()
+    let exists = manifest.exists();
+    if !exists {
+        // 捆绑 pnpm 未安装：manifest 缺失，返回 None 触发后续下载分支
+        log::info!("bundled_pnpm_major: manifest not found at {} -> None (bundled not installed)", manifest.display());
+        return None;
+    }
+    let content = match std::fs::read_to_string(&manifest) {
+        Ok(c) => c,
+        Err(e) => {
+            // 读取失败：权限或文件损坏
+            log::warn!("bundled_pnpm_major: read failed path={} err={e}", manifest.display());
+            return None;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            // 解析失败：清单损坏，记录头部以便定位
+            log::warn!("bundled_pnpm_major: json parse failed path={} err={e} head={}", manifest.display(), content.chars().take(300).collect::<String>().replace('\n', "\\n"));
+            return None;
+        }
+    };
+    let ver = value.get("version")?.as_str()?;
+    let major: Option<u32> = ver.split('.').next()?.parse().ok();
+    // 解析成功：记录版本与主版本，供选型决策使用
+    log::info!("bundled_pnpm_major: path={} version={ver} major={major:?}", manifest.display());
+    major
 }
 
 /// 从 pnpm 失败输出中解析需写入 `allowBuilds` 的键集合：

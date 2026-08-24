@@ -89,18 +89,55 @@ pub(crate) async fn run_plugin_process(
     envs: &HashMap<String, String>,
     window: &WebviewWindow,
 ) -> Result<(i32, String), String> {
+    let args_preview: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let start = std::time::Instant::now();
+    // 进程启动前快照：记录 node/cwd/关键环境，便于复现“静默失败时实际执行了哪个 pnpm”
+    log::info!(
+        "run_plugin_process: spawn start node={} exists={} cwd={} cwd_exists={} args={:?} DSH_PREFER_BUNDLED_PNPM={:?} DSH_HOME={:?} PATH_len={}",
+        node.display(),
+        node.exists(),
+        cwd.display(),
+        cwd.exists(),
+        args_preview,
+        envs.get("DSH_PREFER_BUNDLED_PNPM"),
+        envs.get("DSH_HOME"),
+        envs.get("PATH").map(|p| p.len()).unwrap_or(0)
+    );
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: format!(
+                "[pnpm] spawn node={} cwd={} args_len={} DSH_PREFER={:?}",
+                node.display(),
+                cwd.display(),
+                args.len(),
+                envs.get("DSH_PREFER_BUNDLED_PNPM")
+            ),
+        },
+    );
     let captured = Arc::new(Mutex::new(String::new()));
 
     #[cfg(windows)]
     {
         let (stdout, stderr, handle) =
             workflow::win_spawn::spawn_with_hidden_console_tracked(node, args, Some(cwd), envs)
-                .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
+                .map_err(|e| {
+                    log::error!(
+                        "run_plugin_process: PREINSTALL_SPAWN failed node={} cwd={} err={e} args={:?}",
+                        node.display(),
+                        cwd.display(),
+                        args_preview
+                    );
+                    format!("PREINSTALL_SPAWN: {e}")
+                })?;
+        // 将原始句柄立即包装为可跨线程的 WaitableHandle，避免裸 *mut c_void 在 await 上存活
+        let handle = WaitableHandle(handle);
+        // 包装后记录，避免直接持有裸句柄跨 await 导致 Future 非 Send
+        log::info!("run_plugin_process: windows spawn ok handle={:?} elapsed={:?}", handle.0 as usize, start.elapsed());
 
         spawn_line_emitter(stdout, window.clone(), captured.clone());
         spawn_line_emitter(stderr, window.clone(), captured.clone());
 
-        let handle = WaitableHandle(handle);
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
             use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::Threading::{
@@ -118,10 +155,26 @@ pub(crate) async fn run_plugin_process(
             }
         })
         .await
-        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        .map_err(|e| {
+            log::error!("run_plugin_process: PREINSTALL_WAIT join failed err={e}");
+            format!("PREINSTALL_WAIT: {e}")
+        })?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        Ok((exit_code, drain_captured(captured)))
+        let out = drain_captured(captured);
+        let elapsed = start.elapsed();
+        log::info!(
+            "run_plugin_process: windows wait done exit={exit_code} captured_len={} elapsed={elapsed:?} cwd={}",
+            out.len(),
+            cwd.display()
+        );
+        if out.is_empty() {
+            log::warn!("run_plugin_process: captured empty after windows wait exit={exit_code} args={:?}", args_preview);
+        } else {
+            let head: String = out.chars().take(800).collect();
+            log::info!("run_plugin_process: captured_head(800)={}", head.replace('\n', "\\n"));
+        }
+        Ok((exit_code, out))
     }
 
     #[cfg(not(windows))]
@@ -137,7 +190,15 @@ pub(crate) async fn run_plugin_process(
             // 独立进程组：取消时可用 `kill(-pid, ...)` 一次结束整棵安装进程树
             .process_group(0)
             .spawn()
-            .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
+            .map_err(|e| {
+                log::error!(
+                    "run_plugin_process: PREINSTALL_SPAWN failed node={} cwd={} err={e} args={:?}",
+                    node.display(),
+                    cwd.display(),
+                    args_preview
+                );
+                format!("PREINSTALL_SPAWN: {e}")
+            })?;
 
         let pid = child.id();
         PidGuard::set(pid);
@@ -145,7 +206,7 @@ pub(crate) async fn run_plugin_process(
         // 避免把「这一次安装」的 PID 泄漏给之后的取消/下一次安装（误杀无关进程）。
         // 若 spawn_blocking 因错误提前 `?` 返回，守卫同样会 Drop 复位。
         let _pid_guard = PidGuard;
-        log::info!("dsh plugin install started, pid {pid}");
+        log::info!("dsh plugin install started, pid {pid} node={} cwd={}", node.display(), cwd.display());
 
         if let Some(stdout) = child.stdout.take() {
             spawn_line_emitter(stdout, window.clone(), captured.clone());
@@ -158,10 +219,25 @@ pub(crate) async fn run_plugin_process(
             child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
         })
         .await
-        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        .map_err(|e| {
+            log::error!("run_plugin_process: PREINSTALL_WAIT join failed err={e}");
+            format!("PREINSTALL_WAIT: {e}")
+        })?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        Ok((exit_code, drain_captured(captured)))
+        let out = drain_captured(captured);
+        let elapsed = start.elapsed();
+        log::info!(
+            "run_plugin_process: unix wait done pid={pid} exit={exit_code} captured_len={} elapsed={elapsed:?}",
+            out.len()
+        );
+        if out.is_empty() {
+            log::warn!("run_plugin_process: captured empty after unix wait pid={pid} exit={exit_code} args={:?}", args_preview);
+        } else {
+            let head: String = out.chars().take(800).collect();
+            log::info!("run_plugin_process: captured_head(800)={}", head.replace('\n', "\\n"));
+        }
+        Ok((exit_code, out))
     }
 }
 

@@ -23,17 +23,26 @@ pub const PNPM_SHIM_SH_NAME: &str = "pnpm";
 // ---------------------------------------------------------------------------
 // shim 共享片段：node 解析逻辑（dsh / pnpm shim 共用）
 //
-// 规则：优先 PATH 中版本兼容的本地 node（v22.15+ / v23.8+ / v24+，
-// 与 config::is_supported_node_version 一致），否则回退捆绑运行时。
+// 规则：优先 `DSH_NODE` 环境变量（桌面端注入其已解析并核验过的 node 路径，
+// 保证 shim 与应用预检一致），其次 PATH 中版本兼容的本地 node（v22.15+ /
+// v23.8+ / v24+，与 config::is_supported_node_version 一致），否则回退捆绑
+// 运行时。`DSH_NODE` 只在桌面端自身派生的子进程里存在，终端用户环境不受影响。
 // 变量约定：cmd 用 %APP_DIR%，ps1 用 $appDir，sh 用 $APP_DIR。
 // 这些常量作为 format! 的参数传入，其中的 `{`/`}` 是字面量。
 // ---------------------------------------------------------------------------
 
 const CMD_NODE_RESOLVE: &str = r#"
-rem Prefer a version-compatible local node, fall back to the bundled runtime.
+rem Prefer the desktop-resolved node (DSH_NODE, injected by the app into its
+rem own child processes), then a version-compatible local node, then the
+rem bundled runtime. DSH_NODE makes the shim and the app's pre-check agree:
+rem the app verified the node exists before spawning the child, and the shim
+rem must not re-derive it from PATH (which can miss nodes the app found).
 rem Pure batch version check (for /f tokens + numeric compare), no powershell
 rem child: avoids console flashes when invoked without a console and skips the
 rem per-call powershell startup cost.
+if defined DSH_NODE (
+  if exist "%DSH_NODE%" goto :node_dsh
+)
 where node >nul 2>nul
 if errorlevel 1 goto :use_bundled
 for /f "tokens=1,2 delims=v." %%a in ('node --version 2^>nul ^| findstr /b "v"') do set "NODE_MAJOR=%%a" & set "NODE_MINOR=%%b"
@@ -47,6 +56,10 @@ goto :use_bundled
 set "NODE=node"
 goto :launch
 
+:node_dsh
+set "NODE=%DSH_NODE%"
+goto :launch
+
 :use_bundled
 if not exist "%APP_DIR%\runtime\node.exe" goto :no_node
 set "NODE=%APP_DIR%\runtime\node.exe"
@@ -54,20 +67,27 @@ set "PATH=%APP_DIR%\runtime;%PATH%"
 "#;
 
 const PS1_NODE_RESOLVE: &str = r#"
-# Prefer a version-compatible local node, fall back to the bundled runtime.
+# Prefer the desktop-resolved node (DSH_NODE, injected by the app into its
+# own child processes), then a version-compatible local node, then the
+# bundled runtime — see the CMD shim for why DSH_NODE wins first.
 $node = $null
-$localNode = Get-Command node -ErrorAction SilentlyContinue
-if ($localNode) {
-    try {
-        $version = & node --version 2>$null
-        if ($version -match '^v(\d+)\.(\d+)') {
-            $major = [int]$matches[1]
-            $minor = [int]$matches[2]
-            if (($major -eq 22 -and $minor -ge 15) -or ($major -eq 23 -and $minor -ge 8) -or $major -ge 24) {
-                $node = 'node'
+if ($env:DSH_NODE -and (Test-Path -LiteralPath $env:DSH_NODE)) {
+    $node = $env:DSH_NODE
+}
+if (-not $node) {
+    $localNode = Get-Command node -ErrorAction SilentlyContinue
+    if ($localNode) {
+        try {
+            $version = & node --version 2>$null
+            if ($version -match '^v(\d+)\.(\d+)') {
+                $major = [int]$matches[1]
+                $minor = [int]$matches[2]
+                if (($major -eq 22 -and $minor -ge 15) -or ($major -eq 23 -and $minor -ge 8) -or $major -ge 24) {
+                    $node = 'node'
+                }
             }
-        }
-    } catch { }
+        } catch { }
+    }
 }
 if (-not $node) {
     $bundled = Join-Path $appDir 'runtime\node.exe'
@@ -84,7 +104,13 @@ if (-not $node) {
 
 const SH_NODE_RESOLVE: &str = r#"
 NODE=""
-if command -v node >/dev/null 2>&1; then
+# Prefer the desktop-resolved node (DSH_NODE, injected by the app into its
+# own child processes), then a version-compatible local node, then the
+# bundled runtime — see the CMD shim for why DSH_NODE wins first.
+if [ -n "$DSH_NODE" ] && [ -x "$DSH_NODE" ]; then
+  NODE="$DSH_NODE"
+fi
+if [ -z "$NODE" ] && command -v node >/dev/null 2>&1; then
   NODE_V=$(node --version 2>/dev/null)
   MAJOR=$(printf '%s' "$NODE_V" | awk -F. '{ gsub(/^v/, "", $1); print $1 }')
   MINOR=$(printf '%s' "$NODE_V" | awk -F. '{ print $2 }')
@@ -718,6 +744,53 @@ mod tests {
         assert!(content.contains(r#"exec "$NODE" "$PNPM_BIN" "$@""#));
         assert!(content.contains(r#"$APP_DIR/runtime/bin/node"#));
         assert!(content.contains("DSH_PREFER_BUNDLED_PNPM"));
+    }
+
+    /// issue #121：桌面端注入的 DSH_NODE（预检解析出的 node 路径）必须在
+    /// 本地 node / 捆绑运行时解析之前被采用——shim 与应用预检保持一致。
+    #[test]
+    fn cmd_shim_prefers_dsh_node_before_local_node() {
+        let content = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
+        let dsh_node_at = content.find("DSH_NODE").unwrap();
+        let where_node_at = content.find("where node").unwrap();
+        // `:node_dsh` 标签行（独占一行）位于 `:node_ok` 之后、`:use_bundled`
+        // 之前；`goto :node_dsh` 引用出现在 `where node` 之前，不能作为定位点。
+        let node_dsh_label_at = content.find("\n:node_dsh").unwrap();
+        let node_ok_at = content.find("\n:node_ok").unwrap();
+        assert!(
+            dsh_node_at < where_node_at,
+            "DSH_NODE must be checked before the local node search"
+        );
+        assert!(content.contains(r#"set "NODE=%DSH_NODE%""#));
+        assert!(
+            node_ok_at < node_dsh_label_at,
+            "the :node_dsh label must come after :node_ok"
+        );
+    }
+
+    #[test]
+    fn ps1_shim_prefers_dsh_node_before_local_node() {
+        let content = build_ps1_shim(&sample_app_dir(), &sample_dsh_home());
+        let dsh_node_at = content.find("$env:DSH_NODE").unwrap();
+        let local_at = content.find("Get-Command node").unwrap();
+        assert!(
+            dsh_node_at < local_at,
+            "DSH_NODE must be checked before the local node search"
+        );
+    }
+
+    #[test]
+    fn sh_shim_prefers_dsh_node_before_local_node() {
+        #[cfg(not(windows))]
+        {
+            let content = build_sh_shim(&sample_app_dir(), &sample_dsh_home());
+            let dsh_node_at = content.find("$DSH_NODE").unwrap();
+            let local_at = content.find("command -v node").unwrap();
+            assert!(
+                dsh_node_at < local_at,
+                "DSH_NODE must be checked before the local node search"
+            );
+        }
     }
 
     #[cfg(windows)]

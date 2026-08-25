@@ -824,6 +824,18 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     envs.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
     envs.insert("NO_COLOR".to_string(), "1".to_string());
     envs.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
+    // 把服务实际使用的 node 路径显式交给子进程（pnpm/dsh shim 的 DSH_NODE
+    // 优先）：市场（dsh-market）等子进程经 PATH 解析 node 可能与桌面端预检
+    // 不一致（相对 PATH 条目 / junction / 子进程 PATH 布局差异），导致 pnpm
+    // shim 报 "Node.js runtime not found"（issue #121，与 build_plugin_envs
+    // 的注入保持一致）。先规范化为绝对路径：相对路径在子进程 CWD 下会解析
+    // 到错误位置；已存在（上面校验过）的 node 可安全 canonicalize。
+    let node_abs = std::fs::canonicalize(&node_binary_path)
+        .unwrap_or_else(|_| node_binary_path.clone());
+    envs.insert(
+        "DSH_NODE".to_string(),
+        node_abs.to_string_lossy().into_owned(),
+    );
 
     // 扩展 PATH，让 dsh 及其子进程能找到 node；Windows 上再注入 Git Bash 的
     // bin 目录：persistent bash（--noprofile --norc）不执行 profile 脚本、PATH

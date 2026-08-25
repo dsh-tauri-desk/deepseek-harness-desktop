@@ -304,13 +304,20 @@ fn silent_install_failure_detail(missing: &[(String, PathBuf)], command_output: 
     )
 }
 
-/// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色，
+/// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色、
+/// 注入预检解析出的 node 路径（`DSH_NODE`，shim 优先采用，见 shim.rs）、
 /// PATH 前置 shim 目录与 node 目录；用户 pnpm 过旧时强制捆绑版（见 ensure_pnpm）。
 ///
 /// 供本模块的安装/升级/卸载与 [`super::verify`] 的完整性修复共用：子进程（dsh
 /// 或 pnpm）都按同一套桌面端环境策略运行，保证 $DSH_HOME / PATH 布局一致。
 pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: bool) -> HashMap<String, String> {
     let node = config::get_node_binary_path(app_handle);
+    // 规范化为绝对路径：get_node_binary_path 可能返回相对路径（PATH 上出现
+    // 相对条目时，如 `.` 或 `tools\node`），而子进程 CWD 与应用进程不同，
+    // 相对路径会被解析到错误位置——shim 经 DSH_NODE / PATH 都找不到 node
+    // （issue #121 的 "Node.js runtime not found"）。已存在（预检通过）的
+    // node 可安全 canonicalize；失败时回退原值。
+    let node_abs = std::fs::canonicalize(&node).unwrap_or_else(|_| node.clone());
     let bin_dir = cli::get_bin_dir(app_handle);
     let mut envs = HashMap::from([
         (
@@ -321,6 +328,14 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
         ),
         ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
         ("NO_COLOR".to_string(), "1".to_string()),
+        // 把预检解析出的 node 路径显式交给 pnpm/dsh shim（DSH_NODE 优先）：
+        // shim 自身经 PATH 解析 node 可能与应用预检不一致（PATH 上的相对条目、
+        // junction/符号链接、或子进程 PATH 布局差异），导致 pnpm shim 报
+        // "Node.js runtime not found" 而应用预检却通过（issue #121）。
+        (
+            "DSH_NODE".to_string(),
+            node_abs.to_string_lossy().into_owned(),
+        ),
     ]);
     // 用户 pnpm 过旧/不可探测时强制 pnpm shim 优先捆绑版，避免 8/9 的
     // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
@@ -329,7 +344,7 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     }
 
     let mut paths = vec![bin_dir];
-    if let Some(node_dir) = node.parent() {
+    if let Some(node_dir) = node_abs.parent() {
         paths.push(node_dir.to_path_buf());
     }
     paths.extend(std::env::split_paths(

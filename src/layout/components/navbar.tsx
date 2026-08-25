@@ -209,9 +209,13 @@ export function Navbar({ iframeRef }: NavbarProps) {
       // 透过来，与系统标题栏融为一体。Win/Linux 关闭了 decorations(),
       // 没有原生 chrome 可借，靠 bg-panel / border-b 提供可拖拽区视觉锚点和
       // 右侧窗口控制按钮的位置载体，故保留彩条。
+      // 两份完整的字面量同时出现在源里，Tailwind JIT 能静态扫到全部类。
+      // bg-transparent! 使用 Tailwind `!important` 后缀，兜底覆盖可能的
+      // 父级 / ShellNavBar 容器的样式。
       className={cn(
-        'relative flex h-11 w-full flex-none select-none items-center gap-0.5',
-        IS_MACOS ? 'bg-transparent' : 'border-b border-line bg-panel',
+        IS_MACOS
+          ? 'relative flex h-11 w-full flex-none select-none items-center gap-0.5 bg-transparent!'
+          : 'relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-panel',
         {
           'hidden': IS_MACOS && isFullscreen,
           'pl-20 pr-1.5': IS_MACOS && !isFullscreen,

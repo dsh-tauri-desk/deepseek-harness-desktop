@@ -1,0 +1,47 @@
+# .github/workflows/release-pr.yml
+name: Release (PR merged)
+
+on:
+  pull_request:
+    types: [closed]
+
+# Only run for merged release/* pull requests that originate from THIS repo.
+# The `head.repo.full_name == github.repository` check is essential: it stops a
+# fork from opening a PR whose branch is named `release/*` and having this
+# privileged workflow run against it. See "Security" below.
+jobs:
+  release:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag, release, and read the repo
+      id-token: write # npm OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Check out the merge commit so package.json has the bumped version
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/v${{ steps.version.outputs.version }}`,
+              sha: context.payload.pull_request.merge_commit_sha,
+            })

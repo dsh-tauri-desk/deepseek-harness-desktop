@@ -29,6 +29,15 @@
     "recommended": true
   },
   {
+    "id": "dsh-tauri-worktree",
+    "spec": "dsh-tauri-worktree@0.1.0",
+    "internal": true,
+    "name": "DSH Tauri Worktree",
+    "description": "Per-session isolated Git Worktree for the desktop shell: switch a conversation to its own isolated worktree, then check changes back into a local dsh/ branch or discard them.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-worktree",
+    "recommended": true
+  },
+  {
     "id": "dshmarket",
     "spec": "dshmarket",
     "name": "DSH Market",

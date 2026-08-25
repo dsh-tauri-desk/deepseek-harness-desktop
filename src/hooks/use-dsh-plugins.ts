@@ -1,3 +1,4 @@
+/* eslint-disable react/exhaustive-deps */
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'

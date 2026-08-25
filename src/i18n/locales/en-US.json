@@ -65,6 +65,7 @@
   "download.show_in_folder": "Open",
   "errors.service_start_timeout": "DeepSeek Harness startup timeout. Please check whether port {{port}} is occupied or the startup is too slow.",
   "errors.plugin_route_conflict": "Detected a plugin route conflict: two plugins registered the same route twice. Uninstall the recently added plugin (e.g. dsh-web-ui-all / dsh-better-sidebar) from the Plugins panel, or run dsh plugin --profile <profile> remove <package> for the active profile and retry.",
+  "errors.inotify_limit": "The Harness service crashed on startup: your system reached the limit for file watchers (inotify ENOSPC). Increase the watcher limit and restart — e.g. run `sudo sysctl fs.inotify.max_user_watches=524288` (and add `fs.inotify.max_user_watches=524288` to `/etc/sysctl.conf` to persist), then restart the app.",
   "ui.service_url": "Service URL",
   "ui.port": "Port",
   "ui.cli_link": "CLI Integration",

@@ -26,3 +26,16 @@ export function pickErrorLines(lines: readonly string[]): string[] {
   const errored = lines.filter(line => ERROR_LINE_MARKERS.test(line)).slice(0, 8)
   return errored.length > 0 ? errored : lines.slice(-8)
 }
+
+/**
+ * 判断日志是否命中 Linux 的 inotify 文件监视上限（ENOSPC）错误。
+ *
+ * harness 服务（dsh web）会用 chokidar 递归监视 `$DSH_HOME/profiles/*`，
+ * 当系统 `fs.inotify.max_user_watches` 上限过低（常见于 Docker/容器或新装 Ubuntu
+ * 默认值偏小）时，node 会抛 `ENOSPC: System limit for number of file watchers
+ * reached` 并直接退出，表现为「服务启动即崩溃」。这类错误对用户无解，必须提示
+ * 调高系统参数（见 errors.inotify_limit 文案）。纯函数，便于单元测试。
+ */
+export function containsInotifyLimitError(lines: readonly string[]): boolean {
+  return lines.some(line => /ENOSPC/i.test(line) && /file watchers/i.test(line))
+}

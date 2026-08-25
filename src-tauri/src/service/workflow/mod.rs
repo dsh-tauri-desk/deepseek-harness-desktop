@@ -450,6 +450,21 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
     }
 }
 
+#[cfg(unix)]
+pub(crate) fn warn_if_inotify_watch_limit_low() {
+    let Some(limit) = crate::config::linux_inotify_max_user_watches() else {
+        return;
+    };
+    if limit < crate::config::MIN_INOTIFY_MAX_USER_WATCHES {
+        log::warn!(
+            "Linux inotify.max_user_watches is {} (below recommended {}); dsh web may crash with ENOSPC (issue #116). To fix, run `sudo sysctl fs.inotify.max_user_watches={}` and write the same value to /etc/sysctl.conf to persist.",
+            limit,
+            crate::config::MIN_INOTIFY_MAX_USER_WATCHES,
+            crate::config::MIN_INOTIFY_MAX_USER_WATCHES,
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 孤儿 Harness 清扫：崩溃/强杀残留实例的识别与回收（issue #34 关联现象）
 // ---------------------------------------------------------------------------
@@ -748,6 +763,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     let dsh_home = config::get_dsh_data_path(&app_handle);
     fs::create_dir_all(&dsh_home).map_err(|e| format!("create dsh home failed: {e}"))?;
+
+    // Linux 起步前探测 inotify 监视上限：harness 服务（dsh web）用 chokidar 递归
+    // 监视 profile 目录，上限过低会在启动一瞬间抛 ENOSPC 直接退出（issue #116）。
+    // 进程无法自我调高该参数，这里只做告警（启动日志 + 读取 run logs 中的环境信息），
+    // 前端据服务日志的 ENOSPC 特征给出「调高 fs.inotify.max_user_watches」的针对性提示。
+    #[cfg(unix)]
+    warn_if_inotify_watch_limit_low();
 
     // Windows 极简模式修复的自愈：插件已装入 profile 时确保 patch 挂载行与
     // minimal-win 用户 preset 落盘（幂等）。最佳努力：失败只告警，不阻断启动。

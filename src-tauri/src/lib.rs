@@ -13,11 +13,21 @@ pub fn run() {
     // works, but AppImage needs compositing disabled. Auto-set when on Wayland
     // if user hasn't already set it — fixes hairyf#??? (PikaOS report).
     if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {
-        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err()
-            && std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err()
-        {
+        // 与 README 文档一致地同时关闭 compositing 与 DMABUF renderer：只关前者在部分
+        // 发行版/驱动上仍会 SIGSEGV（issue #116 的 WebKitGTK 崩溃）。两个参数互相独立，
+        // 用户已手动设置其中一个时只补齐另一个。
+        let mut applied = Vec::new();
+        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-            eprintln!("[wayland] set WEBKIT_DISABLE_COMPOSITING_MODE=1 for WebKitGTK EGL");
+            applied.push("WEBKIT_DISABLE_COMPOSITING_MODE");
+        }
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            applied.push("WEBKIT_DISABLE_DMABUF_RENDERER");
+        }
+        if !applied.is_empty() {
+            // 此处在 logger::init() 之前执行，log 宏尚无 subscriber，用 eprintln 输出
+            eprintln!("[wayland] set {} for WebKitGTK EGL", applied.join("="));
         }
     }
     // 初始化日志系统

@@ -65,6 +65,7 @@
   "download.show_in_folder": "打开",
   "errors.service_start_timeout": "DeepSeek Harness 启动超时，请检查端口 {{port}} 是否被占用或启动过慢。",
   "errors.plugin_route_conflict": "检测到插件路由冲突：两个插件重复注册了同一路由。请在「插件」面板卸载最近安装的插件（如 dsh-web-ui-all / dsh-better-sidebar），或在终端对当前档案执行 dsh plugin --profile <档案名> remove <包名> 后重试。",
+  "errors.inotify_limit": "Harness 服务启动即崩溃：系统文件监视（inotify）数量达到上限。请调高监视上限后重试——例如执行 `sudo sysctl fs.inotify.max_user_watches=524288`（并将 `fs.inotify.max_user_watches=524288` 写入 `/etc/sysctl.conf` 以持久化），然后重启应用。",
   "ui.service_url": "服务地址",
   "ui.port": "端口",
   "ui.cli_link": "命令行集成",

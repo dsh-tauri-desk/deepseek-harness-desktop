@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLogLine, pickErrorLines } from '../src/utils/log'
+import { containsInotifyLimitError, formatLogLine, pickErrorLines } from '../src/utils/log'
 
 describe('formatLogLine', () => {
   it('strips the official GitHub release download prefix', () => {
@@ -39,5 +39,32 @@ describe('pickErrorLines', () => {
 
   it('handles empty input', () => {
     expect(pickErrorLines([])).toEqual([])
+  })
+})
+
+describe('containsInotifyLimitError', () => {
+  it('detects the Linux inotify ENOSPC signature', () => {
+    const lines = [
+      'Error: ENOSPC: System limit for number of file watchers reached, watch \'/home/u/.dsh/profiles/web\'',
+      '  code: \'ENOSPC\',',
+    ]
+    expect(containsInotifyLimitError(lines)).toBe(true)
+  })
+
+  it('is case-insensitive on the ENOSPC marker', () => {
+    expect(containsInotifyLimitError(['enospc: number of file watchers reached'])).toBe(true)
+  })
+
+  it('does not match a lone ENOSPC (must also mention file watchers)', () => {
+    expect(containsInotifyLimitError(['Error: ENOSPC: no space left on device'])).toBe(false)
+  })
+
+  it('does not match unrelated file-watcher lines', () => {
+    expect(containsInotifyLimitError(['file watchers initialized'])).toBe(false)
+    expect(containsInotifyLimitError(['watch /x started'])).toBe(false)
+  })
+
+  it('handles empty input', () => {
+    expect(containsInotifyLimitError([])).toBe(false)
   })
 })

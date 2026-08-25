@@ -23,7 +23,14 @@ const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
  */
 export function Setup() {
   const { t } = useTranslation()
-  const { status, installer, errorMsg, errorLogs, pluginConflictHint } = useStore(store.harness)
+  const {
+    status,
+    installer,
+    errorMsg,
+    errorLogs,
+    pluginConflictHint,
+    inotifyLimitHint,
+  } = useStore(store.harness)
   const error = status === 'error'
   const installing = status === 'installing'
   const heading = error ? t('status.error') : installer.title || t('status.installing')
@@ -33,6 +40,8 @@ export function Setup() {
   const logs = installing
     ? installer.logs
     : (error && errorLogs.length > 0 ? errorLogs : undefined)
+  // 错误态的针对性提示：插件路由冲突 / Linux inotify 文件监视上限，二选一优先展示
+  const hint = error ? (pluginConflictHint || inotifyLimitHint) : undefined
 
   return (
     <Loadable
@@ -44,8 +53,8 @@ export function Setup() {
       errorMsg={error ? errorMsg : undefined}
       onRetry={error ? store.harness.boot : undefined}
     >
-      {error && pluginConflictHint && (
-        <p className="m-0 text-xs leading-[18px] break-all text-load-muted">{pluginConflictHint}</p>
+      {hint && (
+        <p className="m-0 text-xs leading-[18px] break-all text-load-muted">{hint}</p>
       )}
     </Loadable>
   )

@@ -204,8 +204,14 @@ export function Navbar({ iframeRef }: NavbarProps) {
 
   return (
     <div
+      // macOS 上窗口已用 Overlay 模式保留原生标题栏（见 desktop::builder::build_main_window），
+      // ShellNavBar 浮在原生 chrome 上方：去掉底色和下边框，让 vibrancy 材质
+      // 透过来，与系统标题栏融为一体。Win/Linux 关闭了 decorations(),
+      // 没有原生 chrome 可借，靠 bg-panel / border-b 提供可拖拽区视觉锚点和
+      // 右侧窗口控制按钮的位置载体，故保留彩条。
       className={cn(
-        'relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-panel',
+        'relative flex h-11 w-full flex-none select-none items-center gap-0.5',
+        IS_MACOS ? 'bg-transparent' : 'border-b border-line bg-panel',
         {
           'hidden': IS_MACOS && isFullscreen,
           'pl-20 pr-1.5': IS_MACOS && !isFullscreen,

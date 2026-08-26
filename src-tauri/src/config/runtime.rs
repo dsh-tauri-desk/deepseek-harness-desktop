@@ -257,6 +257,97 @@ pub fn get_pnpm_download_url() -> String {
     format!("{}pnpm-{}.tgz", pnpm_base_url(detect_region()), PNPM_VERSION)
 }
 
+/// Windows 免安装 Git 的安装目录。
+pub fn get_mingit_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_base_dir(app_handle)
+        .join("dependencies")
+        .join(MINGIT_CORE_DIR)
+}
+
+/// Windows 免安装 Git 的 CLI 入口。
+pub fn get_mingit_binary_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_mingit_install_path(app_handle).join(MINGIT_ENTRY_RELATIVE)
+}
+
+/// Windows MinGit 官方发行包文件名。
+fn mingit_pkg_filename(arch: &str) -> Result<String, String> {
+    match arch {
+        "x86_64" => Ok(format!("MinGit-{MINGIT_VERSION}-64-bit.zip")),
+        "aarch64" => Ok(format!("MinGit-{MINGIT_VERSION}-arm64.zip")),
+        _ => Err(format!("MINGIT_PLATFORM_UNSUPPORTED: windows {arch}")),
+    }
+}
+
+/// Windows MinGit 官方发行包下载地址。
+pub fn get_mingit_download_url() -> Result<String, String> {
+    Ok(format!(
+        "{MINGIT_BASE_URL}{}",
+        mingit_pkg_filename(env::consts::ARCH)?
+    ))
+}
+
+/// Windows MinGit 官方发行包固定 SHA-256。
+pub fn get_mingit_sha256() -> Result<&'static str, String> {
+    match env::consts::ARCH {
+        "x86_64" => Ok(MINGIT_X64_SHA256),
+        "aarch64" => Ok(MINGIT_ARM64_SHA256),
+        arch => Err(format!("MINGIT_PLATFORM_UNSUPPORTED: windows {arch}")),
+    }
+}
+
+/// 在 PATH 中寻找可直接运行的系统 Git。
+#[cfg(windows)]
+pub fn find_system_git_binary() -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join("git.exe"))
+        .find(|candidate| candidate.is_file() && git_binary_works(candidate))
+}
+
+/// 检查 Git CLI 能否真实执行，避免 PATH 中残留的坏链接阻止自动修复。
+#[cfg(windows)]
+fn git_binary_works(binary: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    std::process::Command::new(binary)
+        .arg("--version")
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// 返回桌面端应注入子进程 PATH 的 Git `cmd` 目录。
+#[cfg(windows)]
+pub fn get_git_cmd_dir<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    if find_system_git_binary().is_some() {
+        return None;
+    }
+    let bundled = get_mingit_binary_path(app_handle);
+    if bundled.is_file() && git_binary_works(&bundled) {
+        return bundled.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// 非 Windows 平台依赖系统 Git，不额外注入目录。
+#[cfg(not(windows))]
+pub fn get_git_cmd_dir<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    None
+}
+
+/// 当前环境是否已有可供插件 Git 依赖使用的 Git。
+#[cfg(windows)]
+pub fn git_runtime_ready<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
+    find_system_git_binary().is_some() || git_binary_works(&get_mingit_binary_path(app_handle))
+}
+
+/// 非 Windows 平台不属于本次空白 Windows 环境的自动配置范围。
+#[cfg(not(windows))]
+pub fn git_runtime_ready<R: Runtime>(_app_handle: &AppHandle<R>) -> bool {
+    true
+}
+
 /// Harness 发行版清单路径
 pub fn get_dsh_package_json_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     get_dsh_install_path(app_handle).join(DSH_MANIFEST_RELATIVE)
@@ -454,6 +545,33 @@ mod tests {
         let dsh = get_dsh_download_url().expect("dsh url");
         assert!(dsh.starts_with("https://"));
         assert!(dsh.ends_with(".zip"));
+    }
+
+    #[test]
+    fn mingit_pkg_filename_covers_supported_windows_architectures() {
+        assert_eq!(
+            mingit_pkg_filename("x86_64").expect("x64 MinGit asset"),
+            format!("MinGit-{MINGIT_VERSION}-64-bit.zip")
+        );
+        assert_eq!(
+            mingit_pkg_filename("aarch64").expect("ARM64 MinGit asset"),
+            format!("MinGit-{MINGIT_VERSION}-arm64.zip")
+        );
+    }
+
+    #[test]
+    fn mingit_pkg_filename_rejects_unsupported_architecture() {
+        let error = mingit_pkg_filename("x86").expect_err("unsupported MinGit architecture");
+        assert_eq!(error, "MINGIT_PLATFORM_UNSUPPORTED: windows x86");
+    }
+
+    #[test]
+    fn mingit_release_metadata_is_pinned_and_https() {
+        assert!(MINGIT_BASE_URL.starts_with("https://github.com/git-for-windows/git/releases/"));
+        assert!(MINGIT_BASE_URL.contains("v2.53.0.windows.2"));
+        assert_eq!(MINGIT_X64_SHA256.len(), 64);
+        assert_eq!(MINGIT_ARM64_SHA256.len(), 64);
+        assert_ne!(MINGIT_X64_SHA256, MINGIT_ARM64_SHA256);
     }
 
     #[test]

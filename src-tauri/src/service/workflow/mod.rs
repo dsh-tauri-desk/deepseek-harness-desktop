@@ -837,8 +837,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         node_abs.to_string_lossy().into_owned(),
     );
 
-    // 扩展 PATH，让 dsh 及其子进程能找到 node；Windows 上再注入 Git Bash 的
-    // bin 目录：persistent bash（--noprofile --norc）不执行 profile 脚本、PATH
+    // 扩展 PATH，让 dsh 及其子进程能找到 node 与桌面端自动配置的 Git；Windows
+    // 上再注入 Git Bash 的 bin 目录：persistent bash（--noprofile --norc）不执行
+    // profile 脚本、PATH
     // 完全继承服务进程，若不含 Git 的 usr/bin，ls/sed/find 等 coreutils 全会
     // `command not found`（MSYS 运行时在部分环境下不会自动补 /usr/bin）。
     // 前置应用自身的 shim 目录，使市场（dsh-market）及其子进程通过名字解析的
@@ -853,6 +854,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             }
             let mut paths = vec![crate::service::cli::get_bin_dir(&app_handle)];
             paths.push(node_dir.to_path_buf());
+            if let Some(git_dir) = config::get_git_cmd_dir(&app_handle) {
+                log::debug!(
+                    "harness service Git PATH prepend: {}",
+                    git_dir.to_string_lossy()
+                );
+                paths.push(git_dir);
+            }
             paths.extend(git_dirs);
             paths.extend(std::env::split_paths(&existing_path));
             if let Ok(new_path) = std::env::join_paths(paths) {
@@ -1036,10 +1044,11 @@ pub fn stop_on_exit(app_handle: tauri::AppHandle, _port: u16) {
     let _ = fs::remove_file(harness_pid_path(&app_handle));
 }
 
-/// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）。
+/// 安装环境（Node.js 运行时 + 打包的 Harness 发行版 + pnpm；Windows 缺失
+/// 系统 Git 时再自动安装免安装 MinGit）。
 ///
 /// 返回是否真正落盘更新了 Harness（dsh 任务实际下载并解压）；仅重装
-/// Node/pnpm 或全部任务被跳过时返回 false，供调用方决定是否重启页面。
+/// Node/pnpm/Git 或全部任务被跳过时返回 false，供调用方决定是否重启页面。
 pub async fn install(
     app_handle: &tauri::AppHandle,
     mut dsh_latest: Option<download::LatestDshPkg>,
@@ -1074,13 +1083,17 @@ pub async fn install(
         .get_webview_window("main")
         .ok_or("Failed to get main window")?;
     log::debug!("Main window obtained");
-    // 3 个任务 × 下载/解压 2 个阶段
-    let mut tracker = download::ProgressTracker::new(&window, 6);
-    let tasks: Vec<Box<dyn download::Installable>> = vec![
+    let mut tasks: Vec<Box<dyn download::Installable>> = vec![
         Box::new(download::Nodejs),
         Box::new(download::Dsh),
         Box::new(download::Pnpm),
     ];
+    // Windows Sandbox 等空白环境没有 Git；仅 Windows 加入第 4 项，若系统 Git
+    // 可真实执行则 Installable 会跳过，不重复下载也不修改系统 PATH。
+    #[cfg(windows)]
+    tasks.push(Box::new(download::Git));
+    // 每项均有下载/解压两个阶段，按实际平台任务数计算，避免进度提前到 100%。
+    let mut tracker = download::ProgressTracker::new(&window, tasks.len() * 2);
     log::info!("Task list created, {} tasks total", tasks.len());
 
     for (index, task) in tasks.iter().enumerate() {
@@ -1198,6 +1211,8 @@ pub async fn install(
                     })?
             }
             2 => config::PNPM_SHA256.to_string(),
+            #[cfg(windows)]
+            3 => config::get_mingit_sha256()?.to_string(),
             _ => return Err("INSTALL_TASK_INVALID: unknown install task".to_string()),
         };
         download::verify_sha256(&buffer, &expected_digest)?;

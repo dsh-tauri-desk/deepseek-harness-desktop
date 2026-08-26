@@ -311,7 +311,8 @@ fn silent_install_failure_detail(missing: &[(String, PathBuf)], command_output: 
 
 /// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色、
 /// 注入预检解析出的 node 路径（`DSH_NODE`，shim 优先采用，见 shim.rs）、
-/// PATH 前置 shim 目录与 node 目录；用户 pnpm 过旧时强制捆绑版（见 ensure_pnpm）。
+/// PATH 前置 shim、node 与桌面端自动配置的 Git 目录；用户 pnpm 过旧时强制
+/// 捆绑版（见 ensure_pnpm）。
 ///
 /// 供本模块的安装/升级/卸载与 [`super::verify`] 的完整性修复共用：子进程（dsh
 /// 或 pnpm）都按同一套桌面端环境策略运行，保证 $DSH_HOME / PATH 布局一致。
@@ -351,6 +352,11 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     let mut paths = vec![bin_dir];
     if let Some(node_dir) = node_abs.parent() {
         paths.push(node_dir.to_path_buf());
+    }
+    // pnpm 安装 github:/git+ssh: 插件时会直接调用 git。Windows 空白环境使用
+    // 桌面端已校验安装的 MinGit，仅对子进程 PATH 生效，不污染用户系统 PATH。
+    if let Some(git_dir) = config::get_git_cmd_dir(app_handle) {
+        paths.push(git_dir);
     }
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),

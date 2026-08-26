@@ -69,6 +69,9 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     // 升级后 `installed` 已为 true 会跳过环境安装，捆绑 pnpm 可能从未落盘，
     // 需一并纳入"已就绪"判定，缺失时由 workflow::install 按任务补齐。
     let pnpm_ok = download::Pnpm.check_installed(&app_handle);
+    // Windows 空白环境还必须有可执行的 Git，才能安装 github:/git+ssh: 插件。
+    // 非 Windows 返回 true，保持原有依赖集合不变。
+    let git_ok = config::git_runtime_ready(&app_handle);
 
     // 启动自愈捷径：记录显示未安装、但运行时文件已全部在盘。常见于桌面端自更新
     // 安装器强杀进程，或上次启动时核心文件短暂缺失被 workflow::start 复位
@@ -77,7 +80,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     // 误判为真更新，而重下整目录在 Windows 上极易破坏 node_modules（历史 issue：
     // 重解压后启动报找不到 @deepseek-ai/dsh-client-ui-settings）。真更新一律由
     // 启动后的 check_dsh_update 提示用户手动安装，启动路径不该自行下载。
-    if node_ok && dsh_files_ok && pnpm_ok {
+    if node_ok && dsh_files_ok && pnpm_ok && git_ok {
         let setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
             log::info!(
@@ -160,7 +163,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         }
     };
 
-    if node_ok && !dsh_need_install && pnpm_ok {
+    if node_ok && !dsh_need_install && pnpm_ok && git_ok {
         log::info!("Dependencies already installed and up to date, skipping installation");
         let mut setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
@@ -270,7 +273,8 @@ pub fn get_dsh_status() -> workflow::status::Status {
     workflow::status::get_status()
 }
 
-/// 运行时文件是否已全部在盘（Node / Dsh / pnpm 三件套，纯本地检查、无网络）。
+/// 运行时文件是否已全部在盘（Node / Dsh / pnpm；Windows 还要求 Git 可用，
+/// 纯本地检查、无网络）。
 ///
 /// 判定条件与 `install_dependencies` 的「启动自愈」捷径完全一致：桌面端自更新
 /// （MSI 强杀进程）后 store 可能被复位或损坏显示「未安装」，但运行时文件其实
@@ -281,6 +285,7 @@ pub fn runtime_ready(app_handle: AppHandle) -> bool {
     download::Nodejs.check_installed(&app_handle)
         && download::Dsh.check_installed(&app_handle)
         && download::Pnpm.check_installed(&app_handle)
+        && config::git_runtime_ready(&app_handle)
 }
 
 #[cfg(test)]

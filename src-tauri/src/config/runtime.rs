@@ -304,24 +304,38 @@ pub fn find_system_git_binary() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file() && git_binary_works(candidate))
 }
 
-/// 检查 Git CLI 能否真实执行，避免 PATH 中残留的坏链接阻止自动修复。
+/// 运行 Git 并捕获输出；GUI 进程下禁止闪现控制台窗口。
 #[cfg(windows)]
-fn git_binary_works(binary: &Path) -> bool {
+fn git_output(binary: &Path, arg: &str) -> Option<std::process::Output> {
     use std::os::windows::process::CommandExt;
 
     std::process::Command::new(binary)
-        .arg("--version")
+        .arg(arg)
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .ok()
 }
 
-/// 返回桌面端应注入子进程 PATH 的 Git `cmd` 目录。
+/// 检查 Git CLI 与 HTTPS transport helper 是否完整，避免 PATH 中只有残缺壳程序
+/// （`git --version` 可成功但无法执行 `ls-remote`）阻止自动修复。
+#[cfg(windows)]
+fn git_binary_works(binary: &Path) -> bool {
+    if !git_output(binary, "--version").is_some_and(|output| output.status.success()) {
+        return false;
+    }
+    let Some(output) = git_output(binary, "--exec-path").filter(|output| output.status.success())
+    else {
+        return false;
+    };
+    let exec_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    !exec_path.is_empty() && PathBuf::from(exec_path).join("git-remote-https.exe").is_file()
+}
+
+/// 返回桌面端应注入子进程 PATH 的已选 Git `cmd` 目录。
 #[cfg(windows)]
 pub fn get_git_cmd_dir<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
-    if find_system_git_binary().is_some() {
-        return None;
+    if let Some(system_git) = find_system_git_binary() {
+        return system_git.parent().map(Path::to_path_buf);
     }
     let bundled = get_mingit_binary_path(app_handle);
     if bundled.is_file() && git_binary_works(&bundled) {

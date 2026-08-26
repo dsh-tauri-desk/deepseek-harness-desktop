@@ -414,12 +414,11 @@ export const harness = defineStore({
           installed: boolean
         }>('get_app_config')
 
-        // 仅首次使用需要检测环境/安装依赖；之后直接进入页面。
-        // 桌面端自更新（MSI 强杀进程）后 store 可能被复位/损坏显示未安装，
-        // 但运行时文件已全部在盘——此时跳过安装/下载界面，install_dependencies
-        // 内部自愈补记 installed 后直接启动，避免自动重开时闪现误导用户的界面。
-        if (!config.installed) {
-          const ready = await invoke<boolean>('runtime_ready')
+        // 每次启动都做纯本地运行时检查：旧版本升级后 installed 仍为 true，但新版
+        // 可能新增依赖（如 Windows 空白环境需要的 MinGit），必须进入幂等自愈。
+        // 已全部就绪时不调用安装命令，因此不会联网，也不会闪现安装界面。
+        const ready = await invoke<boolean>('runtime_ready')
+        if (!ready || !config.installed) {
           if (!ready) {
             this.status = 'installing'
             this.installer = { ...initialInstaller, title: i18next.t('status.installing') }

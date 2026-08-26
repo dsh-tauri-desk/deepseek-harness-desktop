@@ -94,6 +94,22 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         }
     }
 
+    // 老版本升级后 installed 仍为 true，但可能缺少新版新增的 Windows Git 依赖。
+    // 其余三项均就绪时直接走本地任务跳过 + Git 补装，不查询 Harness 最新版本，
+    // 避免一次依赖自愈意外触发核心更新。
+    if node_ok && dsh_files_ok && pnpm_ok && !git_ok {
+        log::info!("Git dependency missing, provisioning bundled MinGit without core update check");
+        workflow::status::set_status(workflow::status::Status::Installing);
+        workflow::status::emit_status(&app_handle);
+        if let Err(e) = workflow::install(&app_handle, None).await {
+            log::error!("Git dependency installation failed, resetting status: {e}");
+            reset_install_status(&app_handle);
+            return Err(e);
+        }
+        sync_cli_link(&app_handle);
+        return Ok(false);
+    }
+
     let dsh_latest = download::fetch_latest_dsh_pkg_info().await;
 
     // 已安装文件在盘时，用 resolve_update 甄别「记录滞后」与「真更新」：

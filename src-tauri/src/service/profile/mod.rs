@@ -350,7 +350,7 @@ mod tests {
         let root = tmp.join("profiles");
         std::fs::create_dir_all(&root).unwrap();
         let res = std::panic::catch_unwind(|| {
-            std::fs::create_dir_all(&root.join("web")).unwrap();
+            std::fs::create_dir_all(root.join("web")).unwrap();
             let ok = crate::service::fs_guard::safe_remove_target(&root, "web");
             assert!(ok.is_ok(), "存在的合法目录应通过守卫: {ok:?}");
             let bad = crate::service::fs_guard::safe_remove_target(&root, "..");

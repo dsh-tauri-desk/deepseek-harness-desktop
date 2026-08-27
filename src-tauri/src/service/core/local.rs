@@ -273,7 +273,7 @@ pub async fn update_local_core(app_handle: AppHandle) -> Result<String, String> 
     };
 
     if !status {
-        let output = tail(stdout.into_iter().chain(stderr.into_iter()).collect());
+        let output = tail(stdout.into_iter().chain(stderr).collect());
         return Err(format!("CORE_UPDATE_FAILED: {output}"));
     }
 

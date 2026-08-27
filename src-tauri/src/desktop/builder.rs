@@ -398,7 +398,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         // “源码”按钮在桌面端因此无法跳转（浏览器里正常）。
         // 这里把 http(s) 链接交给系统浏览器打开，其余协议一律拒绝。
         .on_new_window(move |url, features| on_new_window(app_handle.clone(), url, features))
-        .on_download(|webview, event| on_download(webview, event));
+        .on_download(on_download);
 
     #[cfg(windows)]
     let webview_builder = webview_builder.on_page_load(move |webview_window, payload| {
@@ -455,39 +455,6 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     }
 
     Ok(webview_window)
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::windows_drag_browser_args;
-
-    #[test]
-    fn windows_drag_args_enable_touch_drag_and_disable_overscroll() {
-        let args = windows_drag_browser_args();
-        assert!(args.contains("--enable-features=msWebView2EnableDraggableRegions"));
-        assert!(args.contains("--disable-features=ElasticOverscroll"));
-        assert!(args.contains("msWebOOUI,msPdfOOUI"));
-        let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
-        assert!(!args.contains(smart_screen.as_str()));
-    }
-}
-
-#[cfg(test)]
-mod security_tests {
-    #[test]
-    fn remote_capability_does_not_cover_wildcard_loopback() {
-        let capability = include_str!("../../capabilities/default.json");
-        assert!(!capability.contains("\"remote\""));
-        let wildcard_loopback = ["http://127.0.0.1:", "*"].concat();
-        assert!(!capability.contains(wildcard_loopback.as_str()));
-    }
-
-    #[test]
-    fn webview_security_features_are_not_disabled() {
-        let source = include_str!("builder.rs");
-        let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
-        assert!(!source.contains(smart_screen.as_str()));
-    }
 }
 
 // configure invoke handler
@@ -617,4 +584,37 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .plugin(tauri_plugin_store::Builder::new().build())
         // Clipboard plugin
         .plugin(tauri_plugin_clipboard_manager::init())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::windows_drag_browser_args;
+
+    #[test]
+    fn windows_drag_args_enable_touch_drag_and_disable_overscroll() {
+        let args = windows_drag_browser_args();
+        assert!(args.contains("--enable-features=msWebView2EnableDraggableRegions"));
+        assert!(args.contains("--disable-features=ElasticOverscroll"));
+        assert!(args.contains("msWebOOUI,msPdfOOUI"));
+        let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
+        assert!(!args.contains(smart_screen.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    #[test]
+    fn remote_capability_does_not_cover_wildcard_loopback() {
+        let capability = include_str!("../../capabilities/default.json");
+        assert!(!capability.contains("\"remote\""));
+        let wildcard_loopback = ["http://127.0.0.1:", "*"].concat();
+        assert!(!capability.contains(wildcard_loopback.as_str()));
+    }
+
+    #[test]
+    fn webview_security_features_are_not_disabled() {
+        let source = include_str!("builder.rs");
+        let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
+        assert!(!source.contains(smart_screen.as_str()));
+    }
 }

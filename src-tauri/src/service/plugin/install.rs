@@ -1105,7 +1105,7 @@ fn apply_allow_build_keys(content: &str, keys: &[String]) -> Result<String, Stri
         keys.iter()
             .map(|k| dep_path_to_name(k))
             .filter(|name| {
-                existing_only.map_or(true, |seq| !seq.contains(&Value::String(name.clone())))
+                existing_only.is_none_or(|seq| !seq.contains(&Value::String(name.clone())))
             })
             .map(Value::String)
             .collect()
@@ -1760,7 +1760,7 @@ onlyBuiltDependencies:
         let out = apply_allow_build_keys("", &[dep.clone()]).unwrap();
         let map = allow_builds_map(&out);
         assert_eq!(
-            map.get(&serde_yaml::Value::String(dep)),
+            map.get(serde_yaml::Value::String(dep)),
             Some(&serde_yaml::Value::Bool(true))
         );
         // 库负责正确加引号，键原样（含 @ / : / #）可回读

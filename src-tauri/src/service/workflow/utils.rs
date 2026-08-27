@@ -193,7 +193,7 @@ pub fn rotate_service_log(log_path: &PathBuf, keep: usize) {
         return;
     }
     // 1) 删除超过保留上限的最老文件（它会被顶上来的文件覆盖且无处安放）
-    let _ = std::fs::remove_file(&indexed_log_path(log_path, keep - 1));
+    let _ = std::fs::remove_file(indexed_log_path(log_path, keep - 1));
     // 2) 从次老到次新依次后移，为本次启动腾出位置
     for i in (1..keep).rev() {
         let from = indexed_log_path(log_path, i);
@@ -242,10 +242,10 @@ mod tests {
 
         // 最后一次循环后：当前为空、.1 = start 4、.2 = start 3
         assert_eq!(fs::read_to_string(&log).unwrap_or_default(), "");
-        assert!(fs::read_to_string(&dir.join("dsh-web.log.1"))
+        assert!(fs::read_to_string(dir.join("dsh-web.log.1"))
             .unwrap()
             .contains("start 4"));
-        assert!(fs::read_to_string(&dir.join("dsh-web.log.2"))
+        assert!(fs::read_to_string(dir.join("dsh-web.log.2"))
             .unwrap()
             .contains("start 3"));
         assert!(!dir.join("dsh-web.log.3").exists());

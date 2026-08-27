@@ -295,7 +295,7 @@ pub fn check_and_emit(app_handle: &AppHandle) {
     state.pending_fp = fp;
     let can_emit = state
         .last_emit
-        .map_or(true, |last| last.elapsed() >= DEBOUNCE);
+        .is_none_or(|last| last.elapsed() >= DEBOUNCE);
     if !can_emit {
         return;
     }
@@ -324,7 +324,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("dsh-watch-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir.join("node_modules")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
         let mut manifest = serde_json::json!({
             "name": "dsh-profile-web",
             "private": true,

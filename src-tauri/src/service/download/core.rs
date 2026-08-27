@@ -1156,9 +1156,7 @@ mod tests {
     fn parses_digest_from_expanded_assets_html() {
         // 模拟 expanded_assets 片段：资产文件名之后紧跟作者填写的 sha256:<64hex>。
         // 来自真实 rc.8 页面：windows 资产摘要为 4d541676...
-        let html = concat!(
-            "…/deepseek-harness-pkg-windows.zip…<span>sha256:4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0</span>",
-        );
+        let html = "…/deepseek-harness-pkg-windows.zip…<span>sha256:4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0</span>";
         let got = parse_digest_from_expanded_assets(html, "deepseek-harness-pkg-windows.zip");
         assert_eq!(
             got.as_deref(),

@@ -267,11 +267,11 @@ pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore,
         return Err(format!("CORE_INVALID_ID: {id}"));
     }
 
-    Ok(list(app_handle)
+    list(app_handle)
         .await
         .into_iter()
         .find(|c| c.active)
-        .ok_or_else(|| "CORE_NOT_FOUND: active core disappeared after switch".to_string())?)
+        .ok_or_else(|| "CORE_NOT_FOUND: active core disappeared after switch".to_string())
 }
 
 /// 切换到指定 tag 的预打包版本（已下载的历史槽位）。

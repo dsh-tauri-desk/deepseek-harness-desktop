@@ -147,7 +147,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-fsguard2-{}", std::process::id()));
         let root = dir.join("profiles");
         fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&root.join("web")).unwrap();
+        fs::create_dir_all(root.join("web")).unwrap();
         let res = safe_remove_target(&root, "web");
         assert!(res.is_ok());
         let res = join_safe(&root, "app-1");

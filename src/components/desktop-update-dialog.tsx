@@ -1,8 +1,6 @@
 import type { PropsWithOverlays } from '@overlastic/react'
-import { useWatch } from '@hairy/react-lib'
 import { AlertDialog, Button, Description, ProgressBar } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
-import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
@@ -13,37 +11,21 @@ export interface DesktopUpdateDialogProps extends PropsWithOverlays {}
 
 /**
  * 「检查更新」对话框：展示新版本信息 + 下载进度。
- * 已下载 → 「打开安装包」直接启动安装器；未下载 → 「立即更新」下载完成后自动打开。
+ * 点击「重启以更新」触发 `store.desktopUpdater.updateNow()`：由
+ * tauri-plugin-updater 下载并安装，完成后自动重启应用（对话框随之消失）。
+ * 更新失败时对话框保持打开，可重试或稍后再更新（toast 已提示原因）。
  *
  * 使用 overlastic 命令式打开（`useOverlay(DesktopUpdateDialog)`）。
- * 下载由 store 驱动：对话框内「立即更新」触发 `downloadAndOpen`；
- * 外部触发（右下角 toast）下载完成并打开安装包后，对话框依据 downloading 回落自动关闭。
+ * 外部触发（右下角 toast）时由调用方先 openUpdateDialog() 再调 updateNow()，
+ * 进度事件驱动进度条展示。
  */
 export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
   const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
   const { updateInfo, downloading, downloadProgress } = useStore(store.desktopUpdater)
-  const prevDownloadingRef = useRef(false)
-
-  // 外部触发下载（如右下角 toast「立即更新」）完成并打开安装包后，自动关闭对话框；
-  // 仅当 downloading 由 true→false 且已下载（安装包已打开）时才关闭，下载失败保持打开。
-  useWatch([downloading, updateInfo], () => {
-    if (prevDownloadingRef.current && !downloading && updateInfo?.downloaded)
-      disclosure.cancel()
-    prevDownloadingRef.current = downloading
-  }, { immediate: true })
 
   async function handlePrimary() {
-    const info = store.desktopUpdater.updateInfo
-    if (!info)
-      return
-    if (info.downloaded) {
-      await store.desktopUpdater.openInstaller(info.path)
-      disclosure.cancel()
-    }
-    else {
-      await store.desktopUpdater.downloadAndOpen()
-    }
+    await store.desktopUpdater.updateNow()
   }
 
   return (
@@ -61,11 +43,9 @@ export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
                 <div className="space-y-1.5">
                   <Info term={t('ui.current_version')}>{updateInfo?.currentVersion}</Info>
                   <Info term={t('update.new_version_label')}>{updateInfo?.version}</Info>
-                  <If cond={updateInfo?.downloaded}>
-                    <Description className="text-xs">
-                      {t('update.desktop_downloaded')}
-                    </Description>
-                  </If>
+                  <Description className="text-xs">
+                    {t('update.restart_hint')}
+                  </Description>
                 </div>
               </If>
 
@@ -101,9 +81,7 @@ export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
                 isDisabled={downloading || updateInfo == null}
                 onPress={handlePrimary}
               >
-                {updateInfo?.downloaded
-                  ? t('update.open_installer')
-                  : t('update.now')}
+                {t('update.restart')}
               </Button>
             </AlertDialog.Footer>
           </AlertDialog.Dialog>

@@ -1,12 +1,11 @@
 //! GitHub Release 元数据拉取（走 HTML/atom 页面，绕开未认证 API 限流）。
 //!
-//! 不依赖 api.github.com，仅通过 `releases.atom` 与 `releases/expanded_assets/<tag>`
-//! 轻量解析最新 tag、发布时间、资产名与作者填写的 SHA-256 摘要。摘要缺失不阻断
-//! 官方直连下载，但会禁用镜像兜底（见 [`super::install`]）。
-//!
-//! 更新判定只接受**正式版**（纯数字版本，见 [`super::version::is_stable`]）：
-//! rc/beta/alpha 等 pre-release 与手动测试 release（`test-*` tag）一律跳过，
-//! 用户不会收到非正式版的更新通知；装了 rc 的用户仍会按 semver 收到之后的正式版。
+//! 当前仅 [`fetch_releases_meta`]（releases.atom 解析）被 [`super::about`] 用于
+//! 展示发布时间。整包安装器的下载链路（`LatestRelease` / `fetch_latest_release` /
+//! 资产名与 SHA-256 摘要解析等）随「应用内自动更新迁移到 tauri-plugin-updater」
+//! 而停用（原调用方 `install.rs` 已删除），保留在此供将来手动下载 / 回退使用，
+//! 故整模块允许 dead_code。
+#![allow(dead_code)]
 
 use std::time::Duration;
 

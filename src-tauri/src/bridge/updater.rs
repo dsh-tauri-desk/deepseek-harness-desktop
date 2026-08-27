@@ -1,31 +1,30 @@
-//! 桌面端应用自身的检查与更新。
+//! 桌面端应用自身的更新与关于信息。
 //!
-//! 检查桌面端是否有新版本、下载安装包（含进度事件推送）、打开已下载的安装包，
-//! 以及关于对话框信息。
+//! 应用内自动更新（检查 / 下载 / 安装 / 重启）已交由 `tauri-plugin-updater`
+//! 负责：前端通过 `@tauri-apps/plugin-updater` 的 JS API 直接调用（capabilities
+//! 已授予 `updater:default`），不再经过自定义命令。本模块只保留：
+//! - [`desktop_update_supported`]：当前安装形态是否支持应用内自动更新
+//!   （Linux 仅 AppImage 支持；deb/rpm 安装不提示、走发布页手动下载）
+//! - [`get_desktop_about`]：About 对话框信息
 
 use crate::service::update;
-use tauri::AppHandle;
 
-/// 检查桌面端自身是否有新版本（含安装包是否已下载）
+/// 当前安装形态是否支持应用内自动更新。
+///
+/// `tauri-plugin-updater` 在 Linux 上仅支持 AppImage 部署：deb/rpm 安装的应用
+/// （无 `APPIMAGE` 环境变量）即便 check 到更新，安装阶段也会因没有可替换的
+/// AppImage 而失败。这里返回 `false` 让前端跳过更新提示，引导用户从发布页
+/// 手动下载安装包。macOS / Windows 恒为 `true`。
 #[tauri::command]
-pub async fn check_desktop_update(
-    app_handle: AppHandle,
-) -> Result<Option<update::DesktopUpdateInfo>, String> {
-    update::check(&app_handle).await
-}
-
-/// 下载桌面端新版本安装包；已下载则直接返回。进度通过 `desktop-update-progress` 事件推送
-#[tauri::command]
-pub async fn download_desktop_update(
-    app_handle: AppHandle,
-) -> Result<update::DesktopUpdateInfo, String> {
-    update::download(&app_handle).await
-}
-
-/// 打开已下载的桌面端安装包（exe/msi/dmg...，交给系统默认处理器）
-#[tauri::command]
-pub async fn open_desktop_installer(app_handle: AppHandle, path: String) -> Result<(), String> {
-    update::open_installer(&app_handle, path).await
+pub fn desktop_update_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("APPIMAGE").is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 /// 关于对话框信息（版本 / 发布时间 / 版权 / 仓库）

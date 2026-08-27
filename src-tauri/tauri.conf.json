@@ -17,6 +17,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -48,5 +49,14 @@
     },
     "shortDescription": "Desktop application for DeepSeek Harness",
     "longDescription": "A native desktop application for running DeepSeek Harness (dsh) locally with one-click install and zero configuration."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "<REPLACE_WITH_EXPORTED_PUBKEY: pnpm tauri signer export-pubkey>",
+      "endpoints": [
+        "https://github.com/hairyf/deepseek-harness-desktop/releases/latest/download/latest.json",
+        "https://ghfast.top/github.com/hairyf/deepseek-harness-desktop/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

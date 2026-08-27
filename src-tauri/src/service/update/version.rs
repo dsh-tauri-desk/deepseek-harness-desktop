@@ -1,7 +1,10 @@
-//! 版本比较与当前平台安装包资产选择。
+//! 版本比较与平台安装包资产选择（保留工具）。
 //!
-//! 纯函数：不触网、不依赖运行时状态（仅 `linux_package_family` 探测包管理家族），
-//! 均为 `更新` 模块内其它部分的判定基础。
+//! [`current_version`] 仍被 [`super::about`] 使用；其余函数（semver 判定、平台
+//! 安装包资产选择等）原服务于整包安装器下载链路，随「应用内自动更新迁移到
+//! tauri-plugin-updater」而停用（原调用方 `install.rs` 已删除），保留供将来
+//! 手动下载 / 回退使用，故整模块允许 dead_code。
+#![allow(dead_code)]
 
 use semver::Version;
 

@@ -505,9 +505,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::set_language,
         crate::bridge::toggle_sidebar,
         crate::bridge::get_dsh_theme,
-        crate::bridge::check_desktop_update,
-        crate::bridge::download_desktop_update,
-        crate::bridge::open_desktop_installer,
+        crate::bridge::desktop_update_supported,
         crate::bridge::get_desktop_about,
         crate::bridge::open_external_url,
         crate::bridge::read_clipboard_image,
@@ -581,4 +579,8 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .plugin(tauri_plugin_store::Builder::new().build())
         // Clipboard plugin
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Updater plugin（应用内自动更新；签名公钥与 endpoints 见 tauri.conf.json 的 plugins.updater）
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Process plugin（更新完成后 relaunch 重启应用）
+        .plugin(tauri_plugin_process::init())
 }

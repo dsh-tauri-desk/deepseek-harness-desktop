@@ -7,13 +7,12 @@ import { DesktopUpdateDialog } from '@/components/desktop-update-dialog'
 import { store } from '@/store'
 import { toast } from '@/utils/toast'
 
-/** 桌面端自更新轮询间隔：Rust 侧不再缓存，改为低频轮询以免触发 GitHub 未认证限流（60 次/小时/IP） */
+/** 桌面端自更新轮询间隔：走 tauri-plugin-updater 拉取 GitHub Release 的 latest.json（低频轮询，避免无谓请求） */
 const POLL_INTERVAL = 10 * 60_000
 
 /**
- * 桌面端「发现新版本」提示：后台低频轮询（见 POLL_INTERVAL，Rust 侧不缓存、
- * 每次实时查询），发现新版本时在右下角弹 toast。
- * 用户关闭后记住该版本，本次会话不再弹出；新版本出现仍会再次提示。
+ * 桌面端「发现新版本」提示：后台低频轮询（见 POLL_INTERVAL），发现新版本时在
+ * 右下角弹 toast。用户关闭后记住该版本，本次会话不再弹出；新版本出现仍会再次提示。
  */
 export function DesktopUpdater() {
   const { t } = useTranslation()
@@ -32,20 +31,17 @@ export function DesktopUpdater() {
   useWatch([updateInfo, dismissedTag, downloading], () => {
     if (!updateInfo || downloading)
       return
-    // 安装包已下载（用户已发起更新）→ 不再重复弹「立即更新」toast
-    if (updateInfo.downloaded)
-      return
     // 用户已关闭过该版本提示 → 不再弹出
-    if (updateInfo.tag === dismissedTag)
+    if (updateInfo.version === dismissedTag)
       return
-    toast(t('update.available', { tag: updateInfo.tag }), {
+    toast(t('update.available', { tag: updateInfo.version }), {
       actionProps: {
         children: t('update.now'),
         onPress: () => {
           toast.clear()
-          // 打开更新对话框并开始下载，对话框内展示下载进度（下载完成自动关闭）
+          // 打开更新对话框并开始下载安装（对话框内展示进度，完成后自动重启）
           openUpdateDialog()
-          void store.desktopUpdater.downloadAndOpen()
+          void store.desktopUpdater.updateNow()
         },
         variant: 'tertiary',
       },

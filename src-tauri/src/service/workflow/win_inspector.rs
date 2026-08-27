@@ -97,7 +97,8 @@ mod imp {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("WIN_INSPECTOR_PARENT_DIR: create parent dir failed: {e}"))?;
         }
-        fs::write(path, content).map_err(|e| format!("write {} failed: {e}", path.display()))
+        fs::write(path, content)
+            .map_err(|e| format!("WIN_INSPECTOR_WRITE: write {} failed: {e}", path.display()))
     }
 
     /// 插件是否已装入 profile：读取 profile 清单的 `dependencies` 键。

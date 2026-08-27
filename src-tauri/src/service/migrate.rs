@@ -124,7 +124,12 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
     for entry in fs::read_dir(src)
         .map_err(|e| format!("MIGRATE_READ_DIR: read {} failed: {e}", src.display()))?
     {
-        let entry = entry.map_err(|e| format!("read_dir entry failed: {e}"))?;
+        let entry = entry.map_err(|e| {
+            format!(
+                "MIGRATE_READ_DIR: read entry in {} failed: {e}",
+                src.display()
+            )
+        })?;
         let name = entry.file_name();
         let src_path = entry.path();
         let dst_path = dst.join(&name);

@@ -1,0 +1,7 @@
+# Local development patch for dsh-tauri-turnrewind.
+# Add this row to a profile only after the Host MVP is reviewed.
+- insert:
+    # Experimental local activation requested by the developer.
+    # Use only with a disposable test workspace until the sandbox bridge lands.
+    - id: turnrewind
+      name: dsh-tauri-turnrewind

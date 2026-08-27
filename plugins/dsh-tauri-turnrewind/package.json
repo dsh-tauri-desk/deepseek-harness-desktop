@@ -1,0 +1,23 @@
+{
+  "name": "dsh-tauri-turnrewind",
+  "type": "module",
+  "version": "0.1.0-dev.1",
+  "description": "Local turn-aware workspace undo for DeepSeek Harness",
+  "main": "lib/index.js",
+  "files": ["README.md", "cordis.patch.yml", "lib"],
+  "dsh": {
+    "runtime": "host",
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "test": "vitest run test --testTimeout=30000"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.11"
+  }
+}

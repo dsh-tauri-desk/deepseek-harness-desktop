@@ -458,7 +458,7 @@ fn write_user_path(new_value: &str) -> Result<(), String> {
 
         if ret != 0 {
             return Err(format!(
-                "failed to write HKCU\\Environment\\Path (error {ret})"
+                "CLI_PATH_REGISTRY_WRITE: failed to write HKCU\\Environment\\Path (error {ret})"
             ));
         }
         Ok(())
@@ -662,10 +662,10 @@ fn write_rc_with_backup(rc_path: &std::path::Path, new_content: &str) -> Result<
 /// 同时被注入（`upsert_rc_block`）与移除路径使用；Windows 仅测试引用。
 #[cfg_attr(windows, allow(dead_code))]
 fn strip_rc_block(content: &str) -> String {
-    let mut lines = content.lines().peekable();
+    let lines = content.lines().peekable();
     let mut out = String::with_capacity(content.len());
     let mut skipping = false;
-    while let Some(line) = lines.next() {
+    for line in lines {
         if line.trim() == RC_MARK_START {
             skipping = true;
             continue;

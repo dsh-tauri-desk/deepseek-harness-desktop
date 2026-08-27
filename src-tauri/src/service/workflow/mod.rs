@@ -306,12 +306,12 @@ fn command_line_has_argument(cmdline: &str, argument: &str) -> bool {
         let before_is_boundary = cmdline[..start]
             .chars()
             .next_back()
-            .map_or(true, char::is_whitespace);
+            .is_none_or(char::is_whitespace);
         let end = start + matched.len();
         let after_is_boundary = cmdline[end..]
             .chars()
             .next()
-            .map_or(true, char::is_whitespace);
+            .is_none_or(char::is_whitespace);
         before_is_boundary && after_is_boundary
     })
 }
@@ -984,7 +984,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 .arg("--host")
                 .arg("127.0.0.1")
                 .arg("--port")
-                .arg(&setting.port.to_string());
+                .arg(setting.port.to_string());
             if no_open {
                 cmd.arg("--no-open");
             }
@@ -1107,6 +1107,7 @@ pub async fn install(
         .get_webview_window("main")
         .ok_or("Failed to get main window")?;
     log::debug!("Main window obtained");
+    #[allow(unused_mut)]
     let mut tasks: Vec<Box<dyn download::Installable>> = vec![
         Box::new(download::Nodejs),
         Box::new(download::Dsh),

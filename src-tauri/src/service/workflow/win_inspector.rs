@@ -94,7 +94,8 @@ mod imp {
     /// 写入一个文件及其父目录，返回错误信息。
     fn write_file(path: &Path, content: &str) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("create parent dir failed: {e}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("WIN_INSPECTOR_PARENT_DIR: create parent dir failed: {e}"))?;
         }
         fs::write(path, content).map_err(|e| format!("write {} failed: {e}", path.display()))
     }

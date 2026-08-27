@@ -180,7 +180,7 @@ fn classify_reason(text: &str) -> (String, String) {
     if let Some(entry) = extract_duplicate_loader_entry(text) {
         return ("duplicate_loader_entry".into(), entry);
     }
-    if let Some(re) = Regex::new(r#"cannot resolve profile bundle\s+["']?([^"'\n]+)["']?"#).ok() {
+    if let Ok(re) = Regex::new(r#"cannot resolve profile bundle\s+["']?([^"'\n]+)["']?"#) {
         if let Some(c) = re.captures(text) {
             return (
                 "cannot_resolve_bundle".into(),
@@ -450,7 +450,7 @@ fn resolve_recovery_plugins(
             .filter(|root| plugin_declares_loader_entry(&profile, root, entry))
             .collect();
         if owners.len() == 1 {
-            return owners.into_iter().map(|s| s.clone()).collect();
+            return owners.into_iter().cloned().collect();
         }
     }
 
@@ -461,7 +461,7 @@ fn resolve_recovery_plugins(
             .filter(|root| plugin_matches_slot(&profile, root, slot))
             .collect();
         if matched.len() == 1 {
-            return matched.into_iter().map(|s| s.clone()).collect();
+            return matched.into_iter().cloned().collect();
         }
         let providers: HashSet<String> = packages_providing_slot(&profile, slot)
             .into_iter()
@@ -472,7 +472,7 @@ fn resolve_recovery_plugins(
                 .filter(|root| plugin_references_packages(&profile, root, &providers))
                 .collect();
             if owners.len() == 1 {
-                return owners.into_iter().map(|s| s.clone()).collect();
+                return owners.into_iter().cloned().collect();
             }
         }
     }
@@ -550,7 +550,7 @@ fn remove_plugin_from_manifest(manifest: &mut serde_json::Value, id: &str) -> bo
     modified
 }
 
-/// 删除插件入口：符号链接或 junction 只删除入口本身，普通目录递归删除。
+/// 删除插件入口：链接只删除入口本身，保留真实目标并避免清理操作沿链接越过插件目录；普通目录递归删除。
 fn remove_plugin_entry(entry: &Path) -> std::io::Result<()> {
     let file_type = fs::symlink_metadata(entry)?.file_type();
     #[cfg(windows)]
@@ -613,10 +613,9 @@ fn remove_plugin_dir(profile: &Path, id: &str) {
                     .read_dir()
                     .map(|mut d| d.next().is_none())
                     .unwrap_or(false)
+                && fs_guard::ensure_within(&scope_entry, &node_modules_root).is_ok()
             {
-                if fs_guard::ensure_within(&scope_entry, &node_modules_root).is_ok() {
-                    let _ = remove_plugin_entry(&scope_entry);
-                }
+                let _ = remove_plugin_entry(&scope_entry);
             }
         }
     }

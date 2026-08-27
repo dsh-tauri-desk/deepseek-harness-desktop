@@ -104,8 +104,12 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
     merge_tree(legacy, target)?;
     // merge 也可能把 node_modules 无损搬入（目标缺失时），同样清除 pnpm 元数据
     purge_carried_pnpm_metadata(target);
-    fs::remove_dir_all(legacy)
-        .map_err(|e| format!("remove legacy {} after merge failed: {e}", legacy.display()))
+    fs::remove_dir_all(legacy).map_err(|e| {
+        format!(
+            "MIGRATE_REMOVE_LEGACY: remove legacy {} after merge failed: {e}",
+            legacy.display()
+        )
+    })
 }
 
 /// 递归把 `src` 目录树合并进 `dst`：
@@ -117,7 +121,9 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
 ///   在合并完成后统一清除其中的 pnpm 元数据（见 `purge_carried_pnpm_metadata`）。
 fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("create {} failed: {e}", dst.display()))?;
-    for entry in fs::read_dir(src).map_err(|e| format!("read {} failed: {e}", src.display()))? {
+    for entry in fs::read_dir(src)
+        .map_err(|e| format!("MIGRATE_READ_DIR: read {} failed: {e}", src.display()))?
+    {
         let entry = entry.map_err(|e| format!("read_dir entry failed: {e}"))?;
         let name = entry.file_name();
         let src_path = entry.path();
@@ -143,7 +149,7 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
         } else if !dst_path.exists() || src_newer(&src_path, &dst_path) {
             fs::copy(&src_path, &dst_path).map_err(|e| {
                 format!(
-                    "copy {} -> {} failed: {e}",
+                    "MIGRATE_COPY_FILE: copy {} -> {} failed: {e}",
                     src_path.display(),
                     dst_path.display()
                 )
@@ -245,7 +251,7 @@ fn purge_if_stale_modules_metadata(node_modules: &Path, dsh_home: &Path) {
     let stale = doc.as_mapping().is_some_and(|mapping| {
         ["virtualStoreDir", "storeDir"].iter().any(|key| {
             mapping
-                .get(&serde_yaml::Value::String((*key).into()))
+                .get(serde_yaml::Value::String((*key).into()))
                 .and_then(serde_yaml::Value::as_str)
                 .is_some_and(|value| {
                     let p = Path::new(value);
@@ -445,6 +451,19 @@ mod tests {
         assert!(err.contains("failed") || err.contains("create"));
         assert!(legacy.join("data.txt").is_file(), "source must stay intact");
         assert!(fs::read_to_string(&target).unwrap() == "i am a file");
+    }
+
+    #[test]
+    fn merge_tree_read_error_has_stable_code() {
+        let root = temp_dir("f-read-error");
+        let source = root.join("source-file");
+        let target = root.join("target");
+        fs::write(&source, "not a directory").unwrap();
+
+        let err = merge_tree(&source, &target).unwrap_err();
+
+        assert!(err.starts_with("MIGRATE_READ_DIR: "));
+        let _ = fs::remove_dir_all(root);
     }
 
     // ------------------------------------------------------------------

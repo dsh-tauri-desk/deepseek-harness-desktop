@@ -45,4 +45,12 @@
     "recommended": false,
     "defaultChecked": true
   }
+  {
+    "id": "dsh-temp-session",
+    "spec": "github:DahliaVoid/dsh-temp-session",
+    "name": "DSH Temp Session",
+    "description": "Optional workspace selection + workspace-free temporary sessions — sessions without a workspace get their own isolated temp directory, and the workspace choice can be cancelled via the × on the hero entry.",
+    "repoUrl": "https://github.com/DahliaVoid/dsh-temp-session",
+    "recommended": true
+  }
 ]

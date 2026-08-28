@@ -41,6 +41,7 @@ const SCHEMA = `
     session_id TEXT NOT NULL,
     workspace_key TEXT NOT NULL,
     target_turn_id TEXT NOT NULL,
+    turns_json TEXT NOT NULL DEFAULT '[]',
     paths_json TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -57,6 +58,12 @@ export function openLedger(rootDir) {
   // Older local prototypes may already have the table; add the new recovery column idempotently.
   try {
     db.exec('ALTER TABLE operations ADD COLUMN after_ref TEXT')
+  }
+  catch {
+    // Column already exists.
+  }
+  try {
+    db.exec('ALTER TABLE rewind_notices ADD COLUMN turns_json TEXT NOT NULL DEFAULT \'[]\'')
   }
   catch {
     // Column already exists.
@@ -85,6 +92,11 @@ export function settleTurn(db, turnId, afterRef) {
     .run(new Date().toISOString(), afterRef, turnId)
 }
 
+export function settleInterruptedTurn(db, turnId, afterRef, reason) {
+  db.prepare(`UPDATE turns SET status = 'interrupted', settled_at = ?, after_ref = ?, reversible = 1, error = ? WHERE turn_id = ?`)
+    .run(new Date().toISOString(), afterRef, reason, turnId)
+}
+
 export function settleNoopTurn(db, turnId, afterRef) {
   db.prepare(`UPDATE turns SET status = 'settled', settled_at = ?, after_ref = ?, reversible = 0, error = ? WHERE turn_id = ?`)
     .run(new Date().toISOString(), afterRef, 'no file changes', turnId)
@@ -95,6 +107,13 @@ export function failTurn(db, turnId, error) {
     .run(new Date().toISOString(), String(error), turnId)
 }
 
+export function abandonTurn(db, turnId, reason) {
+  db.prepare(`
+    UPDATE turns SET status = 'abandoned', settled_at = ?, reversible = 0, error = ?
+    WHERE turn_id = ? AND status = 'active'
+  `).run(new Date().toISOString(), reason, turnId)
+}
+
 export function getTurn(db, turnId) {
   return db.prepare('SELECT * FROM turns WHERE turn_id = ?').get(turnId)
 }
@@ -102,9 +121,18 @@ export function getTurn(db, turnId) {
 export function getLatestTurn(db, sessionId, workspaceKey) {
   return db.prepare(`
     SELECT * FROM turns
-    WHERE session_id = ? AND workspace_key = ? AND status = 'settled' AND reversible = 1
+    WHERE session_id = ? AND workspace_key = ?
+      AND reversible = 1
+      AND status IN ('settled', 'interrupted')
     ORDER BY started_at DESC LIMIT 1
   `).get(sessionId, workspaceKey)
+}
+
+export function getLatestTurnSummary(db, sessionId) {
+  return db.prepare(`
+    SELECT turn_id, workspace_key, status, reversible, settled_at
+    FROM turns WHERE session_id = ? ORDER BY started_at DESC LIMIT 1
+  `).get(sessionId)
 }
 
 export function getLatestSnapshotRef(db, workspaceKey) {
@@ -133,40 +161,46 @@ export function settleOperation(db, operationId, outcome, error) {
 
 export function queueRewindNotice(db, notice) {
   db.prepare(`
-    UPDATE rewind_notices SET status = 'superseded'
-    WHERE session_id = ? AND workspace_key = ? AND status = 'pending'
-  `).run(notice.sessionId, notice.workspaceKey)
-  db.prepare(`
-    INSERT INTO rewind_notices(notice_id, session_id, workspace_key, target_turn_id, paths_json, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?)
+    INSERT INTO rewind_notices(notice_id, session_id, workspace_key, target_turn_id, turns_json, paths_json, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
   `).run(
     notice.noticeId,
     notice.sessionId,
     notice.workspaceKey,
     notice.targetTurnId,
+    JSON.stringify([notice.targetTurnId]),
     JSON.stringify(notice.paths),
     notice.createdAt,
   )
 }
 
-export function claimRewindNotice(db, sessionId, workspaceKey) {
-  const notice = db.prepare(`
+export function claimRewindNotices(db, sessionId, workspaceKey) {
+  const notices = db.prepare(`
     SELECT * FROM rewind_notices
     WHERE session_id = ? AND workspace_key = ? AND status = 'pending'
-    ORDER BY created_at DESC LIMIT 1
-  `).get(sessionId, workspaceKey)
-  if (!notice)
-    return undefined
-  const result = db.prepare(`
+    ORDER BY created_at ASC
+  `).all(sessionId, workspaceKey)
+  if (notices.length === 0)
+    return []
+  const claimedAt = new Date().toISOString()
+  const statement = db.prepare(`
     UPDATE rewind_notices SET status = 'consumed', claimed_at = ?
     WHERE notice_id = ? AND status = 'pending'
-  `).run(new Date().toISOString(), notice.notice_id)
-  if (result.changes !== 1)
-    return undefined
-  return {
-    ...notice,
-    paths: JSON.parse(notice.paths_json),
+  `)
+  db.exec('BEGIN')
+  try {
+    for (const notice of notices) statement.run(claimedAt, notice.notice_id)
+    db.exec('COMMIT')
   }
+  catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+  return notices.map(notice => ({
+    ...notice,
+    turns: JSON.parse(notice.turns_json || '[]'),
+    paths: JSON.parse(notice.paths_json),
+  }))
 }
 
 export function completeUndoWithNotice(db, turnId, notice) {
@@ -174,17 +208,14 @@ export function completeUndoWithNotice(db, turnId, notice) {
   try {
     db.prepare(`UPDATE turns SET status = 'undone' WHERE turn_id = ?`).run(turnId)
     db.prepare(`
-      UPDATE rewind_notices SET status = 'superseded'
-      WHERE session_id = ? AND workspace_key = ? AND status = 'pending'
-    `).run(notice.sessionId, notice.workspaceKey)
-    db.prepare(`
-      INSERT INTO rewind_notices(notice_id, session_id, workspace_key, target_turn_id, paths_json, status, created_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', ?)
+      INSERT INTO rewind_notices(notice_id, session_id, workspace_key, target_turn_id, turns_json, paths_json, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
     `).run(
       notice.noticeId,
       notice.sessionId,
       notice.workspaceKey,
       notice.targetTurnId,
+      JSON.stringify([notice.targetTurnId]),
       JSON.stringify(notice.paths),
       notice.createdAt,
     )

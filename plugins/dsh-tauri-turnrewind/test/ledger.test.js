@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { it } from 'vitest'
-import { claimRewindNotice, completeUndoWithNotice, getLatestSnapshotRef, getLatestTurn, getTurn, insertTurn, openLedger, queueRewindNotice, settleNoopTurn, settleTurn } from '../lib/core/ledger.js'
+import { claimRewindNotices, completeUndoWithNotice, getLatestSnapshotRef, getLatestTurn, getTurn, insertTurn, openLedger, queueRewindNotice, settleInterruptedTurn, settleNoopTurn, settleTurn } from '../lib/core/ledger.js'
 
 it('persists turn lifecycle and resumes from the latest durable snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'turnrewind-ledger-test-'))
@@ -58,9 +58,10 @@ it('marks undo and queues its one-time notice atomically', async () => {
       createdAt: '2026-01-01T00:01:00.000Z',
     })
     assert.equal(getTurn(db, 'session:undo').status, 'undone')
-    const notice = claimRewindNotice(db, 'session', 'workspace')
-    assert.equal(notice.notice_id, 'notice-undo')
-    assert.deepEqual(notice.paths, ['src/reverted.ts'])
+    const notices = claimRewindNotices(db, 'session', 'workspace')
+    assert.equal(notices.length, 1)
+    assert.equal(notices[0].notice_id, 'notice-undo')
+    assert.deepEqual(notices[0].paths, ['src/reverted.ts'])
   }
   finally {
     db.close()
@@ -68,7 +69,7 @@ it('marks undo and queues its one-time notice atomically', async () => {
   }
 })
 
-it('delivers only the latest pending rewind notice once', async () => {
+it('merges multiple pending rewind notices and delivers them once', async () => {
   const root = await mkdtemp(join(tmpdir(), 'turnrewind-notice-test-'))
   const db = openLedger(root)
   try {
@@ -88,10 +89,126 @@ it('delivers only the latest pending rewind notice once', async () => {
       paths: ['src/new.ts'],
       createdAt: '2026-01-01T00:01:00.000Z',
     })
-    const notice = claimRewindNotice(db, 'session', 'workspace')
-    assert.equal(notice.notice_id, 'notice-two')
-    assert.deepEqual(notice.paths, ['src/new.ts'])
-    assert.equal(claimRewindNotice(db, 'session', 'workspace'), undefined)
+    const notices = claimRewindNotices(db, 'session', 'workspace')
+    assert.equal(notices.length, 2)
+    assert.deepEqual(notices.map(notice => notice.notice_id), ['notice-one', 'notice-two'])
+    assert.deepEqual(notices.map(notice => notice.turns), [['session:1'], ['session:2']])
+    assert.deepEqual(notices.map(notice => notice.paths), [['src/old.ts'], ['src/new.ts']])
+    assert.deepEqual(claimRewindNotices(db, 'session', 'workspace'), [])
+  }
+  finally {
+    db.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('merges a C-B-A undo sequence into one complete notice', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'turnrewind-cba-test-'))
+  const db = openLedger(root)
+  try {
+    for (const [turnId, time] of [
+      ['session:A', '2026-01-01T00:00:00.000Z'],
+      ['session:B', '2026-01-01T00:01:00.000Z'],
+      ['session:C', '2026-01-01T00:02:00.000Z'],
+    ]) {
+      insertTurn(db, {
+        turnId,
+        sessionId: 'session',
+        workspaceKey: 'workspace',
+        startedAt: time,
+        beforeRef: `${turnId}-before`,
+      })
+      settleTurn(db, turnId, `${turnId}-after`)
+    }
+    for (const [turnId, path, time] of [
+      ['session:C', 'c.ts', '2026-01-01T00:03:00.000Z'],
+      ['session:B', 'b.ts', '2026-01-01T00:04:00.000Z'],
+      ['session:A', 'a.ts', '2026-01-01T00:05:00.000Z'],
+    ]) {
+      completeUndoWithNotice(db, turnId, {
+        noticeId: `notice-${turnId}`,
+        sessionId: 'session',
+        workspaceKey: 'workspace',
+        targetTurnId: turnId,
+        paths: [path],
+        createdAt: time,
+      })
+    }
+    const notices = claimRewindNotices(db, 'session', 'workspace')
+    assert.deepEqual(notices.map(notice => notice.turns), [['session:C'], ['session:B'], ['session:A']])
+    assert.deepEqual(notices.map(notice => notice.paths), [['c.ts'], ['b.ts'], ['a.ts']])
+    assert.deepEqual(claimRewindNotices(db, 'session', 'workspace'), [])
+  }
+  finally {
+    db.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('keeps an interrupted turn reversible when it captured file changes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'turnrewind-interrupt-test-'))
+  const db = openLedger(root)
+  try {
+    insertTurn(db, {
+      turnId: 'session:settled',
+      sessionId: 'session',
+      workspaceKey: 'workspace',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      beforeRef: 'refs/turnrewind/settled-before',
+    })
+    settleTurn(db, 'session:settled', 'refs/turnrewind/settled-after')
+    insertTurn(db, {
+      turnId: 'session:interrupted',
+      sessionId: 'session',
+      workspaceKey: 'workspace',
+      startedAt: '2026-01-01T00:01:00.000Z',
+      beforeRef: 'refs/turnrewind/interrupted-before',
+    })
+    settleInterruptedTurn(
+      db,
+      'session:interrupted',
+      'refs/turnrewind/interrupted-after',
+      'agent became idle after interruption',
+    )
+    assert.equal(getTurn(db, 'session:interrupted').status, 'interrupted')
+    assert.equal(getTurn(db, 'session:interrupted').reversible, 1)
+    assert.equal(getLatestTurn(db, 'session', 'workspace').turn_id, 'session:interrupted')
+  }
+  finally {
+    db.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('selects an interrupted turn after a later turn is undone', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'turnrewind-sequence-test-'))
+  const db = openLedger(root)
+  try {
+    insertTurn(db, {
+      turnId: 'session:interrupted',
+      sessionId: 'session',
+      workspaceKey: 'workspace',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      beforeRef: 'refs/turnrewind/interrupted-before',
+    })
+    settleInterruptedTurn(db, 'session:interrupted', 'refs/turnrewind/interrupted-after', 'interrupted')
+    insertTurn(db, {
+      turnId: 'session:later',
+      sessionId: 'session',
+      workspaceKey: 'workspace',
+      startedAt: '2026-01-01T00:01:00.000Z',
+      beforeRef: 'refs/turnrewind/later-before',
+    })
+    settleTurn(db, 'session:later', 'refs/turnrewind/later-after')
+    completeUndoWithNotice(db, 'session:later', {
+      noticeId: 'notice-later',
+      sessionId: 'session',
+      workspaceKey: 'workspace',
+      targetTurnId: 'session:later',
+      paths: ['later.txt'],
+      createdAt: '2026-01-01T00:02:00.000Z',
+    })
+    assert.equal(getLatestTurn(db, 'session', 'workspace').turn_id, 'session:interrupted')
   }
   finally {
     db.close()

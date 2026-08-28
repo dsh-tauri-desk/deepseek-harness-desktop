@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import process from 'node:process'
+import { TextDecoder, TextEncoder } from 'node:util'
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024
 const EXCLUDE_PATHS = [
@@ -159,7 +160,15 @@ function commitBytes(store, commit, path) {
 }
 
 function digest(bytes) {
-  return createHash('sha256').update(bytes).digest('hex')
+  let comparable = bytes
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    comparable = new TextEncoder().encode(text.replaceAll('\r\n', '\n'))
+  }
+  catch {
+    // Binary data has no newline normalization; compare its exact bytes.
+  }
+  return createHash('sha256').update(comparable).digest('hex')
 }
 
 export function stateAt(store, commit, path) {

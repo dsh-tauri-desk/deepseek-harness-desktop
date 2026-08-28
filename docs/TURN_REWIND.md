@@ -783,7 +783,7 @@ changes still exist; re-read the files before making further edits.
 
 当前 DSH 的 agent loop 会把 `agent/pre-step` 接受后的 messages 作为 `user/message` 追加到 append-only session log。因此本插件的第一版采用**插件来源的用户角色 notice**：它不伪装为人类输入，带 `source.kind: 'plugin'`、插件名和 `form: 'rewind-notice'`，但会在下一次 step 的历史中留下一个可审计的显式记录。这样模型能收到它，用户也能看见发生了什么，而原有用户消息和 LLM 回复不会被删除或重写。
 
-notice 只在下一次成功进入的 step 消费一次；如果该 step 被拒绝或取消，notice 保持 pending。连续 Undo 会将同一 session/workspace 旧的 pending notice 标记为 `superseded`，只让模型看到最新回退状态。
+notice 只在下一次成功进入的 step 消费一次；如果该 step 被拒绝或取消，全部 notice 保持 pending。连续 Undo 为每次操作保留独立 notice；下一次 step 会按 Undo 顺序把所有 pending notice 一次性注入，形成一批连续的回退说明，不覆盖也不合并单次 Undo 的记录。
 
 **主要风险：**原会话历史仍然包含“修改已经存在”的旧 LLM 回复，所以 notice 必须明确要求“以当前磁盘文件为准并重新读取”。
 

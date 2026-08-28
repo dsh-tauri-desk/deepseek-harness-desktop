@@ -723,8 +723,12 @@ pub fn quarantine_corrupt_sessions<R: tauri::Runtime>(app_handle: &AppHandle<R>)
                 log::warn!("quarantine create trash ws failed {}: {e}", trash_ws.display());
                 continue;
             }
-            let dest = trash_ws.join(format!("{id}__{ts}"));
-            // ensure_within 校验源仍在 root 内
+            let mut dest = trash_ws.join(format!("{id}__{ts}"));
+            let mut counter = 0;
+            while dest.exists() {
+                counter += 1;
+                dest = trash_ws.join(format!("{id}__{ts}_{counter}"));
+            }
             let canonical_src = match crate::service::fs_guard::ensure_within(&sess_path, &root) {
                 Ok(p) => p,
                 Err(e) => {
@@ -778,8 +782,11 @@ pub fn quarantine_corrupt_sessions<R: tauri::Runtime>(app_handle: &AppHandle<R>)
                         }
                     }
                     if dirty {
-                        let _ = atomic_write_json(&workspace_path, &value);
-                        log::warn!("quarantine cleaned {} ids from workspace.json", quarantined.len());
+                        if let Err(e) = atomic_write_json(&workspace_path, &value) {
+                            log::error!("quarantine write workspace.json failed: {e}");
+                        } else {
+                            log::warn!("quarantine cleaned {} ids from workspace.json", quarantined.len());
+                        }
                     }
                 }
             }
@@ -798,8 +805,11 @@ pub fn quarantine_corrupt_sessions<R: tauri::Runtime>(app_handle: &AppHandle<R>)
                                 } else if sessions.remove(&format!("session-{}", id)).is_some() { removed += 1; }
                             }
                             if removed > 0 {
-                                let _ = atomic_write_json(&projcache_path, &value);
-                                log::warn!("quarantine cleaned {} entries from projcache", removed);
+                                if let Err(e) = atomic_write_json(&projcache_path, &value) {
+                                    log::error!("quarantine write projcache failed: {e}");
+                                } else {
+                                    log::warn!("quarantine cleaned {} entries from projcache", removed);
+                                }
                             }
                         }
                     }

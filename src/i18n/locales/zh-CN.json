@@ -241,5 +241,7 @@
   "recovery.reason.unknown.detail": "Harness 在加载插件时发生错误，但暂时无法自动判断更具体的原因。",
   "sessions.loaded_all": "已加载全部 {{count}} 条",
   "sessions.loaded_count": "已加载 {{loaded}} / {{total}} 条",
-  "sessions.load_more": "加载更多"
+  "sessions.load_more": "加载更多",
+  "sessions.restore.corrupt_error": "无法恢复损坏的副本会话，请直接删除",
+  "sessions.quarantine.notice": "已隔离 {{count}} 个损坏的副本会话以防启动崩溃"
 }

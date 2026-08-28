@@ -241,5 +241,7 @@
   "recovery.reason.unknown.detail": "Harness reported an error while loading a plugin, but the exact cause could not be determined automatically.",
   "sessions.loaded_all": "All {{count}} loaded",
   "sessions.loaded_count": "{{loaded}} / {{total}} loaded",
-  "sessions.load_more": "Load more"
+  "sessions.load_more": "Load more",
+  "sessions.restore.corrupt_error": "Cannot restore corrupted copy sessions. Please delete them instead.",
+  "sessions.quarantine.notice": "Quarantined {{count}} corrupted copy sessions to prevent startup crash"
 }

@@ -171,7 +171,12 @@ export function ConfigSessions() {
       setSelected(new Set())
       toast(t('sessions.restore.success', { count: ids.length }))
     } catch (e) {
-      toast(String(e), { timeout: 3000 })
+      const msg = String(e)
+      if (msg.includes('corrupt copy') || msg.includes('副本')) {
+        toast(t('sessions.restore.corrupt_error'), { timeout: 4000 })
+      } else {
+        toast(msg, { timeout: 3000 })
+      }
     }
   }
   async function handleOpenDir(id: string) {

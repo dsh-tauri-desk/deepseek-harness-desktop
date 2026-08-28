@@ -11,6 +11,7 @@ import { ConfigCore } from './config-core'
 import { ConfigDebug } from './config-debug'
 import { ConfigPlugin } from './config-plugin'
 import { ConfigProfile } from './config-profile'
+import { ConfigTrustMode } from './config-trust-mode'
 
 export interface ConfigDialogProps extends PropsWithOverlays {}
 
@@ -81,7 +82,10 @@ export function ConfigDialog(props: ConfigDialogProps) {
                     <ConfigPlugin />
                   </Case>
                   <Case cond="harness">
-                    <ConfigCore />
+                    <div className="flex flex-col gap-5">
+                      <ConfigCore />
+                      <ConfigTrustMode />
+                    </div>
                   </Case>
                 </Switch>
               </div>

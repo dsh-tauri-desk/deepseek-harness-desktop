@@ -12,6 +12,7 @@ pub mod lifecycle;
 pub mod plugin;
 pub mod profile;
 pub mod system_os;
+pub mod trust_mode;
 pub mod updater;
 
 pub use clipboard::*;
@@ -21,4 +22,5 @@ pub use lifecycle::*;
 pub use plugin::*;
 pub use profile::*;
 pub use system_os::*;
+pub use trust_mode::*;
 pub use updater::*;

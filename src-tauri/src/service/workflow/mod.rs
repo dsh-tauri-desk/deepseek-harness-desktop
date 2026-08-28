@@ -1,6 +1,7 @@
 pub(crate) mod client_hmr_patch;
 pub(crate) mod renderer_patch;
 pub mod status;
+pub(crate) mod trust_mode;
 pub mod utils;
 pub(crate) mod win_inspector;
 #[cfg(windows)]

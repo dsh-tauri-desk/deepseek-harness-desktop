@@ -549,6 +549,8 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::read_clipboard_image,
         crate::desktop::notification::show_native_notification,
         crate::bridge::log_frontend,
+        crate::bridge::get_trust_mode,
+        crate::bridge::set_trust_mode,
     ]
 }
 

@@ -1,5 +1,5 @@
 import type { PropsWithOverlays } from '@overlastic/react'
-import { Cpu, PersonPencil, Puzzle, Wrench } from '@gravity-ui/icons'
+import { Cpu, FolderOpen, PersonPencil, Puzzle, Wrench } from '@gravity-ui/icons'
 import { useEventBus } from '@hairy/react-lib'
 import { cn, Modal } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
@@ -11,6 +11,7 @@ import { ConfigCore } from './config-core'
 import { ConfigDebug } from './config-debug'
 import { ConfigPlugin } from './config-plugin'
 import { ConfigProfile } from './config-profile'
+import { ConfigSessions } from './config-sessions'
 
 export interface ConfigDialogProps extends PropsWithOverlays {}
 
@@ -26,6 +27,7 @@ export function ConfigDialog(props: ConfigDialogProps) {
     { label: t('config.profiles'), value: 'profiles', icon: PersonPencil },
     { label: t('config.plugins'), value: 'plugins', icon: Puzzle },
     { label: t('config.harness'), value: 'harness', icon: Cpu },
+    { label: t('config.sessions'), value: 'sessions', icon: FolderOpen },
   ]
 
   const [activeTab, setActiveTab] = useState('debug')
@@ -82,6 +84,9 @@ export function ConfigDialog(props: ConfigDialogProps) {
                   </Case>
                   <Case cond="harness">
                     <ConfigCore />
+                  </Case>
+                  <Case cond="sessions">
+                    <ConfigSessions />
                   </Case>
                 </Switch>
               </div>

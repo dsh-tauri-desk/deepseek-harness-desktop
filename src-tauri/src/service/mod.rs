@@ -8,3 +8,4 @@ pub mod profile;
 pub mod scheduler;
 pub mod update;
 pub mod workflow;
+pub mod session;

@@ -11,6 +11,7 @@ pub mod guard;
 pub mod lifecycle;
 pub mod plugin;
 pub mod profile;
+pub mod session;
 pub mod system_os;
 pub mod updater;
 
@@ -20,5 +21,6 @@ pub use core::*;
 pub use lifecycle::*;
 pub use plugin::*;
 pub use profile::*;
+pub use session::*;
 pub use system_os::*;
 pub use updater::*;

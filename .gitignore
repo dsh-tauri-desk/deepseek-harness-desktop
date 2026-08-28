@@ -15,5 +15,7 @@ src-tauri/resources/internal-plugins/
 release-msi-version.tmp.json
 skills
 .serena
+.omc
+.omx
 source/
 .gitmodules

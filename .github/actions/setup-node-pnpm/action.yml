@@ -1,0 +1,26 @@
+name: Setup Node.js and pnpm
+description: Install the repository pnpm version and configure Node.js caching
+
+inputs:
+  node-version:
+    description: Node.js version passed to actions/setup-node
+    required: false
+    default: '22'
+  cache-dependency-path:
+    description: Dependency lockfile used for the pnpm cache key
+    required: false
+    default: pnpm-lock.yaml
+
+runs:
+  using: composite
+  steps:
+    # package.json 的 packageManager 字段提供精确 pnpm 版本。
+    - name: Install pnpm
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}

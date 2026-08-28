@@ -202,8 +202,13 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
                 "PREINSTALL_FAILED: dsh plugin exited with code {exit_code} ({hint})"
             ));
         }
+        let detail = pick_error_message(&last_output, None);
+        if !detail.is_empty() {
+            log::error!("dsh plugin install diagnostic: {detail}");
+        }
         return Err(format!(
-            "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}"
+            "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}{}",
+            diagnostic_suffix(&detail)
         ));
     }
 
@@ -625,6 +630,14 @@ async fn run_single_plugin_command(
 /// 从 dsh/pnpm 失败输出中提取可展示的错误消息：优先 git 传输层提示；
 /// 否则挑出命中错误标记的行（最多 8 行），没有则取输出尾部，ANSI 清洗后
 /// 截断到 2000 字符。
+fn diagnostic_suffix(detail: &str) -> String {
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    }
+}
+
 fn pick_error_message(output: &str, hint: Option<&str>) -> String {
     if let Some(hint) = hint {
         return hint.to_string();
@@ -774,28 +787,69 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 /// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
 pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
-    pnpm_major_version_at(&pnpm)
+    let node = config::get_node_binary_path(app_handle);
+    pnpm_major_version_at_with_node(&pnpm, Some(&node))
 }
 
 /// 探测精确 pnpm 可执行路径的主版本，供直接执行路径校验实际将运行的文件。
 pub(crate) fn pnpm_major_version_at(pnpm: &Path) -> Option<u32> {
-    // 打包版是 GUI 进程（无控制台）：直接运行 pnpm（控制台子系统）会新建一个
-    // 可见的黑色 cmd 窗口。`harness_prefer_bundled_pnpm` 在每次服务启动都会调本
-    // 函数探测用户 pnpm，若不隐藏窗口则每次打开应用都会闪一个黑窗。此处与
-    // `config::runtime::node_version_output` 的 CREATE_NO_WINDOW 处理保持一致。
+    pnpm_major_version_at_with_node(pnpm, None)
+}
+
+/// 在受控 Node 环境中探测 pnpm 主版本。Windows GUI 进程继承的 PATH 可能早于
+/// Node/pnpm 安装，而 corepack 的 `pnpm.cmd` 需要通过 PATH 调用 `node`；探测时
+/// 必须注入桌面端已经选定的 Node 目录，否则会把健康 pnpm 误判为不可用（issue #182）。
+fn pnpm_major_version_at_with_node(pnpm: &Path, node: Option<&Path>) -> Option<u32> {
     let mut cmd = std::process::Command::new(pnpm);
     cmd.arg("--version");
+    if let Some(path) = pnpm_probe_path(pnpm, node) {
+        cmd.env("PATH", path);
+    }
+    // 打包版是 GUI 进程（无控制台）：版本探测不能弹出可见黑窗。
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(error) => {
+            log::warn!(
+                "pnpm version probe failed to spawn {}: {error}",
+                pnpm.display()
+            );
+            return None;
+        }
+    };
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!(
+            "pnpm version probe failed for {} with status {}: {}",
+            pnpm.display(),
+            output.status,
+            stderr.trim()
+        );
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.split('.').next()?.trim().parse::<u32>().ok()
+}
+
+/// 构建 pnpm 探测专用 PATH：用户 pnpm 所在目录和选定 Node 目录前置，其余环境保留。
+fn pnpm_probe_path(pnpm: &Path, node: Option<&Path>) -> Option<OsString> {
+    let mut paths = Vec::new();
+    // 选定 Node 必须位于 pnpm shim 目录之前：corepack 目录可能残留另一份 node，
+    // bare `node` 应与桌面端预检和后续插件命令使用同一运行时。
+    if let Some(parent) = node.and_then(Path::parent) {
+        paths.push(parent.to_path_buf());
+    }
+    if let Some(parent) = pnpm.parent() {
+        paths.push(parent.to_path_buf());
+    }
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).ok()
 }
 
 /// 档案 `node_modules` 使用的 pnpm store 主版本（`<profile>/node_modules/.modules.yaml`
@@ -1340,12 +1394,14 @@ pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
 mod tests {
     #[cfg(unix)]
     use super::pnpm_major_version_at;
+    #[cfg(windows)]
+    use super::pnpm_major_version_at_with_node;
     use super::{
         append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates,
-        dep_path_to_name, extract_allow_line_key, extract_only_builds_git_name, git_transport_hint,
-        normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml,
-        preset_spec_for_install, shell_quote_spec, silent_install_failure_detail,
-        PreinstallPluginInfo,
+        dep_path_to_name, diagnostic_suffix, extract_allow_line_key, extract_only_builds_git_name,
+        git_transport_hint, normalize_git_spec, parse_allowlist_keys,
+        parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec,
+        silent_install_failure_detail, PreinstallPluginInfo,
     };
     use std::path::PathBuf;
 
@@ -1377,6 +1433,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// 回归 Windows GUI 的陈旧 PATH：pnpm shim 必须解析到桌面端选定的 Node，
+    /// 即使 shim 同目录存在冲突的 node，且路径包含空格和 shell 元字符。
+    #[cfg(windows)]
+    #[test]
+    fn pnpm_major_version_probe_injects_selected_node_for_cmd_shim() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("dsh pnpm cmd major {} {nonce}", std::process::id()));
+        let pnpm_dir = root.join("pnpm & corepack");
+        let node_dir = root.join("selected node");
+        std::fs::create_dir_all(&pnpm_dir).unwrap();
+        std::fs::create_dir_all(&node_dir).unwrap();
+        let selected = pnpm_dir.join("pnpm.cmd");
+        let node = node_dir.join("node.cmd");
+        std::fs::write(&selected, "@echo off\r\nnode --version\r\n").unwrap();
+        // shim 目录里的冲突运行时若优先会输出 9；选定 Node 必须抢在它前面。
+        std::fs::write(pnpm_dir.join("node.cmd"), "@echo off\r\necho 9.0.0\r\n").unwrap();
+        std::fs::write(&node, "@echo off\r\necho 11.24.0\r\n").unwrap();
+
+        assert_eq!(
+            pnpm_major_version_at_with_node(&selected, Some(&node)),
+            Some(11)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// 构造预设条目的测试助手（internal 由各用例显式指定）
     fn preset(id: &str, spec: &str, internal: bool) -> PreinstallPluginInfo {
         PreinstallPluginInfo {
@@ -1392,6 +1479,15 @@ mod tests {
             win_only: false,
             internal,
         }
+    }
+
+    #[test]
+    fn diagnostic_suffix_preserves_non_allowbuilds_failure() {
+        assert_eq!(diagnostic_suffix(""), "");
+        assert_eq!(
+            diagnostic_suffix("ERR_PNPM_LINKING_FAILED: stale symlink"),
+            ": ERR_PNPM_LINKING_FAILED: stale symlink"
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@
 //! 为什么放在启动而非安装流程：安装是用户主动行为，内置插件是应用自身的完整性
 //! 要求——用户怎么卸载、何时卸载都不影响下次启动自动恢复，无需任何用户操作。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+#[cfg(windows)]
+use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
@@ -69,19 +71,28 @@ async fn ensure_inner(
         internal.len()
     );
 
-    // 一次读取当前档案的依赖声明；档案未初始化（package.json 缺失/损坏）时按
-    // 「全部缺失」处理，由安装流程自行初始化。
-    let manifest_path = profile_dir(app_handle).join("package.json");
-    let dependencies: HashMap<String, String> = match std::fs::read_to_string(&manifest_path) {
-        Ok(raw) => serde_json::from_str::<ProfilePackageJson>(&raw)
-            .map(|m| m.dependencies)
-            .unwrap_or_default(),
-        // 档案尚未初始化
-        Err(_) => HashMap::new(),
+    // 一次读取当前档案；缺失时按「全部未安装」处理，由安装流程自行初始化。已有但
+    // 损坏的清单不能静默覆盖，否则可能丢失用户其它插件，故直接给出可诊断错误。
+    let profile = profile_dir(app_handle);
+    let manifest_path = profile.join("package.json");
+    let mut manifest = match std::fs::read_to_string(&manifest_path) {
+        Ok(raw) => Some(
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|e| format!("INTERNAL_PLUGIN_MANIFEST_PARSE_FAILED: {e}"))?,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("INTERNAL_PLUGIN_MANIFEST_READ_FAILED: {e}")),
+    };
+    let dependencies: HashMap<String, String> = match manifest.as_ref() {
+        Some(value) => {
+            serde_json::from_value::<ProfilePackageJson>(value.clone())
+                .map_err(|e| format!("INTERNAL_PLUGIN_MANIFEST_SCHEMA_FAILED: {e}"))?
+                .dependencies
+        }
+        None => HashMap::new(),
     };
 
-    let profile = profile_dir(app_handle);
-    let mut need: Vec<String> = Vec::new();
+    let mut need: Vec<(String, String, std::path::PathBuf)> = Vec::new();
     for preset in internal {
         let Some(bundled) = bundled_plugin_dir(app_handle, &preset.id) else {
             // 未找到内置插件目录：release 说明构建期 prebuild 未拉取（发布缺陷，
@@ -101,25 +112,159 @@ async fn ensure_inner(
         let dep_ok = dependencies
             .get(&name)
             .is_some_and(|actual| dep_matches_spec(actual, &expected));
-        let link_ok = profile.join("node_modules").join(&name).exists();
+        let entry = profile.join("node_modules").join(&name);
+        let link_ok = entry.join("package.json").is_file();
         if !dep_ok || !link_ok {
             log::info!(
                 "INTERNAL_PLUGIN_NEEDS_REINSTALL: {name}（dep_ok={dep_ok}, link_ok={link_ok}, expected={expected}）"
             );
-            need.push(preset.id.clone());
+            // 应用升级会移动 `.app` 内的捆绑目录，旧 profile 可能留下指向上个
+            // 版本资源的悬空链接。pnpm 在处理这些入口时会在真正改写依赖前以
+            // 254 退出；先只清理 node_modules 入口（绝不跟随链接删除目标），再
+            // 走常规 add，令 pnpm 从当前捆绑目录重建链接。
+            need.push((preset.id.clone(), name, entry));
         }
     }
     if need.is_empty() {
         return Ok(());
     }
 
-    log::info!("Reinstalling internal preset plugins: {need:?}");
+    let ids: Vec<String> = need.iter().map(|(id, _, _)| id.clone()).collect();
+    log::info!("Reinstalling internal preset plugins: {ids:?}");
+
+    // pnpm add 会先解析清单里的所有既有依赖。0.9.0 将随包目录从
+    // `preset-plugins` 迁至 `internal-plugins` 后，旧 file:/link: 路径已不存在，pnpm
+    // 会在真正改写依赖前以 ENOENT/254 退出。仅移除本轮即将重装的 internal 包声明
+    // 与 bundle 引用，保留所有其它插件；add 成功后 dsh 会把它们按当前路径写回。
+    if let Some(value) = manifest.as_mut() {
+        let names: HashSet<&str> = need.iter().map(|(_, name, _)| name.as_str()).collect();
+        if remove_internal_plugins_from_manifest(value, &names) {
+            write_profile_manifest(&manifest_path, value)?;
+        }
+    }
+
+    // 必须等全部检查完成后再删除旧入口：多个 internal id 可能映射到同一 npm 包，
+    // 边遍历边删除会让后续原本健康的别名被误判缺失。统一去重后只删一次。
+    let mut entries = HashSet::new();
+    for (_, _, entry) in &need {
+        if entries.insert(entry.clone()) {
+            remove_stale_plugin_entry(entry).map_err(|e| {
+                format!(
+                    "INTERNAL_PLUGIN_STALE_ENTRY_REMOVE_FAILED: {}: {e}",
+                    entry.display()
+                )
+            })?;
+        }
+    }
     // 复用常规安装编排（环境准备/补齐 pnpm/`dsh plugin add file:<dir>`）；
     // 启动阶段无持有进程，install 内部不会停服务。失败同样交给调用方告警。
-    if let Err(e) = super::install::install(app_handle, &need).await {
+    if let Err(e) = super::install::install(app_handle, &ids).await {
         return Err(format!("INTERNAL_PLUGIN_INSTALL_FAILED: {e}"));
     }
     Ok(())
+}
+
+/// 从 profile 清单精准移除待重装 internal 包的依赖与 bundle 引用。
+fn remove_internal_plugins_from_manifest(
+    manifest: &mut serde_json::Value,
+    names: &HashSet<&str>,
+) -> bool {
+    let mut modified = false;
+    if let Some(dependencies) = manifest
+        .get_mut("dependencies")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for name in names {
+            modified |= dependencies.remove(*name).is_some();
+        }
+    }
+    if let Some(bundles) = manifest
+        .get_mut("dsh")
+        .and_then(|dsh| dsh.get_mut("profile"))
+        .and_then(|profile| profile.get_mut("bundles"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let before = bundles.len();
+        bundles.retain(|bundle| bundle.as_str().is_none_or(|name| !names.contains(name)));
+        modified |= bundles.len() != before;
+    }
+    modified
+}
+
+/// 经同目录临时文件原子替换 profile 清单，失败时保留原文件。
+fn write_profile_manifest(path: &Path, manifest: &serde_json::Value) -> Result<(), String> {
+    use std::io::Write;
+
+    let rendered = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("INTERNAL_PLUGIN_MANIFEST_RENDER_FAILED: {e}"))?;
+    let temp = path.with_extension(format!("json.internal.{}.tmp", std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(format!("{rendered}\n").as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        replace_manifest_file(&temp, path)
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("INTERNAL_PLUGIN_MANIFEST_WRITE_FAILED: {e}"));
+    }
+    log::info!(
+        "Removed stale internal plugin declarations from profile manifest: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_manifest_file(temp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp, path)
+}
+
+#[cfg(windows)]
+fn replace_manifest_file(temp: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let temp_wide: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let moved = unsafe {
+        MoveFileExW(
+            temp_wide.as_ptr(),
+            path_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// 删除失效的插件入口，但绝不跟随符号链接 / junction 删除捆绑资源。
+///
+/// 正常目录只可能是 pnpm 留下的损坏产物，可以递归清理；Unix 符号链接与 Windows
+/// junction 则只删除入口本身。入口不存在（包括已被并发清掉）视为幂等成功。
+fn remove_stale_plugin_entry(entry: &Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(entry) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let file_type = metadata.file_type();
+    #[cfg(windows)]
+    if file_type.is_symlink_dir() {
+        return std::fs::remove_dir(entry);
+    }
+    if file_type.is_symlink() {
+        return std::fs::remove_file(entry);
+    }
+    if file_type.is_dir() {
+        return std::fs::remove_dir_all(entry);
+    }
+    std::fs::remove_file(entry)
 }
 
 /// 判断 pnpm 写入 profile 的依赖值与期望的 `link:` 捆绑路径是否一致。
@@ -157,6 +302,115 @@ fn dep_matches_spec(actual: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_internal_manifest_entries_are_removed_without_touching_other_plugins() {
+        let mut manifest = serde_json::json!({
+            "private": true,
+            "dependencies": {
+                "dsh-tauri": "file:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/preset-plugins/dsh-tauri",
+                "dsh-tauri-ui": "link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/preset-plugins/dsh-tauri-ui",
+                "dshmarket": "github:dsh-market/dshmarket"
+            },
+            "dsh": {
+                "profile": {
+                    "bundles": ["dsh-tauri", "dsh-tauri-ui", "dshmarket"]
+                }
+            }
+        });
+        let names = HashSet::from(["dsh-tauri", "dsh-tauri-ui"]);
+
+        assert!(remove_internal_plugins_from_manifest(&mut manifest, &names));
+        assert_eq!(
+            manifest["dependencies"],
+            serde_json::json!({ "dshmarket": "github:dsh-market/dshmarket" })
+        );
+        assert_eq!(
+            manifest["dsh"]["profile"]["bundles"],
+            serde_json::json!(["dshmarket"])
+        );
+        assert!(!remove_internal_plugins_from_manifest(
+            &mut manifest,
+            &names
+        ));
+    }
+
+    #[test]
+    fn manifest_replacement_preserves_original_when_temp_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-internal-manifest-write-failure-{}",
+            std::process::id()
+        ));
+        let path = root.join("package.json");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("sentinel"), "original").unwrap();
+
+        let error = write_profile_manifest(&path, &serde_json::json!({ "private": true }))
+            .expect_err("directory destination must reject replacement");
+
+        assert!(error.starts_with("INTERNAL_PLUGIN_MANIFEST_WRITE_FAILED:"));
+        assert_eq!(
+            std::fs::read_to_string(path.join("sentinel")).unwrap(),
+            "original"
+        );
+        assert!(!root
+            .join(format!("package.json.internal.{}.tmp", std::process::id()))
+            .exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_plain_directory_is_removed() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-internal-stale-directory-{}",
+            std::process::id()
+        ));
+        let entry = root.join("node_modules/dsh-tauri-ui");
+        std::fs::create_dir_all(&entry).unwrap();
+        std::fs::write(entry.join("partial"), "broken").unwrap();
+
+        remove_stale_plugin_entry(&entry).unwrap();
+
+        assert!(!entry.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_symlink_is_removed_without_touching_target() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-internal-stale-symlink-{}", std::process::id()));
+        let target = root.join("old-app/dsh-tauri-ui");
+        let entry = root.join("profile/node_modules/dsh-tauri-ui");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("package.json"), "{}").unwrap();
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &entry).unwrap();
+
+        remove_stale_plugin_entry(&entry).unwrap();
+
+        assert!(target.join("package.json").is_file());
+        assert!(std::fs::symlink_metadata(&entry).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_is_removed_idempotently() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-internal-dangling-symlink-{}",
+            std::process::id()
+        ));
+        let entry = root.join("profile/node_modules/dsh-tauri-ui");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(root.join("missing-app/dsh-tauri-ui"), &entry).unwrap();
+
+        remove_stale_plugin_entry(&entry).unwrap();
+        remove_stale_plugin_entry(&entry).unwrap();
+
+        assert!(std::fs::symlink_metadata(&entry).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn dep_spec_matches_itself() {

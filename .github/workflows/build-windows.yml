@@ -1,0 +1,67 @@
+name: Reusable Windows Build
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # WiX 只接受纯数字版本；NSIS 仍使用完整 SemVer。
+      - name: Prepare MSI version override
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const rawVer = require('./src-tauri/tauri.conf.json').version;
+            const cleanVer = rawVer.replace(/[-+].*$/, '');
+            fs.writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: cleanVer } } } }));
+            console.log('MSI version override ->', cleanVer);
+          "
+
+      - name: Build packages
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --config release-msi-version.tmp.json
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 7

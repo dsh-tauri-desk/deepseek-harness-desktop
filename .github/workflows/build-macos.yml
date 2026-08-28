@@ -1,0 +1,132 @@
+name: Reusable macOS Build
+
+on:
+  workflow_call:
+    inputs:
+      platform_filter:
+        required: false
+        type: string
+        default: all
+      source_ref:
+        required: true
+        type: string
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      APPLE_CERTIFICATE:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_PASSWORD:
+        required: true
+      APPLE_TEAM_ID:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.id }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-aarch64
+            target: aarch64-apple-darwin
+          - id: macos-x86_64
+            target: x86_64-apple-darwin
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Filter target architecture
+        id: check
+        shell: bash
+        env:
+          PLATFORM_FILTER: ${{ inputs.platform_filter }}
+          PLATFORM_ID: ${{ matrix.id }}
+        run: |
+          should_run=true
+          if [ "$PLATFORM_FILTER" != "all" ] && [ "$PLATFORM_FILTER" != "$PLATFORM_ID" ]; then
+            should_run=false
+          fi
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        if: steps.check.outputs.should_run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Setup Node.js and pnpm
+        if: steps.check.outputs.should_run == 'true'
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install Rust stable
+        if: steps.check.outputs.should_run == 'true'
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        if: steps.check.outputs.should_run == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate signing secrets
+        if: steps.check.outputs.should_run == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -z "${!name}" ] && missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Missing macOS signing secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Build package
+        if: steps.check.outputs.should_run == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Verify signature and notarization
+        if: steps.check.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          app_path="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -type d -name '*.app' -print -quit)"
+          if [ -z "$app_path" ]; then
+            echo '::error::Built macOS app bundle was not found'
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
+
+      - name: Upload build output
+        if: steps.check.outputs.should_run == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-${{ matrix.id }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7

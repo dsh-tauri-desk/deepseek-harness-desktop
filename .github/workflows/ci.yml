@@ -8,6 +8,9 @@ on:
 
 permissions:
   contents: read
+  # skip-duplicate-actions 要查询 Workflow Runs API（actions 作用域），
+  # 缺它会 403/超时；仅 contents: read 会被 GitHub 解释为无 actions 权限。
+  actions: read
 
 # 同一分支/PR 的新提交会取消上次仍在运行的 CI，避免浪费 runner 时间。
 concurrency:
@@ -21,9 +24,27 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
+  # 门卫：内容哈希相同且已成功通过（或同一内容正在运行）时跳过，避免重复跑。
+  # push main 与 pull_request main 常常是同一个内容，用 skip_after_successful_duplicate
+  # 加 concurrent_skipping: same_content 精确去重；手动触发/schedule 永不跳过。
+  pre_job:
+    name: Pre-job (Skip Duplicate Actions)
+    runs-on: ubuntu-latest
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@b974a9395958c231af965b70070979a577efa578 # v5.3.2
+        with:
+          concurrent_skipping: same_content
+          skip_after_successful_duplicate: true
+          paths_ignore: '["**/docs/**", "**/*.md"]'
+
   # 前端（vitest + typecheck + lint）：
   frontend:
     name: Frontend (vitest + typecheck + lint)
+    needs: pre_job
+    if: ${{ needs.pre_job.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -31,15 +52,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: '22'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -55,9 +69,6 @@ jobs:
         run: pnpm run test -- --run
 
   # Rust 单元测试（应用主体逻辑）：
-  # 这是 CI 此前完全缺失的部分。仓库里存在大量 #[cfg(windows)] 的 Windows 专属
-  # 代码（win_spawn / win_inspector / cli shim / path / MSI 版本处理），只能在
-  # Rust 单元测试（应用主体逻辑）：
   # 这是 CI 此前完全缺失的部分。仓库存在大量平台专属代码，必须在对应 OS 上编译并测试：
   #   - #[cfg(windows)]：win_spawn / win_inspector / cli shim / path / MSI 版本处理 → Windows
   #   - #[cfg(target_os = "macos")]：homebrew Node 路径 & macOS 包名/资产名 → macOS
@@ -66,6 +77,8 @@ jobs:
   # "更广泛"地覆盖应用实际发布的三个平台，而不是像前端那样按 Node 版本重复。
   rust-test:
     name: Rust tests
+    needs: pre_job
+    if: ${{ needs.pre_job.outputs.should_skip != 'true' }}
     strategy:
       fail-fast: false
       matrix:

@@ -5,6 +5,7 @@ src-tauri/gen
 src-tauri/resources/node
 src-tauri/resources/internal-plugins/
 src-tauri/resources/preset-plugins/
+src-tauri/resources/internal-plugins/
 *.log
 .DS_Store
 .idea

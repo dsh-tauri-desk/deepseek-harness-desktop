@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desktop",
   "type": "module",
-  "version": "0.9.0-beta.2",
+  "version": "0.9.1",
   "private": true,
   "packageManager": "pnpm@10.28.2",
   "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
@@ -50,6 +50,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "bumpp": "12.2.1",
+    "changelogithub": "15.0.5",
     "citty": "^0.2.2",
     "consola": "^3.4.2",
     "dotenv": "^17.4.2",

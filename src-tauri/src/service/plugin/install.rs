@@ -201,8 +201,13 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
                 "PREINSTALL_FAILED: dsh plugin exited with code {exit_code} ({hint})"
             ));
         }
+        let detail = pick_error_message(&last_output, None);
+        if !detail.is_empty() {
+            log::error!("dsh plugin install diagnostic: {detail}");
+        }
         return Err(format!(
-            "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}"
+            "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}{}",
+            diagnostic_suffix(&detail)
         ));
     }
 
@@ -620,6 +625,14 @@ async fn run_single_plugin_command(
 /// 从 dsh/pnpm 失败输出中提取可展示的错误消息：优先 git 传输层提示；
 /// 否则挑出命中错误标记的行（最多 8 行），没有则取输出尾部，ANSI 清洗后
 /// 截断到 2000 字符。
+fn diagnostic_suffix(detail: &str) -> String {
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    }
+}
+
 fn pick_error_message(output: &str, hint: Option<&str>) -> String {
     if let Some(hint) = hint {
         return hint.to_string();
@@ -796,7 +809,10 @@ fn pnpm_major_version_at_with_node(pnpm: &Path, node: Option<&Path>) -> Option<u
     let output = match cmd.output() {
         Ok(output) => output,
         Err(error) => {
-            log::warn!("pnpm version probe failed to spawn {}: {error}", pnpm.display());
+            log::warn!(
+                "pnpm version probe failed to spawn {}: {error}",
+                pnpm.display()
+            );
             return None;
         }
     };
@@ -1377,10 +1393,10 @@ mod tests {
     use super::pnpm_major_version_at_with_node;
     use super::{
         append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates,
-        dep_path_to_name, extract_allow_line_key, extract_only_builds_git_name, git_transport_hint,
-        normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml,
-        preset_spec_for_install, shell_quote_spec, silent_install_failure_detail,
-        PreinstallPluginInfo,
+        dep_path_to_name, diagnostic_suffix, extract_allow_line_key, extract_only_builds_git_name,
+        git_transport_hint, normalize_git_spec, parse_allowlist_keys,
+        parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec,
+        silent_install_failure_detail, PreinstallPluginInfo,
     };
     use std::path::PathBuf;
 
@@ -1423,10 +1439,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "dsh pnpm cmd major {} {nonce}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dsh pnpm cmd major {} {nonce}", std::process::id()));
         let pnpm_dir = root.join("pnpm & corepack");
         let node_dir = root.join("selected node");
         std::fs::create_dir_all(&pnpm_dir).unwrap();
@@ -1460,6 +1474,15 @@ mod tests {
             win_only: false,
             internal,
         }
+    }
+
+    #[test]
+    fn diagnostic_suffix_preserves_non_allowbuilds_failure() {
+        assert_eq!(diagnostic_suffix(""), "");
+        assert_eq!(
+            diagnostic_suffix("ERR_PNPM_LINKING_FAILED: stale symlink"),
+            ": ERR_PNPM_LINKING_FAILED: stale symlink"
+        );
     }
 
     #[test]

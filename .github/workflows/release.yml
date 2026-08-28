@@ -29,8 +29,7 @@ on:
           - windows
           - linux
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   # =========================================================================
@@ -38,6 +37,8 @@ jobs:
   # =========================================================================
   prepare:
     name: Prepare Release
+    permissions:
+      contents: write
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
@@ -55,6 +56,7 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js & pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -106,31 +108,51 @@ jobs:
               await github.rest.git.createRef({ ...context.repo, ref: `refs/${ref}`, sha });
             }
 
-      - name: Sync git tag & Generate Changelog
+      - name: Create release and generate release notes
         if: steps.meta.outputs.should_release == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          pnpx changelogithub@15.0.4 --to "$RELEASE_TAG" --name "DeepSeek Harness Desktop $RELEASE_TAG"
+          RELEASE_NAME: DeepSeek Harness Desktop ${{ steps.meta.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            const name = process.env.RELEASE_NAME;
+            const prerelease = process.env.RELEASE_PRERELEASE === 'true';
+            try {
+              await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.repos.createRelease({
+                ...context.repo,
+                tag_name: tag,
+                name,
+                generate_release_notes: true,
+                prerelease,
+              });
+            }
 
       - name: Append Artifacts section to release
         if: steps.meta.outputs.should_release == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          gh release view "$RELEASE_TAG" --json body -q .body > release_notes.md
-          cat << 'EOF' >> release_notes.md
-
-          ### 📦 Artifacts
-          - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
-          - **macOS (Intel)**: 下载 `x64.dmg`
-          - **Windows**: 下载 `.exe`
-          - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）
-          EOF
-          gh release edit "$RELEASE_TAG" --notes-file release_notes.md
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            const marker = '### 📦 Artifacts';
+            if ((release.body || '').includes(marker)) return;
+            const section = [
+              marker,
+              '- **macOS (Apple Silicon)**: 下载 `aarch64.dmg`',
+              '- **macOS (Intel)**: 下载 `x64.dmg`',
+              '- **Windows**: 下载 `.exe`',
+              '- **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）',
+            ].join('\n');
+            const body = release.body ? `${release.body.trimEnd()}\n\n${section}` : section;
+            await github.rest.repos.updateRelease({ ...context.repo, release_id: release.id, body });
 
   # =========================================================================
   # 2. Publish / Build Job
@@ -158,6 +180,8 @@ jobs:
             args: ''
 
     runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
     timeout-minutes: 60
 
     steps:
@@ -177,6 +201,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js & pnpm
         if: steps.check.outputs.should_run == 'true'

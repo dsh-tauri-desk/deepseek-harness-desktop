@@ -19,9 +19,8 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 use crate::config;
@@ -30,7 +29,9 @@ use crate::service::cli;
 use super::errors;
 use super::install::{build_plugin_envs, harness_prefer_bundled_pnpm};
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
+use super::output;
 use super::preset::{load_presets, PreinstallPluginInfo};
+use super::process::PLUGIN_PROCESS_TIMEOUT;
 
 /// 判定清单引用的预装插件是否缺失产物（纯函数，便于单测）。
 ///
@@ -220,12 +221,11 @@ async fn spawn_and_wait(
     cwd: &Path,
     envs: &HashMap<String, String>,
 ) -> Result<(i32, String), String> {
-    let captured = Arc::new(Mutex::new(String::new()));
+    let captured = output::new_capture();
 
     #[cfg(windows)]
     {
         use crate::service::workflow;
-        use std::time::Duration;
 
         let program = program.to_path_buf();
         let args = args.to_vec();
@@ -235,7 +235,8 @@ async fn spawn_and_wait(
         let (exit_code, output) = tauri::async_runtime::spawn_blocking(move || {
             use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, WaitForSingleObject, INFINITE,
+                GetExitCodeProcess, GetProcessId, WaitForSingleObject, WAIT_FAILED, WAIT_OBJECT_0,
+                WAIT_TIMEOUT,
             };
 
             let (stdout, stderr, handle) = workflow::win_spawn::spawn_with_hidden_console_tracked(
@@ -245,21 +246,50 @@ async fn spawn_and_wait(
                 &envs,
             )
             .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
-            drain_pipe(stdout, captured.clone());
-            drain_pipe(stderr, captured.clone());
+            output::spawn_bounded_reader(stdout, captured.clone(), |_| {});
+            output::spawn_bounded_reader(stderr, captured.clone(), |_| {});
+
+            let pid = unsafe { GetProcessId(handle) };
+            if pid == 0 {
+                unsafe { CloseHandle(handle) };
+                return Err("PNPM_REPAIR_WAIT: unable to identify repair process".to_string());
+            }
 
             // 等孤立读取线程把管道内容写完（短命令通常已结束，此等待为兜底）。
             std::thread::sleep(Duration::from_millis(200));
-            let exit_code = unsafe {
-                let wait = WaitForSingleObject(handle, INFINITE);
+            let exit_code: Result<i32, String> = unsafe {
+                let wait = WaitForSingleObject(
+                    handle,
+                    PLUGIN_PROCESS_TIMEOUT.as_millis().min(u32::MAX as u128) as u32,
+                );
+                if wait == WAIT_TIMEOUT {
+                    workflow::kill_pid_tree(pid);
+                    let terminated = WaitForSingleObject(handle, 5_000);
+                    CloseHandle(handle);
+                    if terminated == WAIT_TIMEOUT {
+                        return Err(
+                            "PNPM_REPAIR_TIMEOUT: repair process did not exit after termination"
+                                .to_string(),
+                        );
+                    }
+                    return Err(format!(
+                        "PNPM_REPAIR_TIMEOUT: repair process exceeded {} seconds",
+                        PLUGIN_PROCESS_TIMEOUT.as_secs()
+                    ));
+                }
+                if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
+                    CloseHandle(handle);
+                    return Err("PNPM_REPAIR_WAIT: WaitForSingleObject failed".to_string());
+                }
                 let mut code: u32 = 0;
                 if GetExitCodeProcess(handle, &mut code) == 0 {
-                    code = wait;
+                    code = 1;
                 }
                 CloseHandle(handle);
-                code as i32
+                Ok(code as i32)
             };
-            Ok::<_, String>((exit_code, drain_captured(captured)))
+            let exit_code = exit_code?;
+            Ok::<_, String>((exit_code, output::drain_captured(captured)))
         })
         .await
         .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))??;
@@ -273,6 +303,7 @@ async fn spawn_and_wait(
 
         let mut child = Command::new(program)
             .args(args)
+            .env_clear()
             .envs(envs)
             .current_dir(cwd)
             .stdin(Stdio::null())
@@ -282,42 +313,39 @@ async fn spawn_and_wait(
             .spawn()
             .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
         if let Some(out) = child.stdout.take() {
-            drain_pipe(out, captured.clone());
+            output::spawn_bounded_reader(out, captured.clone(), |_| {});
         }
         if let Some(err) = child.stderr.take() {
-            drain_pipe(err, captured.clone());
+            output::spawn_bounded_reader(err, captured.clone(), |_| {});
         }
+        let pid = child.id();
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
-            child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
+            let deadline = Instant::now() + PLUGIN_PROCESS_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status.code().unwrap_or(1)),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+    }
+                    Ok(None) => {
+                        crate::service::workflow::kill_pid_tree(pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!(
+                            "PNPM_REPAIR_TIMEOUT: repair process exceeded {} seconds",
+                            PLUGIN_PROCESS_TIMEOUT.as_secs()
+                        ));
+}
+                    Err(error) => break Err(format!("PNPM_REPAIR_WAIT: {error}")),
+        }
+}
         })
         .await
-        .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))?;
+        .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))??;
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        Ok((exit_code, drain_captured(captured)))
+        Ok((exit_code, output::drain_captured(captured)))
     }
-}
-
-/// 在独立线程中把管道读取到 EOF 并追加进共享缓冲区（无事件转发：修复过程
-/// 只需落日志，进度反馈非必需）。
-fn drain_pipe<R: Read + Send + 'static>(mut reader: R, captured: Arc<Mutex<String>>) {
-    std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        if reader.read_to_end(&mut buffer).is_err() {
-            return;
-        }
-        if let Ok(mut acc) = captured.lock() {
-            acc.push_str(&String::from_utf8_lossy(&buffer));
-        }
-    });
-}
-
-/// 取出（并清空）共享缓冲区中的全部捕获输出。
-fn drain_captured(captured: Arc<Mutex<String>>) -> String {
-    captured
-        .lock()
-        .map(|mut buf| std::mem::take(&mut *buf))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

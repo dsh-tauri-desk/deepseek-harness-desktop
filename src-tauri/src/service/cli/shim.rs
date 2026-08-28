@@ -581,6 +581,13 @@ fn is_dangling_symlink(path: &Path) -> bool {
 /// 用于在本地 dsh 探测中区分"本应用 shim"与"用户自行放置的同名文件"：
 /// 前者应被排除（它转发到捆绑 dsh，不构成用户本地核心），后者应被识别。
 pub fn is_generated_shim(path: &Path) -> bool {
+    if path
+        .symlink_metadata()
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return false;
+    }
     match std::fs::read_to_string(path) {
         Ok(content) => content.contains(GENERATED_MARKER),
         Err(_) => false,
@@ -1292,6 +1299,35 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&real).unwrap(),
             "#!/bin/sh\necho my real dsh\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 即使符号链接目标恰好是本应用生成的内容，也必须把链接本身视为用户路径。
+    #[test]
+    #[cfg(unix)]
+    fn generated_detection_preserves_user_symlink_to_generated_content() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("userlink-generated-target");
+        let real = dir.join("generated-dsh");
+        std::fs::write(
+            &real,
+            "#!/bin/sh\n# DeepSeek Harness Desktop - generated target\n",
+        )
+        .unwrap();
+        let target = dir.join("dsh");
+        symlink(&real, &target).unwrap();
+
+        assert!(!is_generated_shim(&target));
+        write_shim_file(&target, "#!/bin/sh\n# replacement\n").unwrap();
+        assert!(std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&real).unwrap(),
+            "#!/bin/sh\n# DeepSeek Harness Desktop - generated target\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

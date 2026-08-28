@@ -132,19 +132,19 @@ pub fn report_plugin_error(
     error: String,
     action: Option<String>,
 ) -> Result<(), String> {
-    plugin::errors::record(
-        &app_handle,
-        &id,
-        action.as_deref().unwrap_or("runtime"),
-        &error,
-    )?;
+    let requested_action = action.as_deref().unwrap_or("runtime");
+    let (action, message) = plugin::errors::validate_input(&id, requested_action, &error)?;
+    if !plugin::is_installed(&app_handle, &id) {
+        return Err("PLUGIN_ERROR_UNKNOWN_PLUGIN: plugin is not installed".to_string());
+    }
+    plugin::errors::record(&app_handle, &id, &action, &message)?;
     plugin::watch::force_emit(&app_handle);
     // 运行期异常：直接推送修复界面（应用仍在运行，前端以醒目对话框呈现）。
     let info = plugin::PluginRecoveryInfo {
         plugins: vec![id],
         reason: "runtime".to_string(),
         detail: String::new(),
-        raw_error: error,
+        raw_error: message,
     };
     let _ = app_handle.emit(plugin::recovery::RECOVERY_REQUIRED_EVENT, &info);
     Ok(())

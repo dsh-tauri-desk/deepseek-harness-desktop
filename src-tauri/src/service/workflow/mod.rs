@@ -32,6 +32,7 @@ static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy)]
 struct OwnedProcess {
     pid: u32,
+    port: u16,
     /// Windows 进程句柄（原始 HANDLE 转 usize 存储，避免 `*mut c_void` 非 Send）。
     /// 只在 Windows 存在；Unix 无句柄概念。
     #[cfg(windows)]
@@ -45,20 +46,20 @@ fn owned_process_lock() -> &'static Mutex<Option<OwnedProcess>> {
 
 /// 记录新持有的 Harness 根进程（Unix，启动成功后调用）。
 #[cfg(not(windows))]
-fn set_owned_process(pid: u32) {
+fn set_owned_process(pid: u32, port: u16) {
     let mut guard = owned_process_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(OwnedProcess { pid });
+    *guard = Some(OwnedProcess { pid, port });
 }
 
 /// 若调用方 owns 该进程（Windows 额外存句柄），记录之。
 #[cfg(windows)]
-fn set_owned_process_with_handle(pid: u32, handle: usize) {
+fn set_owned_process_with_handle(pid: u32, port: u16, handle: usize) {
     let mut guard = owned_process_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(OwnedProcess { pid, handle });
+    *guard = Some(OwnedProcess { pid, port, handle });
 }
 
 /// 原子取出持有的进程（PID+句柄一起）。Whoever takes it is responsible for
@@ -92,6 +93,21 @@ fn take_owned_process_if_matching(
     } else {
         None
     }
+}
+
+/// 判断健康探测端口是否仍属于当前桌面端登记的 Harness 进程。
+fn owned_process_matches_port(owned: &Option<OwnedProcess>, port: u16) -> bool {
+    owned.as_ref().is_some_and(|process| process.port == port)
+}
+
+/// 读取与端口绑定的登记 PID；没有匹配登记时返回 None。
+fn owned_pid_for_port(port: u16) -> Option<u32> {
+    let owned = owned_process_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .copied();
+    owned_process_matches_port(&owned, port).then(|| owned.map(|process| process.pid))?
 }
 
 struct LaunchGuard;
@@ -233,7 +249,7 @@ fn terminate_owned_process() {
 
 /// 结束进程树（Windows `taskkill /PID <pid> /T /F`；Unix 负 PID 进程组，与
 /// 启动时 `process_group(0)` 对应）。调用方需先确认 PID 确实指向目标进程。
-fn kill_pid_tree(pid: u32) {
+pub(crate) fn kill_pid_tree(pid: u32) {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("taskkill");
@@ -316,6 +332,134 @@ fn command_line_has_argument(cmdline: &str, argument: &str) -> bool {
     })
 }
 
+/// 读取简单命令行标志后面的一个值；标志和值都必须以空白或边界分隔。
+fn command_line_argument_value<'a>(cmdline: &'a str, argument: &str) -> Option<&'a str> {
+    let start = cmdline
+        .match_indices(argument)
+        .find_map(|(start, matched)| {
+            let before_is_boundary = cmdline[..start]
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace);
+            let end = start + matched.len();
+            before_is_boundary.then_some(end)
+        })?;
+    let value = cmdline[start..].trim_start();
+    let end = value.find(char::is_whitespace).unwrap_or(value.len());
+    (end > 0).then_some(&value[..end])
+}
+
+/// 判断是否为安全的 Harness profile 名称。
+fn is_safe_profile_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// 判断服务命令行是否包含合法的 host/port 参数序列。
+fn has_service_arguments(cmdline: &str) -> bool {
+    let Some(profile) = command_line_argument_value(cmdline, "--profile") else {
+        return false;
+    };
+    let Some(host) = command_line_argument_value(cmdline, "--host") else {
+        return false;
+    };
+    let Some(port) = command_line_argument_value(cmdline, "--port") else {
+        return false;
+    };
+    is_safe_profile_name(profile)
+        && host == "127.0.0.1"
+        && port.parse::<u16>().is_ok_and(|port| port > 0)
+        && cmdline.find("--profile") < cmdline.find("--host")
+        && cmdline.find("--host") < cmdline.find("--port")
+}
+
+/// 按 Windows CreateProcess/MSVC 规则解析命令行参数。
+///
+/// 清扫逻辑只把它用于比较固定的入口、profile、host 和 port 参数；保留解析器是
+/// 为了让带空格的安装路径也能按参数边界比较，而不是回退到任意子串匹配。
+fn parse_windows_command_line(cmdline: &str) -> Vec<String> {
+    let chars: Vec<char> = cmdline.chars().collect();
+    let mut args = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+        if index == chars.len() {
+            break;
+        }
+        let mut value = String::new();
+        let mut quoted = false;
+        while index < chars.len() {
+            if chars[index].is_whitespace() && !quoted {
+                break;
+            }
+            if chars[index] == '\\' {
+                let start = index;
+                while index < chars.len() && chars[index] == '\\' {
+                    index += 1;
+                }
+                let slashes = index - start;
+                if index < chars.len() && chars[index] == '"' {
+                    value.extend(std::iter::repeat_n('\\', slashes / 2));
+                    if slashes % 2 == 1 {
+                        value.push('"');
+                        index += 1;
+                    } else if quoted && index + 1 < chars.len() && chars[index + 1] == '"' {
+                        value.push('"');
+                        index += 2;
+                    } else {
+                        quoted = !quoted;
+                        index += 1;
+                    }
+                } else {
+                    value.extend(std::iter::repeat_n('\\', slashes));
+                }
+                continue;
+            }
+            if chars[index] == '"' {
+                quoted = !quoted;
+                index += 1;
+                continue;
+            }
+            value.push(chars[index]);
+            index += 1;
+        }
+        args.push(value);
+    }
+    args
+}
+
+/// Windows 清扫使用解析后的 argv：目标 dsh 入口必须是 node 的第一个参数，
+/// 且后面紧跟服务参数，普通参数中提到相同路径不会命中。
+fn is_windows_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
+    let args = parse_windows_command_line(cmdline);
+    let executable = args
+        .first()
+        .and_then(|arg| arg.rsplit(['\\', '/']).next())
+        .map(str::to_ascii_lowercase);
+    if args.len() < 8
+        || !matches!(executable.as_deref(), Some("node.exe" | "node"))
+        || !args
+            .get(1)
+            .is_some_and(|arg| arg.eq_ignore_ascii_case(dsh_bin))
+    {
+        return false;
+    }
+    args[2] == "--profile"
+        && is_safe_profile_name(&args[3])
+        && args[4] == "--host"
+        && args[5] == "127.0.0.1"
+        && args[6] == "--port"
+        && args
+            .get(7)
+            .and_then(|port| port.parse::<u16>().ok())
+            .is_some_and(|port| port > 0)
+}
+
 /// 判断命令行是否为「从本应用 dsh 安装目录启动的 Harness 服务」。
 ///
 /// 除入口路径外同时核对桌面端服务启动参数，避免清扫时误伤用户并行执行的
@@ -323,9 +467,15 @@ fn command_line_has_argument(cmdline: &str, argument: &str) -> bool {
 #[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
 fn is_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
     command_line_has_argument(cmdline, dsh_bin)
-        && command_line_has_argument(cmdline, "--host")
-        && command_line_has_argument(cmdline, "127.0.0.1")
-        && command_line_has_argument(cmdline, "--port")
+        && cmdline.trim_start().find(dsh_bin).is_some_and(|index| {
+            let before = &cmdline.trim_start()[..index];
+            before
+                .chars()
+                .filter(|character| character.is_whitespace())
+                .count()
+                == 1
+        })
+        && has_service_arguments(cmdline)
 }
 
 pub fn has_owned_process() -> bool {
@@ -388,12 +538,9 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
         let Some(dsh_bin) = dsh_bin_path.to_str() else {
             return;
         };
-        // 进程名过滤保证 PowerShell 自身（其命令行同样包含该路径）不被误杀；
-        // 路径中的单引号按 PS 字符串字面量规则转义，避免用户目录含 `'` 时语法错误。
-        let escaped = dsh_bin.replace('\'', "''");
-        let script = format!(
-            "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object {{ $_.CommandLine -like '*{escaped}*' }} | Select-Object -ExpandProperty ProcessId"
-        );
+        // 只按进程名筛选，完整命令行以 JSON 返回给 Rust；路径、profile 等外部值
+        // 不再拼进 PowerShell 表达式，避免通配符/引号语义造成误匹配。
+        let script = "@(Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Select-Object ProcessId, CommandLine) | ConvertTo-Json -Compress";
         let Ok(output) = Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .creation_flags(0x08000000)
@@ -402,11 +549,34 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
             log::error!("Failed to enumerate stale Harness service processes");
             return;
         };
+        if output.stdout.len() > 4 * 1024 * 1024 {
+            log::error!("Failed to enumerate stale Harness service processes: output too large");
+            return;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            log::error!("Failed to parse stale Harness process inventory");
+            return;
+        };
+        let processes = match &value {
+            serde_json::Value::Array(items) => items.clone(),
+            serde_json::Value::Object(_) => vec![value.clone()],
+            _ => Vec::new(),
+        };
         let mut found = 0;
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let Ok(pid) = line.trim().parse::<u32>() else {
+        for process in processes {
+            let Some(pid) = process
+                .get("ProcessId")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+            else {
                 continue;
             };
+            let Some(command_line) = process.get("CommandLine").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !is_windows_harness_command_line(command_line, dsh_bin) {
+                continue;
+            }
             found += 1;
             log::warn!("Terminating stale Harness service process {pid} (from dsh install dir)");
             kill_pid_tree(pid);
@@ -826,14 +996,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
         log::warn!("ensure preset plugins failed: {e}");
     }
-    let mut envs: HashMap<String, String> = HashMap::new();
-    envs.insert(
+    let mut explicit: HashMap<String, String> = HashMap::new();
+    explicit.insert(
         "DSH_HOME".to_string(),
         dsh_home.to_string_lossy().into_owned(),
     );
-    envs.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
-    envs.insert("NO_COLOR".to_string(), "1".to_string());
-    envs.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
+    explicit.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
+    explicit.insert("NO_COLOR".to_string(), "1".to_string());
+    explicit.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
     // 把服务实际使用的 node 路径显式交给子进程（pnpm/dsh shim 的 DSH_NODE
     // 优先）：市场（dsh-market）等子进程经 PATH 解析 node 可能与桌面端预检
     // 不一致（相对 PATH 条目 / junction / 子进程 PATH 布局差异），导致 pnpm
@@ -842,7 +1012,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 到错误位置；已存在（上面校验过）的 node 可安全 canonicalize。
     let node_abs =
         std::fs::canonicalize(&node_binary_path).unwrap_or_else(|_| node_binary_path.clone());
-    envs.insert(
+    explicit.insert(
         "DSH_NODE".to_string(),
         node_abs.to_string_lossy().into_owned(),
     );
@@ -856,7 +1026,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // `pnpm`/`dsh` 都命中桌面端 shim，从而受桌面端 pnpm 选版策略管辖
     // （轻量缓解，issue #69 系列）。
     if let Some(node_dir) = node_binary_path.parent() {
-        if let Some(existing_path) = std::env::var_os("PATH") {
+        let safe_environment = crate::service::env::safe_environment();
+        let existing_path = safe_environment
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+            .map(|(_, value)| std::ffi::OsString::from(value))
+            .unwrap_or_default();
             let git_dirs = win_inspector::git_bash_bin_dirs();
             // 只打印注入的前缀目录，完整 PATH 太长会刷屏
             for dir in &git_dirs {
@@ -874,8 +1049,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             paths.extend(git_dirs);
             paths.extend(std::env::split_paths(&existing_path));
             if let Ok(new_path) = std::env::join_paths(paths) {
-                envs.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
-            }
+            explicit.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
         }
     }
 
@@ -889,7 +1063,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             &user_pnpm,
             &crate::service::cli::get_bin_dir(&app_handle),
         ) {
-            envs.insert("DSH_PNPM".to_string(), pnpm_value);
+            explicit.insert("DSH_PNPM".to_string(), pnpm_value);
         }
     }
 
@@ -898,8 +1072,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 触发下载；捆绑版未安装或与 store 不匹配时不注入（交由用户 pnpm）。
     // 最佳努力：失败只告警，不阻断启动。
     if crate::service::plugin::harness_prefer_bundled_pnpm(&app_handle) {
-        envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+        explicit.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
     }
+
+    // Harness 及其插件只继承系统运行所需的最小环境，避免把宿主终端/CI 中的
+    // 令牌、代理认证、SSH 和包管理器凭证带入第三方代码。
+    let envs = crate::service::env::environment_with_explicit(&explicit);
 
     // 日志文件（前端日志面板读取）。
     // 每次真实启动前轮转：只保留最近 3 次启动的日志，旧文件后退为
@@ -943,7 +1121,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             .map(|(stdout, stderr, pid, handle)| {
                 // PID 与句柄作为整体一次登记，与退出清理（take 一并取出）配对
                 let handle_value = handle as usize;
-                set_owned_process_with_handle(pid, handle_value);
+                set_owned_process_with_handle(pid, setting.port, handle_value);
                 std::thread::spawn(move || unsafe {
                     use windows_sys::Win32::Foundation::CloseHandle;
                     use windows_sys::Win32::System::Threading::{
@@ -988,7 +1166,8 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             if no_open {
                 cmd.arg("--no-open");
             }
-            cmd.envs(&envs)
+            cmd.env_clear()
+                .envs(&envs)
                 .current_dir(config::get_dsh_install_path(&app_handle))
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())
@@ -1001,7 +1180,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 let pid = child.id();
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
-                set_owned_process(pid);
+                set_owned_process(pid, setting.port);
                 std::thread::spawn(move || {
                     let code = child.wait().ok().and_then(|status| status.code());
                     // 记录退出码：启动即崩溃（插件冲突等）时前端据此快速失败
@@ -1298,6 +1477,17 @@ fn not_owned_probe_signal(launch_in_progress: bool) -> &'static str {
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 pub async fn proxy_health_check(port: u16) -> Result<String, String> {
+    let Some(owned_pid) = owned_pid_for_port(port) else {
+        if !has_owned_process() {
+            return Err(not_owned_probe_signal(LAUNCH_GUARD.load(Ordering::SeqCst)).to_string());
+        }
+        return Err("HARNESS_PORT_MISMATCH: health probe port is not owned by Harness".to_string());
+    };
+    if port_owner_pid(port) != Some(owned_pid) {
+        return Err(format!(
+            "HARNESS_PORT_OWNER_MISMATCH: port {port} is not listening by owned PID {owned_pid}"
+        ));
+    }
     if !has_owned_process() {
         return Err(not_owned_probe_signal(LAUNCH_GUARD.load(Ordering::SeqCst)).to_string());
     }
@@ -1430,11 +1620,23 @@ mod tests {
     /// 构造一个测试用 `OwnedProcess`（跨平台处理 Windows 句柄字段）。
     #[cfg(windows)]
     fn test_owned(pid: u32) -> OwnedProcess {
-        OwnedProcess { pid, handle: 0 }
+        OwnedProcess {
+            pid,
+            port: 3080,
+            handle: 0,
+        }
     }
     #[cfg(not(windows))]
     fn test_owned(pid: u32) -> OwnedProcess {
-        OwnedProcess { pid }
+        OwnedProcess { pid, port: 3080 }
+    }
+
+    #[test]
+    fn owned_process_port_must_match_health_probe() {
+        let owned = Some(test_owned(42));
+        assert!(owned_process_matches_port(&owned, 3080));
+        assert!(!owned_process_matches_port(&owned, 3081));
+        assert!(!owned_process_matches_port(&None, 3080));
     }
 
     /// 退出监视线程只能清掉「与自己 PID 匹配」的登记，不许误清刚启动的新进程，
@@ -1517,6 +1719,53 @@ mod tests {
         let cmdline =
             format!("/opt/homebrew/bin/node {bin} --profile web --host 127.0.0.1 --port 3084");
         assert!(is_harness_command_line(&cmdline, bin));
+    }
+
+    #[test]
+    fn harness_cmdline_requires_a_valid_ordered_port_argument() {
+        let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
+        assert!(!is_harness_command_line(
+            &format!("node {bin} --profile web --host 127.0.0.1 --port not-a-port"),
+            bin
+        ));
+        assert!(!is_harness_command_line(
+            &format!("node {bin} --profile web --host 127.0.0.1 --port 0"),
+            bin
+        ));
+        assert!(!is_harness_command_line(
+            &format!("node {bin} --profile web --host 127.0.0.1 --port 65536"),
+            bin
+        ));
+    }
+
+    #[test]
+    fn harness_cmdline_does_not_match_path_in_a_regular_argument() {
+        let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
+        assert!(!is_harness_command_line(
+            &format!(
+                "node /usr/local/bin/worker.js --note {bin} --profile web --host 127.0.0.1 --port 3080"
+            ),
+            bin
+        ));
+    }
+
+    #[test]
+    fn windows_harness_cmdline_requires_node_entry_and_service_arguments() {
+        let bin = r#"C:\Users\test\AppData\Local\DeepSeek Harness\dependencies\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js"#;
+        let command = format!(
+            r#""C:\Program Files\nodejs\node.exe" "{bin}" --profile web --host 127.0.0.1 --port 3080"#
+        );
+        assert!(is_windows_harness_command_line(&command, bin));
+
+        let ordinary_argument = format!(
+            r#""C:\Program Files\nodejs\node.exe" C:\worker.js --note "{bin}" --profile web --host 127.0.0.1 --port 3080"#
+        );
+        assert!(!is_windows_harness_command_line(&ordinary_argument, bin));
+
+        let wrong_image = format!(
+            r#""C:\Program Files\PowerShell\pwsh.exe" "{bin}" --profile web --host 127.0.0.1 --port 3080"#
+        );
+        assert!(!is_windows_harness_command_line(&wrong_image, bin));
     }
 
     #[test]

@@ -15,19 +15,66 @@ use tauri_plugin_opener::OpenerExt;
 use crate::config;
 use crate::service::workflow;
 
-use super::meta::{fetch_latest_release, LatestRelease};
+use super::meta::{fetch_latest_release, is_safe_asset_name, LatestRelease};
 use super::version::current_version;
 use super::{DOWNLOAD_TIMEOUT_SECS, UPDATES_DIR};
 
 /// 安装包存放路径（AppData/updates/<asset_name>）
 fn installer_path(app_handle: &AppHandle, asset_name: &str) -> Result<PathBuf, String> {
+    if !is_safe_asset_name(asset_name) {
+        return Err(format!(
+            "UPDATE_PATH_REJECTED: invalid installer asset name {asset_name:?}"
+        ));
+    }
     let dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("UPDATE_DIR: {e}"))?
         .join(UPDATES_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("UPDATE_DIR: {e}"))?;
-    Ok(dir.join(asset_name))
+    let dir_meta = std::fs::symlink_metadata(&dir).map_err(|e| format!("UPDATE_DIR: {e}"))?;
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        return Err("UPDATE_PATH_REJECTED: updates directory is not a real directory".to_string());
+    }
+    let path = dir.join(asset_name);
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(format!(
+                "UPDATE_PATH_REJECTED: installer path is not a regular file {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(path)
+}
+
+/// 判断缓存安装包是否仍与当前 release 的可信摘要一致。
+fn cached_installer_is_valid(path: &std::path::Path, digest: &str) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return false;
+    }
+    verify_installer_sha256(path, digest).is_ok()
+}
+
+fn update_info(
+    app_handle: &AppHandle,
+    release: LatestRelease,
+) -> Result<DesktopUpdateInfo, String> {
+    let path = installer_path(app_handle, &release.asset_name)?;
+    let downloaded = cached_installer_is_valid(&path, &release.digest);
+    Ok(DesktopUpdateInfo {
+        version: release.version,
+        current_version: current_version(),
+        tag: release.tag,
+        published_at: release.published_at,
+        url: release.url,
+        asset_name: release.asset_name,
+        path: path.to_string_lossy().into_owned(),
+        downloaded,
+    })
 }
 
 /// 检查是否有桌面端新版本。
@@ -50,20 +97,7 @@ pub struct DesktopUpdateInfo {
 pub async fn check(app_handle: &AppHandle) -> Result<Option<DesktopUpdateInfo>, String> {
     match fetch_latest_release().await? {
         None => Ok(None),
-        Some(r) => {
-            let path = installer_path(app_handle, &r.asset_name)?;
-            let downloaded = path.exists();
-            Ok(Some(DesktopUpdateInfo {
-                version: r.version,
-                current_version: current_version(),
-                tag: r.tag,
-                published_at: r.published_at,
-                url: r.url,
-                asset_name: r.asset_name,
-                path: path.to_string_lossy().into_owned(),
-                downloaded,
-            }))
-        }
+        Some(r) => update_info(app_handle, r).map(Some),
     }
 }
 
@@ -141,11 +175,10 @@ fn download_client() -> Result<reqwest::Client, String> {
 /// 安全策略：第三方镜像没有独立信任根，仅在其内容可被 SHA-256 校验（摘要已取得）
 /// 时才提供兜底；否则只允许官方直连，宁可在官方不可用时失败，也不冒投毒风险。
 fn download_sources(release: &LatestRelease) -> Vec<String> {
-    let mut urls = vec![release.url.clone()];
-    if release.digest.is_some() {
-        urls.push(config::mirror_download_url(&release.url));
-    }
-    urls
+    vec![
+        release.url.clone(),
+        config::mirror_download_url(&release.url),
+    ]
 }
 
 /// 为下载完成的安装包补充可执行权限（Linux AppImage 必需）。
@@ -202,40 +235,36 @@ fn verify_installer_sha256(path: &std::path::Path, expected: &str) -> Result<(),
     Ok(())
 }
 
-/// 下载桌面端安装包；已下载则直接返回。
+/// 下载桌面端安装包；只有摘要校验通过的缓存才可直接返回。
 ///
 /// 下载期间通过 `desktop-update-progress` 事件推送进度；完成后返回
 /// `DesktopUpdateInfo`（path/downloaded 已更新）。
 ///
 /// 下载源策略：先取 `expanded_assets` 页面的 SHA-256 摘要作为完整性凭据，再
-/// 选择下载源——**镜像兜底（ghfast.top）仅在已取得可信摘要时才可使用**，否则
-/// 宁可失败，防止第三方镜像投毒未被察觉；官方 GitHub 直连在摘要缺失时仍可
-/// 按旧行为下载（兼容早期未填摘要的发布），下载后若有摘要则强制校验。
+/// 选择下载源——两条来源均必须通过 release 摘要校验。
 pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, String> {
     let release = fetch_latest_release()
         .await?
         .ok_or_else(|| "UPDATE_NONE".to_string())?;
     let path = installer_path(app_handle, &release.asset_name)?;
 
-    if path.exists() {
+    if cached_installer_is_valid(&path, &release.digest) {
         log::info!("Installer already downloaded: {}", path.display());
-        return check(app_handle)
-            .await?
-            .ok_or_else(|| "UPDATE_NONE".to_string());
+        return update_info(app_handle, release);
+    }
+    if path.exists() {
+        log::warn!(
+            "Cached installer failed SHA-256 verification, removing {}",
+            path.display()
+        );
+        std::fs::remove_file(&path).map_err(|e| format!("UPDATE_FILE: {e}"))?;
     }
 
     let client = download_client()?;
 
-    // 官方直连 → （可选）ghfast.top 镜像兜底。安装包无 SHA-256 元数据，切换源时
+    // 官方直连 → ghfast.top 镜像兜底。切换源时
     // 丢弃上一源的部分字节从头下载，避免混用两个源的字节流。
-    // 安全策略：镜像兜底要求已有可信摘要，否则不提供镜像（宁可失败）。
     let urls = download_sources(&release);
-    if urls.len() == 1 {
-        log::warn!(
-            "No SHA-256 digest available for {}, mirror fallback disabled",
-            release.asset_name
-        );
-    }
     let tmp = path.with_extension("part");
     let mut last_err = String::new();
     for (index, url) in urls.iter().enumerate() {
@@ -276,15 +305,13 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
         ));
     }
 
-    // 完整性校验：摘要存在（镜像路径必有）则强制校验，校验失败即拒绝，
+    // 完整性校验：摘要由元数据阶段强制取得，校验失败即拒绝，
     // 不保留为可安装文件，也不能被 open_installer 打开。流式校验避免整块读入内存。
-    if let Some(digest) = &release.digest {
-        if let Err(e) = verify_installer_sha256(&tmp, digest) {
+    if let Err(e) = verify_installer_sha256(&tmp, &release.digest) {
             let _ = std::fs::remove_file(&tmp);
             return Err(format!("UPDATE_DOWNLOAD: {e}"));
         }
         log::info!("Installer SHA-256 verified for {}", release.asset_name);
-    }
 
     std::fs::rename(&tmp, &path).map_err(|e| format!("UPDATE_FILE: {e}"))?;
 
@@ -292,9 +319,7 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
     #[cfg(unix)]
     ensure_installer_executable(&path)?;
 
-    check(app_handle)
-        .await?
-        .ok_or_else(|| "UPDATE_NONE".to_string())
+    update_info(app_handle, release)
 }
 
 /// 打开安装包：交给系统默认处理器（Windows 会触发 UAC 执行安装器）。
@@ -303,13 +328,17 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
 /// 安装包——任意路径、绝对/相对遍历、`..` 都会拒绝，避免被伪装的 frame 或
 /// 插件利用去执行任意文件。
 pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), String> {
+    let release = fetch_latest_release()
+        .await?
+        .ok_or_else(|| "UPDATE_NONE: no verified desktop release available".to_string())?;
+    let expected_path = installer_path(app_handle, &release.asset_name)?;
     let updates_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("UPDATE_DIR: {e}"))?
         .join(UPDATES_DIR);
     let p = std::path::Path::new(&path);
-    if !p.exists() || !p.is_file() {
+    if !p.is_file() {
         return Err(format!("UPDATE_NOT_FOUND: {path}"));
     }
     // 规范化后必须仍在 updates 目录内（防 `..`、符号链接、路径穿越）。
@@ -327,6 +356,15 @@ pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), 
             "UPDATE_PATH_REJECTED: installer path is outside updates directory".to_string(),
         );
     }
+    let expected = dunce::canonicalize(&expected_path)
+        .map_err(|e| format!("UPDATE_NOT_FOUND: verified installer is unavailable: {e}"))?;
+    if canonical != expected {
+        return Err(
+            "UPDATE_STALE: installer does not match the current verified release asset".to_string(),
+        );
+    }
+    verify_installer_sha256(&canonical, &release.digest)
+        .map_err(|e| format!("UPDATE_INTEGRITY_FAILED: {e}"))?;
     log::info!("Opening desktop installer: {}", p.display());
     // 更新前先停下本应用持有的 Harness 服务：安装器在安装时会强杀桌面端进程
     // （CheckIfAppIsRunning → taskkill），跳过正常退出路径的 stop_on_exit，导致
@@ -376,7 +414,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 镜像兜底策略回归：无摘要时只有官方源；有摘要时才加入镜像。
+    /// 两个下载源都必须使用同一份已验证的 release 摘要。
     #[test]
     fn download_sources_only_mirrors_with_digest() {
         let url = "https://github.com/x/y/releases/download/v0.7.4/x.dmg";
@@ -386,18 +424,9 @@ mod tests {
             published_at: String::new(),
             url: url.into(),
             asset_name: "x.dmg".into(),
-            digest: None,
+            digest: format!("sha256:{}", "a".repeat(64)),
         };
-        // 无摘要 → 仅官方直连
-        let without = download_sources(&base);
-        assert_eq!(without.len(), 1);
-        assert_eq!(without[0], url);
-        // 有摘要 → 官方 + 镜像
-        let with_digest = LatestRelease {
-            digest: Some(format!("sha256:{}", "b".repeat(64))),
-            ..base.clone()
-        };
-        let sources = download_sources(&with_digest);
+        let sources = download_sources(&base);
         assert_eq!(sources.len(), 2);
         assert!(
             sources[1].contains("ghfast.top"),

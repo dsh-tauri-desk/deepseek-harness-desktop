@@ -1,8 +1,8 @@
 //! GitHub Release 元数据拉取（走 HTML/atom 页面，绕开未认证 API 限流）。
 //!
 //! 不依赖 api.github.com，仅通过 `releases.atom` 与 `releases/expanded_assets/<tag>`
-//! 轻量解析最新 tag、发布时间、资产名与作者填写的 SHA-256 摘要。摘要缺失不阻断
-//! 官方直连下载，但会禁用镜像兜底（见 [`super::install`]）。
+//! 轻量解析最新 tag、发布时间、资产名与作者填写的 SHA-256 摘要。摘要缺失时
+//! 跳过该 release，避免把未经完整性绑定的内容交给系统安装器。
 //!
 //! 更新判定只接受**正式版**（纯数字版本，见 [`super::version::is_stable`]）：
 //! rc/beta/alpha 等 pre-release 与手动测试 release（`test-*` tag）一律跳过，
@@ -22,9 +22,8 @@ pub(super) struct LatestRelease {
     pub(super) url: String,
     pub(super) asset_name: String,
     /// release 资产页（expanded_assets）中作者填写的 SHA-256 摘要
-    /// （`sha256:<64hex>`）。`None` 表示无法取得可信摘要——此时镜像源
-    /// 不可用作下载（无完整性凭据），仅官方直连可按旧行为继续。
-    pub(super) digest: Option<String>,
+    /// （`sha256:<64hex>`）。没有摘要的资产不会进入可安装更新流程。
+    pub(super) digest: String,
 }
 
 /// 构造带统一 UA 的 HTTP 客户端（并发小、超时短）。
@@ -87,6 +86,19 @@ pub(super) async fn fetch_releases_meta() -> Result<Vec<(String, String)>, Strin
     Ok(releases)
 }
 
+/// 只接受可安全用于 updates 目录的单层资产文件名。
+pub(super) fn is_safe_asset_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 255 || name == "." || name == ".." {
+        return false;
+    }
+    if name.bytes().any(|byte| byte.is_ascii_control()) {
+        return false;
+    }
+    // GitHub 资产名通常是 ASCII；这里显式拒绝两种平台的路径分隔符、盘符和
+    // 遍历片段，避免在不同构建平台上对同一元数据产生不同路径解释。
+    !name.contains('/') && !name.contains('\\') && !name.contains(':')
+}
+
 /// 从 expanded_assets 页面 HTML 中提取给定 tag 的全部资产文件名（纯函数，便于测试）。
 fn extract_asset_names(html: &str, tag: &str) -> Vec<String> {
     let needle = format!("releases/download/{tag}/");
@@ -98,7 +110,10 @@ fn extract_asset_names(html: &str, tag: &str) -> Vec<String> {
             .find('"')
             .map(|e| after + e)
             .unwrap_or(html.len());
-        names.push(html[after..end].to_string());
+        let name = &html[after..end];
+        if is_safe_asset_name(name) {
+            names.push(name.to_string());
+        }
         start = end;
     }
     names
@@ -185,8 +200,8 @@ pub(super) async fn fetch_latest_release() -> Result<Option<LatestRelease>, Stri
 ///
 /// 摘要必须按**当前平台选中的资产**解析：多平台 release 的页面里每个安装包
 /// 各有各的 `sha256:`，取错资产（如页面里第一个）会拿别的包的摘要来校验，
-/// 导致 `INTEGRITY_CHECK_FAILED` 误伤合法下载。摘要缺失不阻断官方直连下载，
-/// 但镜像兜底需要可信摘要（见 [`super::install`]）防止投毒。
+/// 导致 `INTEGRITY_CHECK_FAILED` 误伤合法下载。摘要缺失时跳过该 release，
+/// 防止未绑定完整性的安装包进入下载/打开流程。
 ///
 /// 返回 `None` 表示该 release 无匹配当前平台的安装包（调用方继续看更旧的正式版）。
 async fn fetch_release_assets(
@@ -201,11 +216,16 @@ async fn fetch_release_assets(
         return Ok(None);
     };
 
-    let digest = parse_digest_from_expanded_assets(&body, &asset_name);
+    let Some(digest) = parse_digest_from_expanded_assets(&body, &asset_name) else {
+        log::warn!(
+            "UPDATE_INTEGRITY_UNAVAILABLE: release {tag} has no valid SHA-256 for {asset_name}"
+        );
+        return Ok(None);
+    };
     log::debug!(
         "Release {tag} digest for picked asset {}: {}",
         asset_name,
-        digest.as_deref().map(|d| &d[..12]).unwrap_or("<none>")
+        digest.get(..12).unwrap_or("<none>")
     );
 
     // 下载地址由 tag + 资产名直接构造，无需 API
@@ -272,6 +292,28 @@ mod tests {
         assert_eq!(names, vec!["x64-setup.exe", "x64_en-US.msi"]);
         assert!(extract_asset_names(html, "v9.9.9").is_empty());
         assert!(extract_asset_names("", tag).is_empty());
+    }
+
+    #[test]
+    fn asset_names_reject_path_syntax() {
+        assert!(is_safe_asset_name("x64-setup.exe"));
+        assert!(is_safe_asset_name("installer.AppImage"));
+        assert!(!is_safe_asset_name("../outside"));
+        assert!(!is_safe_asset_name("nested/installer.exe"));
+        assert!(!is_safe_asset_name(r"nested\installer.exe"));
+        assert!(!is_safe_asset_name(r"C:\\outside.exe"));
+        assert!(!is_safe_asset_name(".."));
+        assert!(!is_safe_asset_name("bad\nname"));
+    }
+
+    #[test]
+    fn extract_asset_names_skips_path_traversal_entries() {
+        let tag = "v0.6.6";
+        let html = r#"
+            <a href="/x/releases/download/v0.6.6/../outside.exe">bad</a>
+            <a href="/x/releases/download/v0.6.6/x64-setup.exe">good</a>
+        "#;
+        assert_eq!(extract_asset_names(html, tag), vec!["x64-setup.exe"]);
     }
 
     /// 摘要解析回归：识别 `sha256:<64hex>`（含中文/多字节前缀），拒绝非法摘要。

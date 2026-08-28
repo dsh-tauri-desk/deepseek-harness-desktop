@@ -1,7 +1,141 @@
 #[cfg(windows)]
 use tauri::Manager;
 
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use crate::{desktop::payload::NativeNotificationPayload, utils::app_icon_temp_path};
+
+const MAX_NOTIFICATION_TITLE_CHARS: usize = 256;
+const MAX_NOTIFICATION_BODY_CHARS: usize = 4_096;
+const MAX_NOTIFICATION_TAG_CHARS: usize = 256;
+const MAX_NOTIFICATION_SESSION_ID_CHARS: usize = 128;
+const MAX_NOTIFICATION_SEQUENCE_CHARS: usize = 20;
+const NOTIFICATION_RATE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_NOTIFICATIONS_PER_WINDOW: usize = 30;
+
+struct NotificationRateLimiter {
+    window_started: Instant,
+    emitted: usize,
+}
+
+impl NotificationRateLimiter {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            emitted: 0,
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        if self.window_started.elapsed() >= NOTIFICATION_RATE_WINDOW {
+            self.window_started = Instant::now();
+            self.emitted = 0;
+        }
+        if self.emitted >= MAX_NOTIFICATIONS_PER_WINDOW {
+            return false;
+        }
+        self.emitted += 1;
+        true
+    }
+}
+
+fn notification_rate_limiter() -> &'static Mutex<NotificationRateLimiter> {
+    static LIMITER: OnceLock<Mutex<NotificationRateLimiter>> = OnceLock::new();
+    LIMITER.get_or_init(|| Mutex::new(NotificationRateLimiter::new()))
+}
+
+fn valid_notification_identifier(value: &str, max_chars: usize) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= max_chars
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_notification_text(value: &str, max_chars: usize, allow_empty: bool) -> bool {
+    (allow_empty || !value.trim().is_empty())
+        && value.chars().count() <= max_chars
+        && !value.contains('\0')
+}
+
+fn valid_sequence(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_NOTIFICATION_SEQUENCE_CHARS
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// 校验 dsh-notification 约定的 tag，并返回其中的会话 id。
+fn validate_notification_tag(tag: &str) -> Result<Option<&str>, String> {
+    if !valid_notification_text(tag, MAX_NOTIFICATION_TAG_CHARS, false) {
+        return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
+    }
+    let Some(rest) = tag.strip_prefix("dsh-notification-") else {
+        return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
+    };
+    if let Some(sequence) = rest.strip_prefix("test-") {
+        if valid_sequence(sequence) {
+            return Ok(None);
+        }
+        return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
+    }
+
+    let rest = rest.strip_prefix("pending-").unwrap_or(rest);
+    let Some((session_id, sequence)) = rest.rsplit_once('-') else {
+        return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
+    };
+    if !valid_notification_identifier(session_id, MAX_NOTIFICATION_SESSION_ID_CHARS)
+        || !valid_sequence(sequence)
+    {
+        return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
+    }
+    Ok(Some(session_id))
+}
+
+fn validate_notification_payload(payload: &NativeNotificationPayload) -> Result<(), String> {
+    if !valid_notification_text(&payload.title, MAX_NOTIFICATION_TITLE_CHARS, false) {
+        return Err("NOTIFICATION_INVALID_TITLE: notification title is not valid".to_string());
+    }
+    if !valid_notification_text(&payload.body, MAX_NOTIFICATION_BODY_CHARS, true) {
+        return Err("NOTIFICATION_INVALID_BODY: notification body is not valid".to_string());
+    }
+
+    let tag_session = payload
+        .tag
+        .as_deref()
+        .map(validate_notification_tag)
+        .transpose()?
+        .flatten();
+    match (payload.session_id.as_deref(), tag_session) {
+        (Some(session_id), Some(tag_session)) => {
+            if !valid_notification_identifier(session_id, MAX_NOTIFICATION_SESSION_ID_CHARS) {
+                return Err(
+                    "NOTIFICATION_INVALID_SESSION: notification session is not valid".to_string(),
+                );
+            }
+            if tag_session != session_id {
+                return Err(
+                    "NOTIFICATION_INVALID_SESSION: notification session does not match tag"
+                        .to_string(),
+                );
+            }
+        }
+        (Some(_), None) => {
+            return Err(
+                "NOTIFICATION_INVALID_SESSION: notification session requires a matching tag"
+                    .to_string(),
+            );
+        }
+        (None, Some(_)) => {
+            return Err(
+                "NOTIFICATION_INVALID_SESSION: notification session is missing".to_string(),
+            );
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
 
 /// 如果 DSH 插件仍有兜底走浏览器 Notification，则保持“已授权”假象，
 /// 并让每次 `new Notification(...)` 转成发给宿主窗口的 postMessage。
@@ -27,7 +161,8 @@ pub(crate) const NOTIFICATION_SHIM_JS: &str = r#"(function () {
 
   function sessionIdFromTag(tag) {
     var m = /^dsh-notification-(?:pending-)?(.+)-\d+$/.exec(tag || '');
-    return m ? m[1] : '';
+    if (!m || m[1] === 'test') return '';
+    return m[1];
   }
 
   function DshNativeNotification(title, options) {
@@ -136,6 +271,15 @@ pub fn show_native_notification(
 ) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
 
+    validate_notification_payload(&payload)?;
+    let allowed = notification_rate_limiter()
+        .lock()
+        .map(|mut limiter| limiter.allow())
+        .unwrap_or(false);
+    if !allowed {
+        return Err("NOTIFICATION_RATE_LIMIT: notification rate limit exceeded".to_string());
+    }
+
     let mut builder = app
         .notification()
         .builder()
@@ -150,7 +294,60 @@ pub fn show_native_notification(
         builder = builder.id(id);
     }
 
-    builder.show().map_err(|e| e.to_string())
+    builder
+        .show()
+        .map_err(|e| format!("NOTIFICATION_SHOW: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload(tag: Option<&str>, session_id: Option<&str>) -> NativeNotificationPayload {
+        NativeNotificationPayload {
+            title: "DSH".to_string(),
+            body: "done".to_string(),
+            tag: tag.map(str::to_string),
+            session_id: session_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn notification_tags_follow_plugin_contract() {
+        assert_eq!(
+            validate_notification_tag("dsh-notification-session-1-2").unwrap(),
+            Some("session-1")
+        );
+        assert_eq!(
+            validate_notification_tag("dsh-notification-pending-session-1-3").unwrap(),
+            Some("session-1")
+        );
+        assert_eq!(
+            validate_notification_tag("dsh-notification-test-123").unwrap(),
+            None
+        );
+        assert!(validate_notification_tag("arbitrary-tag").is_err());
+        assert!(validate_notification_tag("dsh-notification-session-1-x").is_err());
+    }
+
+    #[test]
+    fn notification_payload_requires_matching_session() {
+        assert!(validate_notification_payload(&payload(
+            Some("dsh-notification-session-1-2"),
+            Some("session-1")
+        ))
+        .is_ok());
+        assert!(
+            validate_notification_payload(&payload(Some("dsh-notification-test-123"), None))
+                .is_ok()
+        );
+        assert!(validate_notification_payload(&payload(
+            Some("dsh-notification-session-1-2"),
+            Some("session-2")
+        ))
+        .is_err());
+        assert!(validate_notification_payload(&payload(None, Some("session-1"))).is_err());
+    }
 }
 
 /// 在 Windows WebView2 中接管 iframe 内的通知请求并注入原生通知桥。
@@ -275,12 +472,11 @@ pub fn enable_notification_permissions(
 
         let _ = frame3.add_ContentLoading(
             &FrameContentLoadingEventHandler::create(Box::new(move |_, _| {
-                // 通知桥、导航桥、样式桥、剪贴板图片桥与缩放快捷键桥需要 iframe 上下文执行。
+                // 通知桥、导航桥、样式桥与缩放快捷键桥需要 iframe 上下文执行。
                 for script in [
                     crate::desktop::notification::NOTIFICATION_SHIM_JS,
                     crate::desktop::nav::NAV_SHIM_JS,
                     crate::desktop::style::IFRAME_STYLES_JS,
-                    crate::desktop::paste::PASTE_SHIM_JS,
                     crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS,
                     crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS,
                 ] {

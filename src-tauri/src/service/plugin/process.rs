@@ -8,18 +8,22 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{Emitter, WebviewWindow};
 
-#[cfg(windows)]
 use crate::service::workflow;
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
+use super::output::{self, CapturedOutput};
+
 /// 前端监听的控制台事件名（进程输出行）
 pub(crate) const PREINSTALL_LOG_EVENT: &str = "preinstall-log";
+/// 插件安装、升级和卸载进程的硬超时。
+pub(crate) const PLUGIN_PROCESS_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MAX_LOG_EVENTS_PER_SECOND: usize = 120;
 
 /// 进程输出行事件载荷
 #[derive(Clone, Serialize)]
@@ -35,32 +39,26 @@ pub struct PreinstallLogPayload {
 ///
 /// 仅在 Unix 被 `cancel` 使用（Windows 取消安装走 taskkill 按命令行匹配），
 /// 故 Windows 下按项目约定允许 dead_code。
-#[cfg_attr(windows, allow(dead_code))]
 static ACTIVE_PLUGIN_PID: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
 
-#[cfg_attr(windows, allow(dead_code))]
 fn active_pid_lock() -> &'static Mutex<Option<u32>> {
     ACTIVE_PLUGIN_PID.get_or_init(|| Mutex::new(None))
 }
 
 /// 当前进行中安装的根进程 PID（取消安装用）。
-#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn active_plugin_pid() -> Option<u32> {
     *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 记录/清除当前安装进程 PID（guard-drop 模式，作用域结束自动复位）。
-#[cfg_attr(windows, allow(dead_code))]
 struct PidGuard;
 
-#[cfg_attr(windows, allow(dead_code))]
 impl PidGuard {
     fn set(pid: u32) {
         *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
     }
 }
 
-#[cfg_attr(windows, allow(dead_code))]
 impl Drop for PidGuard {
     fn drop(&mut self) {
         *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -89,7 +87,8 @@ pub(crate) async fn run_plugin_process(
     envs: &HashMap<String, String>,
     window: &WebviewWindow,
 ) -> Result<(i32, String), String> {
-    let captured = Arc::new(Mutex::new(String::new()));
+    let captured = output::new_capture();
+    let log_limiter = Arc::new(Mutex::new(LogEventLimiter::new()));
 
     #[cfg(windows)]
     {
@@ -97,31 +96,66 @@ pub(crate) async fn run_plugin_process(
             workflow::win_spawn::spawn_with_hidden_console_tracked(node, args, Some(cwd), envs)
                 .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
 
-        spawn_line_emitter(stdout, window.clone(), captured.clone());
-        spawn_line_emitter(stderr, window.clone(), captured.clone());
+        spawn_line_emitter(
+            stdout,
+            window.clone(),
+            captured.clone(),
+            log_limiter.clone(),
+        );
+        spawn_line_emitter(stderr, window.clone(), captured.clone(), log_limiter);
 
         let handle = WaitableHandle(handle);
+        let pid = unsafe { windows_sys::Win32::System::Threading::GetProcessId(handle.0) };
+        if pid == 0 {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle.0) };
+            return Err("PREINSTALL_WAIT: unable to identify plugin process".to_string());
+        }
+        PidGuard::set(pid);
+        let _pid_guard = PidGuard;
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
             use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, WaitForSingleObject, INFINITE,
+                GetExitCodeProcess, WaitForSingleObject, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
             };
             let handle = handle;
             unsafe {
-                let wait = WaitForSingleObject(handle.0, INFINITE);
+                let wait = WaitForSingleObject(
+                    handle.0,
+                    PLUGIN_PROCESS_TIMEOUT.as_millis().min(u32::MAX as u128) as u32,
+                );
+                if wait == WAIT_TIMEOUT {
+                    workflow::kill_pid_tree(pid);
+                    let terminated = WaitForSingleObject(handle.0, 5_000);
+                    CloseHandle(handle.0);
+                    if terminated == WAIT_TIMEOUT {
+                        return Err(
+                            "PREINSTALL_TIMEOUT: plugin process did not exit after termination"
+                                .to_string(),
+                        );
+                    }
+                    return Err(format!(
+                        "PREINSTALL_TIMEOUT: plugin process exceeded {} seconds",
+                        PLUGIN_PROCESS_TIMEOUT.as_secs()
+                    ));
+                }
+                if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
+                    CloseHandle(handle.0);
+                    return Err("PREINSTALL_WAIT: WaitForSingleObject failed".to_string());
+                }
                 let mut code: u32 = 0;
                 if GetExitCodeProcess(handle.0, &mut code) == 0 {
-                    code = wait;
+                    CloseHandle(handle.0);
+                    return Err("PREINSTALL_WAIT: GetExitCodeProcess failed".to_string());
                 }
                 CloseHandle(handle.0);
-                code as i32
+                Ok(code as i32)
             }
         })
         .await
-        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))??;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        Ok((exit_code, drain_captured(captured)))
+        Ok((exit_code, output::drain_captured(captured)))
     }
 
     #[cfg(not(windows))]
@@ -129,6 +163,7 @@ pub(crate) async fn run_plugin_process(
         use std::os::unix::process::CommandExt;
         let mut child = Command::new(node)
             .args(args)
+            .env_clear()
             .envs(envs)
             .current_dir(cwd)
             .stdin(Stdio::null())
@@ -148,53 +183,87 @@ pub(crate) async fn run_plugin_process(
         log::info!("dsh plugin install started, pid {pid}");
 
         if let Some(stdout) = child.stdout.take() {
-            spawn_line_emitter(stdout, window.clone(), captured.clone());
+            spawn_line_emitter(
+                stdout,
+                window.clone(),
+                captured.clone(),
+                log_limiter.clone(),
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_line_emitter(stderr, window.clone(), captured.clone());
+            spawn_line_emitter(stderr, window.clone(), captured.clone(), log_limiter);
         }
 
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
-            child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
+            let deadline = Instant::now() + PLUGIN_PROCESS_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status.code().unwrap_or(1)),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(None) => {
+                        workflow::kill_pid_tree(pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!(
+                            "PREINSTALL_TIMEOUT: plugin process exceeded {} seconds",
+                            PLUGIN_PROCESS_TIMEOUT.as_secs()
+                        ));
+                    }
+                    Err(error) => break Err(format!("PREINSTALL_WAIT: {error}")),
+                }
+            }
         })
         .await
-        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        .map_err(|e| format!("PREINSTALL_WAIT: {e}"))??;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        Ok((exit_code, drain_captured(captured)))
+        Ok((exit_code, output::drain_captured(captured)))
     }
 }
 
-/// 取出（并清空）共享缓冲区中的全部捕获输出。
-fn drain_captured(captured: Arc<Mutex<String>>) -> String {
-    captured
-        .lock()
-        .map(|mut buf| std::mem::take(&mut *buf))
-        .unwrap_or_default()
+struct LogEventLimiter {
+    window_started: Instant,
+    emitted: usize,
+}
+
+impl LogEventLimiter {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            emitted: 0,
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        if self.window_started.elapsed() >= Duration::from_secs(1) {
+            self.window_started = Instant::now();
+            self.emitted = 0;
+        }
+        if self.emitted >= MAX_LOG_EVENTS_PER_SECOND {
+            return false;
+        }
+        self.emitted += 1;
+        true
+    }
 }
 
 /// 在独立线程中逐行读取进程输出：实时通过 `preinstall-log` 事件转发，
-/// 同时追加进共享缓冲区。
-/// 使用静态泛型约束 `R: Read + Send + 'static` 避免动态派发（Box<dyn Read>）堆分配。
-fn spawn_line_emitter<R: Read + Send + 'static>(
+/// 同时追加进有界尾部缓冲区。
+fn spawn_line_emitter<R: std::io::Read + Send + 'static>(
     reader: R,
     window: WebviewWindow,
-    captured: Arc<Mutex<String>>,
+    captured: CapturedOutput,
+    limiter: Arc<Mutex<LogEventLimiter>>,
 ) {
-    std::thread::spawn(move || {
-        let buf = BufReader::new(reader);
-        for line in buf.lines().map_while(Result::ok) {
-            let trimmed = line.trim_end().to_string();
-            let _ = window.emit(
-                PREINSTALL_LOG_EVENT,
-                PreinstallLogPayload {
-                    line: trimmed.clone(),
-                },
-            );
-            if let Ok(mut acc) = captured.lock() {
-                acc.push_str(&trimmed);
-                acc.push('\n');
-            }
+    output::spawn_bounded_reader(reader, captured, move |line| {
+        let should_emit = limiter
+            .lock()
+            .map(|mut budget| budget.allow())
+            .unwrap_or(false);
+        if should_emit {
+            let _ = window.emit(PREINSTALL_LOG_EVENT, PreinstallLogPayload { line });
         }
     });
 }

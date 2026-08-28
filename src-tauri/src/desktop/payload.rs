@@ -17,4 +17,6 @@ pub struct NativeNotificationPayload {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) tag: Option<String>,
+    #[serde(default)]
+    pub(crate) session_id: Option<String>,
 }

@@ -34,6 +34,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::errors;
 use super::installed::{installed_name, is_installed, profile_dir};
+use super::output;
 use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
 use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
 use super::recovery::is_actionable_plugin_ref;
@@ -345,7 +346,7 @@ pub(crate) fn build_plugin_envs(
     // node 可安全 canonicalize；失败时回退原值。
     let node_abs = dunce::canonicalize(&node).unwrap_or_else(|_| node.clone());
     let bin_dir = cli::get_bin_dir(app_handle);
-    let mut envs = HashMap::from([
+    let mut explicit = HashMap::from([
         (
             "DSH_HOME".to_string(),
             config::get_dsh_data_path(app_handle)
@@ -366,16 +367,22 @@ pub(crate) fn build_plugin_envs(
     // 用户 pnpm 过旧/不可探测时强制 pnpm shim 优先捆绑版，避免 8/9 的
     // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
     if prefer_bundled_pnpm {
-        envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+        explicit.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
     } else if let Some(pnpm) = cli::find_user_pnpm(app_handle) {
         // 显式注入绝对路径，避免子进程在不同 PATH/CWD 下重新发现失败。
         // Unix 保留 mise 依赖 argv[0] 的 shim 链接；Windows 仍解析连接点并剥离
         // `\\?\`。同时防御性排除应用自身 shim，避免递归调用。
         if let Some(pnpm_value) = cli::pnpm_env_value(&pnpm, &bin_dir) {
-            envs.insert("DSH_PNPM".to_string(), pnpm_value);
+            explicit.insert("DSH_PNPM".to_string(), pnpm_value);
         }
     }
 
+    let safe = crate::service::env::safe_environment();
+    let existing_path = safe
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("");
     let mut paths = vec![bin_dir];
     if let Some(node_dir) = node_abs.parent() {
         paths.push(node_dir.to_path_buf());
@@ -385,14 +392,12 @@ pub(crate) fn build_plugin_envs(
     if let Some(git_dir) = config::get_git_cmd_dir(app_handle) {
         paths.push(git_dir);
     }
-    paths.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
+    paths.extend(std::env::split_paths(existing_path));
 
     if let Ok(joined) = std::env::join_paths(paths) {
-        envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
+        explicit.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
     }
-    envs
+    crate::service::env::environment_with_explicit(&explicit)
 }
 
 /// 运行 `dsh plugin` 子命令并应用 `allowBuilds` 重试：
@@ -406,8 +411,8 @@ pub(crate) fn build_plugin_envs(
 /// `lib/index.js` 缺失」的坏态，下一次启动便因 `${DSH_HOME}/profiles/<档案>/node_modules/<pkg>/lib/index.js`
 /// 无法解析而 `ERR_MODULE_NOT_FOUND` 失败。
 ///
-/// 返回 `(退出码, 所有尝试累积的输出)`，避免最后一次重试无输出时丢失此前诊断。
-/// 输出仍逐行经 `preinstall-log` 实时推送。
+/// 返回 `(退出码, 所有尝试累积的有界尾部输出)`，避免最后一次重试无输出时丢失
+/// 此前诊断，同时防止重试次数放大内存占用。输出仍逐行经 `preinstall-log` 实时推送。
 ///
 /// 注意：pnpm v11 在 `allowBuilds` 将 git 托管插件（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）
 /// 或传递依赖（`ERR_PNPM_IGNORED_BUILDS`）拦截时仍可能以 **exit 0** 退出（假成功），
@@ -468,9 +473,9 @@ fn append_command_output(all_output: &mut String, captured: &str) {
         return;
     }
     if !all_output.is_empty() && !all_output.ends_with('\n') {
-        all_output.push('\n');
+        output::append_bounded_string(all_output, "\n");
     }
-    all_output.push_str(captured);
+    output::append_bounded_string(all_output, captured);
 }
 
 /// 升级单个插件：`dsh plugin --profile <当前档案> update <id>`

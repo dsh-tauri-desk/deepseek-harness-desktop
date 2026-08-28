@@ -418,7 +418,6 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS)
-        .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS)
         .initialization_script_for_all_frames(crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS);
 
@@ -513,7 +512,6 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::open_desktop_installer,
         crate::bridge::get_desktop_about,
         crate::bridge::open_external_url,
-        crate::bridge::read_clipboard_image,
         crate::desktop::notification::show_native_notification,
         crate::bridge::log_frontend,
     ]

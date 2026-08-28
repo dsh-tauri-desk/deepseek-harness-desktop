@@ -192,21 +192,10 @@ pub fn spawn_with_hidden_console_tracked(
 
 /// 构建完整的 Unicode 环境块（每个条目以 `\0` 结尾，整个块以额外 `\0` 结尾）
 fn build_env_block(extra: &HashMap<String, String>) -> Vec<u16> {
-    let mut vars: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-    for (key, value) in extra {
-        let key_os = OsString::from(key);
-        // Windows 环境变量大小写不敏感：用户/系统环境里的键通常是 `Path` 而非
-        // `PATH`，若按大小写敏感匹配会追加重复键，子进程（CreateProcessW 环境块）
-        // 取到旧值。必须大小写不敏感匹配再替换。
-        if let Some(entry) = vars
-            .iter_mut()
-            .find(|(existing, _)| existing.eq_ignore_ascii_case(&key_os))
-        {
-            entry.1 = OsString::from(value);
-        } else {
-            vars.push((key_os, OsString::from(value)));
-        }
-    }
+    let vars: Vec<(OsString, OsString)> = crate::service::env::environment_with_explicit(extra)
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect();
 
     let mut block = Vec::new();
     for (key, value) in vars {
@@ -298,7 +287,7 @@ mod tests {
     #[test]
     fn spawn_captures_stdout_with_env_and_workdir() {
         let mut envs = HashMap::new();
-        envs.insert("DSH_WIN_SPAWN_TEST".to_string(), "hello world".to_string());
+        envs.insert("DSH_HOME".to_string(), "hello world".to_string());
 
         let workdir =
             std::env::temp_dir().join(format!("dsh_win_spawn_test_{}", std::process::id()));
@@ -307,7 +296,7 @@ mod tests {
         let args = vec![
             OsString::from("/d"),
             OsString::from("/c"),
-            OsString::from("echo %DSH_WIN_SPAWN_TEST% && cd"),
+            OsString::from("echo %DSH_HOME% && cd"),
         ];
         let (stdout, _stderr) = spawn_with_hidden_console(
             Path::new("C:\\Windows\\System32\\cmd.exe"),

@@ -18,8 +18,8 @@
 
 **构建期** — `scripts/prebuild.ts` 由 `pnpm build` 自动触发（`prebuild` 脚本，而 Tauri 的 `beforeBuildCommand` 恰好是 `pnpm build`）。对 `internal-plugins.json` 中的每个条目，它产出 `src-tauri/resources/internal-plugins/<id>/`：
 
-- `github:owner/repo` — `git clone --depth 1` → `pnpm install` → `pnpm run build`（存在 `build` 脚本时）→ 拷贝构建产物与 `package.json`。
-- `name[@version]`（npm 包名，含 scoped `@scope/name`）— 在临时工程里 `pnpm add <spec> --ignore-scripts` → 拷贝 `node_modules/<name>/`。
+- `github:owner/repo[#ref]` — 校验 ref 后执行 `git clone --depth 1 --single-branch`，核对清单中的完整 commit SHA，再执行 `pnpm install` → `pnpm run build`（存在 `build` 脚本时）→ 拷贝构建产物与 `package.json`。
+- `name@version`（npm 包名，含 scoped `@scope/name`）— 用 `npm pack` 下载精确 tarball，核对清单中的 `sha512` 完整性摘要，再让 `pnpm` 在禁用脚本的前提下安装已核对的本地 tarball。
 
 **运行期** — 在 harness 服务启动前，`service::plugin::internal::ensure` 逐个核对内部插件：① 它是否在当前档案的 `package.json` `dependencies` 中声明；② 声明值是否仍指向当前捆绑目录（`link:<绝对路径>`）；③ `node_modules/<package>` 是否真实存在。任一不满足（缺失 / 路径变更 / 用户卸载 / node_modules 被清空）→ 走常规安装流程，用 `link:` 依赖强制重装。
 
@@ -32,7 +32,8 @@
 ```json
 {
   "id": "dsh-my-plugin",
-  "spec": "github:you/dsh-my-plugin",
+  "spec": "github:you/dsh-my-plugin#v1.0.0",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
   "name": "DSH My Plugin",
   "description": "插件做什么",
   "repoUrl": "https://github.com/you/dsh-my-plugin"
@@ -42,16 +43,18 @@
 字段说明：
 
 - `id` — 预设唯一 id（仓库跳转 / 查找键；也是未显式声明 `package` 时的默认包名，用于“已安装”检测）。清单内 id 必须唯一（由 `preset_json_ids_are_unique` 单测保证）。
-- `spec` — 来源。要么 `github:owner/repo`（源码形态），要么裸 npm 包名 `name[@version]`（已发布产物形态，跳过构建）。这是 `prebuild.ts` 喂给 git/pnpm 的值。
+- `spec` — 来源。要么 `github:owner/repo[#ref]`（源码形态），要么精确 npm 包版本 `name@version`（已发布产物形态，跳过构建）。这是 `prebuild.ts` 喂给 git/npm/pnpm 的值。
+- `integrity` — npm 来源必填，填写公共 npm registry 中该 tarball 的 `sha512-...` 完整性字符串。
+- `commit` — Git 来源必填，填写完整 40 位 commit SHA；可选的 `#ref` 会先被校验并检出，随后与该 SHA 比对。
 - `name`、`description`、`repoUrl` — 展示元数据；`repoUrl` 供界面“仓库跳转”链接使用。
 - `package` — 可选。当真实 npm 包名与 `id` 不一致（常见于 scoped 包 `@scope/name`）时在这里声明；用于“已安装”检测与自愈对账。缺省回落 `id`。
 - chip 标记 `recommended` / `fix` / `defaultChecked` — 对内置插件无意义（它们不进清单），保留也无妨。
 
 ### 2. 构建期打包
 
-无需手工操作。`pnpm tauri build` 会执行 `pnpm build` → `pnpm prebuild` → `tsx scripts/prebuild.ts`，读取内部插件清单并产出 `src-tauri/resources/internal-plugins/<id>/`。构建机需要 PATH 上有 `git` 与 `pnpm`，并能访问 GitHub（`github:` 来源）与 npm registry（包名来源）。
+无需手工操作。`pnpm tauri build` 会执行 `pnpm build` → `pnpm prebuild` → `tsx scripts/prebuild.ts`，读取内部插件清单并产出 `src-tauri/resources/internal-plugins/<id>/`。构建机需要 PATH 上有 `git`、`npm` 与 `pnpm`，并能访问 GitHub（`github:` 来源）与 npm registry（包名来源）。
 
-捆绑目录通过 `bundle.resources` 随安装包分发（`src-tauri/tauri.conf.json` 中的 `"resources": ["resources/**/*"]`）。
+捆绑目录通过 `bundle.resources` 随安装包分发（`src-tauri/tauri.conf.json` 中的 `"resources": ["resources/**/*"]`）。`files` 只接受字面量安全相对路径，拒绝绝对路径、目录穿越和符号链接。
 
 插件的 `package.json` 最好声明 `files` 白名单，让 prebuild 只拷贝运行必需文件；未声明时则拷贝整目录但排除 `node_modules` / `.git` / `.npmrc` 等。`package.json` 恒在最后拷贝，保证一定存在（它是 `pnpm add link:<目录>` 的包名/入口来源）。
 

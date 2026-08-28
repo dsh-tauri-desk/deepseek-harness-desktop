@@ -3,10 +3,11 @@
 use crate::config;
 use serde::Serialize;
 use std::fs;
+use std::path::Path;
 use tauri::AppHandle;
 
 use super::path::{get_bin_dir, get_shim_path, path_registered, register_path, unregister_path};
-use super::shim::{user_dsh_preserved, write_shims};
+use super::shim::{is_generated_shim, user_dsh_preserved, write_shims};
 
 /// 命令行集成状态（设置页展示）
 #[derive(Debug, Clone, Serialize)]
@@ -92,20 +93,32 @@ pub fn remove(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
     #[cfg(windows)]
     {
         use super::shim::{PNPM_SHIM_CMD_NAME, PNPM_SHIM_PS1_NAME, SHIM_CMD_NAME, SHIM_PS1_NAME};
-        let _ = fs::remove_file(bin_dir.join(SHIM_CMD_NAME));
-        let _ = fs::remove_file(bin_dir.join(SHIM_PS1_NAME));
-        let _ = fs::remove_file(bin_dir.join(PNPM_SHIM_CMD_NAME));
-        let _ = fs::remove_file(bin_dir.join(PNPM_SHIM_PS1_NAME));
+        remove_generated_shim(&bin_dir.join(SHIM_CMD_NAME));
+        remove_generated_shim(&bin_dir.join(SHIM_PS1_NAME));
+        remove_generated_shim(&bin_dir.join(PNPM_SHIM_CMD_NAME));
+        remove_generated_shim(&bin_dir.join(PNPM_SHIM_PS1_NAME));
     }
     #[cfg(not(windows))]
     {
         use super::shim::{PNPM_SHIM_SH_NAME, SHIM_SH_NAME};
-        let _ = fs::remove_file(bin_dir.join(SHIM_SH_NAME));
-        let _ = fs::remove_file(bin_dir.join(PNPM_SHIM_SH_NAME));
+        remove_generated_shim(&bin_dir.join(SHIM_SH_NAME));
+        remove_generated_shim(&bin_dir.join(PNPM_SHIM_SH_NAME));
     }
 
     unregister_path(app_handle)?;
 
     log::info!("dsh/pnpm CLI links removed");
     Ok(get_status(app_handle))
+}
+
+fn remove_generated_shim(path: &Path) {
+    if !is_generated_shim(path) {
+        return;
+    }
+    if let Err(error) = fs::remove_file(path) {
+        log::warn!(
+            "failed to remove generated CLI shim {}: {error}",
+            path.display()
+        );
+    }
 }

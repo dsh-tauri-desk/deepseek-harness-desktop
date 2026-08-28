@@ -5,11 +5,7 @@
 //! debug 桌面端本来就直接联接本地插件源码，因此将该坏 hot-swap 降级为页面自动刷新：
 //! 仍由 `/plugins/events` 精确触发，不轮询页面，也不会影响 release。
 
-use std::fs;
-use std::path::PathBuf;
-
-use crate::config;
-use crate::service::core::{active_source, local_core_package_dir, CoreSource};
+use crate::utils::{patch_dsh, PatchOutcome};
 
 // HARDCODE：以下锚点绑定内置 DSH 0.1.1-rc.2 的 client-HMR bundle；仅 debug 生效。
 const PATCH_MARKER: &str = "dsh-tauri-desktop: debug client plugin reload fallback";
@@ -24,12 +20,8 @@ const PATCHED: &str = r#"case "rebuilt":
 						window.location.reload();
 						break;"#;
 
-#[derive(Debug, PartialEq, Eq)]
-enum PatchOutcome {
-    AlreadyPatched,
-    AnchorMissing,
-    Patched(String),
-}
+/// 相对活动核心安装目录的 client-hmr `lib/client.js` 包内路径。
+const CLIENT_HMR_CLIENT_JS: &str = "node_modules/@deepseek-ai/dsh-client-hmr/lib/client.js";
 
 fn patch_source(source: &str) -> PatchOutcome {
     if source.contains(PATCH_MARKER) {
@@ -44,53 +36,13 @@ fn patch_source(source: &str) -> PatchOutcome {
 /// debug 启动前把损坏的插件 hot-swap 降级为自动页面刷新。
 #[cfg(debug_assertions)]
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let client_js = active_core_install_dir(app_handle)
-        .join("node_modules/@deepseek-ai/dsh-client-hmr/lib/client.js");
-    if !client_js.exists() {
-        log::info!(
-            "client-hmr client.js not found, skip debug reload patch: {}",
-            client_js.display()
-        );
-        return Ok(());
-    }
-    let source = fs::read_to_string(&client_js)
-        .map_err(|e| format!("CLIENT_HMR_PATCH_READ: {} failed: {e}", client_js.display()))?;
-    match patch_source(&source) {
-        PatchOutcome::AlreadyPatched => {
-            log::info!("debug client plugin reload fallback already applied")
-        }
-        PatchOutcome::AnchorMissing => log::warn!(
-            "debug client plugin reload fallback anchor missing, skip patch: {}",
-            client_js.display()
-        ),
-        PatchOutcome::Patched(patched) => {
-            fs::write(&client_js, patched).map_err(|e| {
-                format!(
-                    "CLIENT_HMR_PATCH_WRITE: {} failed: {e}",
-                    client_js.display()
-                )
-            })?;
-            log::info!(
-                "debug client plugin reload fallback patched: {}",
-                client_js.display()
-            );
-        }
-    }
-    Ok(())
+    patch_dsh(app_handle, CLIENT_HMR_CLIENT_JS, patch_source)
 }
 
 /// release 不修改客户端重载行为。
 #[cfg(not(debug_assertions))]
 pub fn apply(_app_handle: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
-}
-
-fn active_core_install_dir(app_handle: &tauri::AppHandle) -> PathBuf {
-    match active_source(app_handle) {
-        CoreSource::Local => local_core_package_dir(app_handle)
-            .unwrap_or_else(|| config::get_dsh_install_path(app_handle)),
-        CoreSource::App => config::get_dsh_install_path(app_handle),
-    }
 }
 
 #[cfg(test)]

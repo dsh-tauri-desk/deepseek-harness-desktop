@@ -1,11 +1,8 @@
-pub(crate) mod client_hmr_patch;
-pub(crate) mod renderer_patch;
 pub mod status;
 pub mod utils;
 pub(crate) mod win_inspector;
 #[cfg(windows)]
 pub(crate) mod win_spawn;
-pub(crate) mod workspace_patch;
 
 use crate::config;
 use crate::service::download;
@@ -790,17 +787,22 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 活动核心的 dsh-client-ui-renderer lib/client.js，已含导出即跳过（幂等；核心
     // 换版本后自动重打，上游官方导出后自动退休）。最佳努力：失败只告警，不阻断
     // 启动——未打补丁时插件侧降级，官方设置 dialog 照常工作，绝不白屏。
-    if let Err(e) = renderer_patch::apply(&app_handle) {
+    if let Err(e) = crate::service::patch::renderer::apply(&app_handle) {
         log::warn!("renderer SlotOutlet patch failed: {e}");
+    }
+    // Expose an id-based SessionStore.remove facade so plugins can perform a
+    // real in-memory teardown instead of leaving deleted sessions ungrouped.
+    if let Err(e) = crate::service::patch::session::apply(&app_handle) {
+        log::warn!("SessionStore.remove patch failed: {e}");
     }
     // worktree 会话以隔离 cwd 执行，但产品归属仍是源 Workspace；放宽上游显式
     // attach 的 cwd 相等约束，其他 cwd 有效性校验保持不变。最佳努力且幂等。
-    if let Err(e) = workspace_patch::apply(&app_handle) {
+    if let Err(e) = crate::service::patch::workspace::apply(&app_handle) {
         log::warn!("workspace worktree membership patch failed: {e}");
     }
     // 当前 DSH client-HMR 会卸载第三方插件却不重新挂载。debug 直接联接本地
     // 插件源码，故将 rebuilt 降级为自动刷新页面；release 保持上游行为。
-    if let Err(e) = client_hmr_patch::apply(&app_handle) {
+    if let Err(e) = crate::service::patch::client_hmr::apply(&app_handle) {
         log::warn!("debug client plugin reload fallback patch failed: {e}");
     }
     // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，

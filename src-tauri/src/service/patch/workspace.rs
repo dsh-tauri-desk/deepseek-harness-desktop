@@ -5,11 +5,7 @@
 //! `cwd === workspace.path` 过滤，导致合法 worktree 会话只能落入“未分组”。本补丁仅
 //! 放宽显式 attach 后的归属保持；cwd 缺失、无法解析或不是目录的安全校验仍由上游保留。
 
-use std::fs;
-use std::path::PathBuf;
-
-use crate::config;
-use crate::service::core::{active_source, local_core_package_dir, CoreSource};
+use crate::utils::{patch_dsh, PatchOutcome};
 
 // HARDCODE：以下锚点绑定内置 DSH 0.1.1-rc.2 的压缩后源码；锚点变化时安全跳过并告警。
 const PATCH_MARKER: &str = "dsh-tauri-worktree: relaxed explicit workspace membership";
@@ -21,12 +17,8 @@ const ATTACH_PATCHED: &str = "/* dsh-tauri-worktree: relaxed explicit workspace 
 const MUTATE_ORIGINAL: &str = "const sessionIds = changed.sessionIds.filter((id) => this.host.sessionPath(id) === changed.path);";
 const MUTATE_PATCHED: &str = "const sessionIds = changed.sessionIds; /* dsh-tauri-worktree: relaxed explicit workspace membership */";
 
-#[derive(Debug, PartialEq, Eq)]
-enum PatchOutcome {
-    AlreadyPatched,
-    AnchorMissing,
-    Patched(String),
-}
+/// 相对活动核心安装目录的 workspace `lib/index.js` 包内路径。
+const WORKSPACE_INDEX_JS: &str = "node_modules/@deepseek-ai/dsh-workspace/lib/index.js";
 
 fn patch_source(source: &str) -> PatchOutcome {
     if source.contains(PATCH_MARKER) {
@@ -45,52 +37,10 @@ fn patch_source(source: &str) -> PatchOutcome {
     PatchOutcome::Patched(patched)
 }
 
+/// 对活动核心的 dsh-workspace `lib/index.js` 应用补丁（幂等）。
+/// 返回 Err 表示读/写失败；文件缺失、已打过、锚点变更均静默跳过（Ok）。
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let workspace_js = active_core_install_dir(app_handle)
-        .join("node_modules/@deepseek-ai/dsh-workspace/lib/index.js");
-    if !workspace_js.exists() {
-        log::info!(
-            "workspace index.js not found, skip worktree membership patch: {}",
-            workspace_js.display()
-        );
-        return Ok(());
-    }
-    let source = fs::read_to_string(&workspace_js).map_err(|e| {
-        format!(
-            "WORKSPACE_PATCH_READ: {} failed: {e}",
-            workspace_js.display()
-        )
-    })?;
-    match patch_source(&source) {
-        PatchOutcome::AlreadyPatched => {
-            log::info!("workspace worktree membership patch already applied")
-        }
-        PatchOutcome::AnchorMissing => log::warn!(
-            "workspace worktree membership anchors missing, skip patch: {}",
-            workspace_js.display()
-        ),
-        PatchOutcome::Patched(patched) => {
-            fs::write(&workspace_js, patched).map_err(|e| {
-                format!(
-                    "WORKSPACE_PATCH_WRITE: {} failed: {e}",
-                    workspace_js.display()
-                )
-            })?;
-            log::info!(
-                "workspace worktree membership patched: {}",
-                workspace_js.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-fn active_core_install_dir(app_handle: &tauri::AppHandle) -> PathBuf {
-    match active_source(app_handle) {
-        CoreSource::Local => local_core_package_dir(app_handle)
-            .unwrap_or_else(|| config::get_dsh_install_path(app_handle)),
-        CoreSource::App => config::get_dsh_install_path(app_handle),
-    }
+    patch_dsh(app_handle, WORKSPACE_INDEX_JS, patch_source)
 }
 
 #[cfg(test)]

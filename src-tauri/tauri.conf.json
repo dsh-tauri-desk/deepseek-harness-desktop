@@ -43,7 +43,8 @@
         "uninstallerIcon": "icons/icon.ico"
       },
       "wix": {
-        "language": ["en-US", "zh-CN"]
+        "language": ["en-US", "zh-CN"],
+        "fragmentPaths": ["./windows/fragments/autostart-cleanup.wxs"]
       }
     },
     "shortDescription": "Desktop application for DeepSeek Harness",

@@ -29,5 +29,8 @@ pub fn emit_status(app_handle: &AppHandle) {
 }
 
 pub fn get_status() -> Status {
-    get_status_lock().lock().unwrap_or_else(|e| e.into_inner()).clone()
+    get_status_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }

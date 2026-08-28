@@ -75,10 +75,12 @@ time, so the PR only needs to add the JSON entry.
 
 ### Built-in (internal) plugins
 
-For plugins that must ship *with* the installer and are treated as part of the
-app (auto-installed and auto-healed at startup), set `"internal": true` and add
-an extra `package` field when the real npm name differs from `id`. Those entries
-are bundled at build time by `scripts/prebuild.ts` into
-`resources/preset-plugins/<id>/` (via `bundle.resources`) and never appear in the
-first-run checklist. See the [built-in plugin guide](../../docs/BUILTIN_PLUGINS.md)
-for the full workflow.
+Plugins that must ship *with* the installer and are treated as part of the app
+(auto-installed and auto-healed at startup) live in `internal-plugins.json`,
+separate from the community preset list. Add an extra `package` field when the
+real npm name differs from `id`. The entries are bundled at build time by
+`scripts/prebuild.ts` into `resources/internal-plugins/<id>/` (via
+`bundle.resources`) and never appear in the first-run checklist. On startup the
+app removes the legacy `resources/preset-plugins/` directory left by upgrades.
+See the [built-in plugin guide](../../docs/BUILTIN_PLUGINS.md) for the full
+workflow.

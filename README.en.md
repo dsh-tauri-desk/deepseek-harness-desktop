@@ -29,7 +29,14 @@
   <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
 </p>
 
-> [More preview images](./docs/PREVIEW.md)
+<table>
+  <tr>
+    <td><a href="docs/PREVIEW.md"><img src="./docs/images/previews/preview-1.png" alt="preview 1" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-2.png" alt="preview 2" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-4.png" alt="preview 4" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-5.png" alt="preview 5" /></a></td>
+  </tr>
+</table>
 
 ## Features
 
@@ -63,7 +70,9 @@ First-party plugins bundled with the installer:
 - [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — provides a communication channel with the Tauri 2 shell
 - [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — provides a custom settings sidebar for the Tauri 2 shell
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — creates an isolated Git worktree per session, with checkout to a local branch or archive-and-abandon flows
-- More coming soon...
+- [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — sidebar shell: compact logo row, a panel area (New Session + third-party panel items via `sidebar.panel.action`), and the `panel.protocol` service
+- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills and MCP management with skill repository import
+- More plugins coming soon...
 
 ## Quick Start
 

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { PluginRecovery } from '@/components/plugin-recovery'
+import { useDesktopZoom } from '@/hooks/use-desktop-zoom'
 import { useIframeShim } from '@/hooks/use-iframe-shim'
 import { store } from '@/store'
 import { Loadable } from './loadable'
@@ -33,6 +34,7 @@ export function Webview() {
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
+  useDesktopZoom(iframeRef)
   useIframeShim(iframeRef)
 
   if (status === 'error') {

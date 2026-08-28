@@ -29,14 +29,15 @@
   <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
 </p>
 
-> [更多浏览图片](/docs/PREVIEW.md)
+<table>
+  <tr>
+    <td><a href="docs/PREVIEW.md"><img src="./docs/images/previews/preview-1.png" alt="preview 1" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-2.png" alt="preview 2" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-4.png" alt="preview 4" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-5.png" alt="preview 5" /></a></td>
+  </tr>
+</table>
 
-## 功能
-
-- ⚡️ **零环境** — 首次启动无须 Node 运行时与 Harness 内核；默认使用本地环境，不修改已有的系统环境。
-- 🔄 **内核更新** — 应用内同步上游最新 Harness 版本，无需重装即生效；支持多版本核心管理。
-- 🖥️ **应用配置** — 统一的配置对话框（调试 / 档案 / 插件 / 核心），界面按钮中英双语本地化，并适配暗色模式。
-- 🗂️ **档案隔离** — 在应用配置彼此隔离的档案，插件、补丁与设置各自独立，互不干扰。
 - 🧩 **插件管理** — 插件面板管理已安装插件，出现异常时提供升级 / 卸载入口，错误详情。
 - 🎁 **内置插件** — 随安装包内置插件，以及将来引入更多高质量的内置插件。
 - 🪶 **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。
@@ -63,6 +64,8 @@
 - [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — 提供与 Tauri 2 外壳的通信通道
 - [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — 为 Tauri 2 外壳提供自定义设置侧边栏
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
+- [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
+- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills/MCP 管理与导入技能仓库
 - 更多即将引入的插件...
 
 ## 快速开始

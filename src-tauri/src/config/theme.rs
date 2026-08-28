@@ -1,8 +1,8 @@
 use std::fs;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter};
 #[cfg(target_os = "macos")]
 use tauri::Manager;
+use tauri::{AppHandle, Emitter};
 
 use super::runtime::get_dsh_data_path;
 

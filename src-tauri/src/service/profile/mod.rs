@@ -28,7 +28,8 @@ const WEB_PROFILE_BUNDLES: [&str; 2] = ["@deepseek-ai/dsh-base", "@deepseek-ai/d
 const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n";
 
 /// dsh `initProfile` 生成的 pnpm 设置（与官方一致）
-const PROFILE_PNPM_WORKSPACE: &str = "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
+const PROFILE_PNPM_WORKSPACE: &str =
+    "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
 
 /// 档案行（序列化 camelCase 给前端）
 #[derive(Debug, Clone, Serialize)]
@@ -58,7 +59,9 @@ pub fn profile_dir_of(app_handle: &AppHandle, id: &str) -> PathBuf {
 /// （web 由 dsh 启动/插件操作时按需初始化）。
 pub fn active_profile(app_handle: &AppHandle) -> String {
     let stored = config::get_store_dat_setting(app_handle).active_profile;
-    if !stored.is_empty() && stored != DEFAULT_PROFILE && profile_dir_of(app_handle, &stored).is_dir()
+    if !stored.is_empty()
+        && stored != DEFAULT_PROFILE
+        && profile_dir_of(app_handle, &stored).is_dir()
     {
         stored
     } else {
@@ -79,7 +82,11 @@ fn manifest_display_name(dir: &Path, id: &str) -> String {
         .map(String::from)
         .unwrap_or_else(|| raw);
     let fallback = id.to_string();
-    let name = if stripped.is_empty() { fallback } else { stripped };
+    let name = if stripped.is_empty() {
+        fallback
+    } else {
+        stripped
+    };
     // 首字母大写，与既有「Web」展示风格一致
     let mut chars = name.chars();
     match chars.next() {
@@ -197,10 +204,14 @@ pub fn set_active(app_handle: &AppHandle, id: &str) -> Result<Profile, String> {
 /// 删除档案（默认档案与使用中的档案不可删除）。
 pub fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     if id == DEFAULT_PROFILE {
-        return Err("PROFILE_DEFAULT_NOT_REMOVABLE: the default profile cannot be removed".to_string());
+        return Err(
+            "PROFILE_DEFAULT_NOT_REMOVABLE: the default profile cannot be removed".to_string(),
+        );
     }
     if id == active_profile(app_handle) {
-        return Err("PROFILE_ACTIVE_NOT_REMOVABLE: the active profile cannot be removed".to_string());
+        return Err(
+            "PROFILE_ACTIVE_NOT_REMOVABLE: the active profile cannot be removed".to_string(),
+        );
     }
     // 路径安全：ID 字符集白名单 + 目标必须位于 profiles 根目录内（防 `..` 穿越）
     let profiles_root = config::get_dsh_data_path(app_handle).join("profiles");
@@ -246,7 +257,10 @@ fn init_profile_dir(dir: &Path, id: &str) -> Result<(), String> {
     // 与 ensure_profile_npmrc 一致地预写 .npmrc（幂等，绝不覆盖已有配置）。
     let npmrc_path = dir.join(".npmrc");
     let npmrc_existing = fs::read_to_string(&npmrc_path).unwrap_or_default();
-    if !npmrc_existing.lines().any(|l| l.trim() == "confirmModulesPurge=false") {
+    if !npmrc_existing
+        .lines()
+        .any(|l| l.trim() == "confirmModulesPurge=false")
+    {
         let mut content = npmrc_existing;
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');

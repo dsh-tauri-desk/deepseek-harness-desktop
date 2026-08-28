@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use tauri::Manager;
 
-use crate::{utils::app_icon_temp_path, desktop::payload::NativeNotificationPayload};
+use crate::{desktop::payload::NativeNotificationPayload, utils::app_icon_temp_path};
 
 /// 如果 DSH 插件仍有兜底走浏览器 Notification，则保持“已授权”假象，
 /// 并让每次 `new Notification(...)` 转成发给宿主窗口的 postMessage。
@@ -217,14 +217,18 @@ pub fn enable_notification_permissions(
             // 避免 set_permission_state(&hstring) 借用的句柄在回调存活期内失效。
             let hstring_for_callback = hstring.clone();
 
-            log::info!("[notification] resetting persisted notification permission for {origin_str}");
+            log::info!(
+                "[notification] resetting persisted notification permission for {origin_str}"
+            );
             profile4.SetPermissionState(
                 COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
                 &hstring,
                 COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
                 &SetPermissionStateCompletedHandler::create(Box::new(move |result| {
                     if let Err(e) = result {
-                        log::warn!("[notification] failed to reset permission for {origin_str}: {e}");
+                        log::warn!(
+                            "[notification] failed to reset permission for {origin_str}: {e}"
+                        );
                     } else {
                         log::info!("[notification] reset permission for {origin_str}");
                     }
@@ -271,13 +275,14 @@ pub fn enable_notification_permissions(
 
         let _ = frame3.add_ContentLoading(
             &FrameContentLoadingEventHandler::create(Box::new(move |_, _| {
-                // 通知桥 + 导航桥 + 样式桥 + 剪贴板图片桥（壳层导航栏左侧控制需要 iframe 上下文执行）
+                // 通知桥、导航桥、样式桥、剪贴板图片桥与缩放快捷键桥需要 iframe 上下文执行。
                 for script in [
                     crate::desktop::notification::NOTIFICATION_SHIM_JS,
                     crate::desktop::nav::NAV_SHIM_JS,
                     crate::desktop::style::IFRAME_STYLES_JS,
                     crate::desktop::paste::PASTE_SHIM_JS,
                     crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS,
+                    crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS,
                 ] {
                     let script = HSTRING::from(script);
                     let _ = frame_for_injection.ExecuteScript(

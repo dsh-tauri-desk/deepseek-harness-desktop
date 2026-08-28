@@ -48,10 +48,8 @@ pub fn validate_id(id: &str) -> Result<(), String> {
 /// （`/data/foobar` 不作为 `/data/foo` 的子路径）以及 `..`、符号链接改写。
 /// `root` 不存在时（尚未初始化）直接拒绝——删除操作的前提是父目录存在。
 pub fn ensure_within(child: &Path, root: &Path) -> Result<PathBuf, String> {
-    let root_real = dunce::canonicalize(root)
-        .map_err(|e| format!("ROOT_RESOLVE_FAILED: {e}"))?;
-    let child_real = dunce::canonicalize(child)
-        .map_err(|e| format!("PATH_RESOLVE_FAILED: {e}"))?;
+    let root_real = dunce::canonicalize(root).map_err(|e| format!("ROOT_RESOLVE_FAILED: {e}"))?;
+    let child_real = dunce::canonicalize(child).map_err(|e| format!("PATH_RESOLVE_FAILED: {e}"))?;
     if !child_real.starts_with(&root_real) {
         return Err(format!(
             "PATH_ESCAPE_REJECTED: {} is outside {}",
@@ -97,7 +95,9 @@ mod tests {
 
     #[test]
     fn validate_id_rejects_traversal() {
-        for bad in ["..", ".", "../x", "..\\x", "/etc", "\\etc", "a/b", "a b", "a\tb", "a:b"] {
+        for bad in [
+            "..", ".", "../x", "..\\x", "/etc", "\\etc", "a/b", "a b", "a\tb", "a:b",
+        ] {
             assert!(validate_id(bad).is_err(), "should reject {bad:?}");
         }
         for good in ["web", "my-profile", "dsh-1.2.3", "plugin-a_b", "app-7"] {

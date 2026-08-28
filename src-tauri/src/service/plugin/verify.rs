@@ -28,8 +28,8 @@ use crate::config;
 use crate::service::cli;
 
 use super::errors;
-use super::installed::{installed_name, profile_dir, ProfilePackageJson};
 use super::install::{build_plugin_envs, harness_prefer_bundled_pnpm};
+use super::installed::{installed_name, profile_dir, ProfilePackageJson};
 use super::preset::{load_presets, PreinstallPluginInfo};
 
 /// 判定清单引用的预装插件是否缺失产物（纯函数，便于单测）。
@@ -138,7 +138,10 @@ async fn repair_with_pnpm_install(app_handle: &AppHandle, profile: &Path) -> Res
     args.push(OsString::from("install"));
 
     let envs = build_plugin_envs(app_handle, harness_prefer_bundled_pnpm(app_handle));
-    log::info!("repairing profile node_modules via pnpm install in {}", profile.display());
+    log::info!(
+        "repairing profile node_modules via pnpm install in {}",
+        profile.display()
+    );
     let (exit_code, output) = spawn_and_wait(&program, &args, profile, &envs).await?;
     if exit_code != 0 {
         // 日志只保留输出尾部，避免刷屏（pnpm 失败信息集中在末尾）。
@@ -150,7 +153,9 @@ async fn repair_with_pnpm_install(app_handle: &AppHandle, profile: &Path) -> Res
             .chars()
             .rev()
             .collect();
-        return Err(format!("PNPM_INSTALL_FAILED: exit code {exit_code}: {tail}"));
+        return Err(format!(
+            "PNPM_INSTALL_FAILED: exit code {exit_code}: {tail}"
+        ));
     }
     Ok(())
 }
@@ -170,25 +175,27 @@ const REPAIR_OUTPUT_LIMIT: usize = 4000;
 /// Windows 上 `.cmd`/`.bat` 无法被 CreateProcess 直接执行（需 cmd.exe 解析），
 /// 用户 pnpm 只接受 `.exe`。
 fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
-    use super::install::{bundled_pnpm_major, profile_store_major, user_pnpm_major_version};
+    use super::install::{bundled_pnpm_major, pnpm_major_version_at, profile_store_major};
 
     let bundled = config::get_pnpm_binary_path(app_handle);
     let bundled_ready = bundled.exists();
     let store = profile_store_major(app_handle);
-    let bundled_matches = bundled_ready && store.is_none_or(|s| bundled_pnpm_major(app_handle) == Some(s));
+    let bundled_matches =
+        bundled_ready && store.is_none_or(|s| bundled_pnpm_major(app_handle) == Some(s));
 
     if bundled_matches {
         let node = config::get_node_binary_path(app_handle);
         return Some((node, vec![bundled.into_os_string()]));
     }
 
-    // 用户 pnpm 主版本与 store 一致（或 store 未知）都可直接用
-    if let Some(user) = cli::find_user_pnpm(app_handle) {
-        #[cfg(windows)]
-        let spawnable = user.extension().and_then(|e| e.to_str()) == Some("exe");
-        #[cfg(not(windows))]
-        let spawnable = true;
-        if spawnable && store.is_none_or(|s| user_pnpm_major_version(app_handle) == Some(s)) {
+    // 用户 pnpm 主版本与 store 一致（或 store 未知）都可直接用。Windows
+    // CreateProcess 不能直接执行 `.cmd`/`.bat`，因此专门查找原生 pnpm.exe。
+    #[cfg(windows)]
+    let user_pnpm = cli::find_user_pnpm_executable(app_handle);
+    #[cfg(not(windows))]
+    let user_pnpm = cli::find_user_pnpm(app_handle);
+    if let Some(user) = user_pnpm {
+        if store.is_none_or(|s| pnpm_major_version_at(&user) == Some(s)) {
             return Some((user, Vec::new()));
         }
     }
@@ -231,14 +238,13 @@ async fn spawn_and_wait(
                 GetExitCodeProcess, WaitForSingleObject, INFINITE,
             };
 
-            let (stdout, stderr, handle) =
-                workflow::win_spawn::spawn_with_hidden_console_tracked(
-                    &program,
-                    &args,
-                    Some(&cwd),
-                    &envs,
-                )
-                .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
+            let (stdout, stderr, handle) = workflow::win_spawn::spawn_with_hidden_console_tracked(
+                &program,
+                &args,
+                Some(&cwd),
+                &envs,
+            )
+            .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
             drain_pipe(stdout, captured.clone());
             drain_pipe(stderr, captured.clone());
 
@@ -336,7 +342,8 @@ mod tests {
     }
 
     fn setup(dir_label: &str, present: &[&str]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("dsh-verify-{}-{}", std::process::id(), dir_label));
+        let root =
+            std::env::temp_dir().join(format!("dsh-verify-{}-{}", std::process::id(), dir_label));
         let _ = fs::remove_dir_all(&root);
         let node_modules = root.join("node_modules");
         for name in present {
@@ -352,7 +359,10 @@ mod tests {
         let presets = vec![preset("dshmarket", None), preset("dsh-notification", None)];
         let deps = HashMap::from([
             ("dshmarket".to_string(), "1.0.0".to_string()),
-            ("dsh-notification".to_string(), "github:omdsh-dev/dsh-notification".to_string()),
+            (
+                "dsh-notification".to_string(),
+                "github:omdsh-dev/dsh-notification".to_string(),
+            ),
         ]);
         let bundles = vec!["dshmarket".to_string()];
         // dshmarket 在（引用且产物在）；dsh-notification 被引用但产物缺失
@@ -364,7 +374,10 @@ mod tests {
 
     #[test]
     fn missing_ignores_unreferenced_and_present() {
-        let presets = vec![preset("dshmarket", None), preset("dsh-better-sidebar", None)];
+        let presets = vec![
+            preset("dshmarket", None),
+            preset("dsh-better-sidebar", None),
+        ];
         let deps = HashMap::from([("dshmarket".to_string(), "^1.0.0".to_string())]);
         let bundles: Vec<String> = Vec::new();
         // 全部就绪：dshmarket 已装；better-sidebar 未被引用
@@ -377,7 +390,10 @@ mod tests {
     #[test]
     fn missing_resolves_scoped_package_name() {
         // scoped 包名（installed_name 走 package 字段）对应 node_modules/@scope/name
-        let presets = vec![preset("dsh-session-context-menu", Some("@baihejiangnan/dsh-session-context-menu"))];
+        let presets = vec![preset(
+            "dsh-session-context-menu",
+            Some("@baihejiangnan/dsh-session-context-menu"),
+        )];
         let deps = HashMap::from([(
             "@baihejiangnan/dsh-session-context-menu".to_string(),
             "github:baihejiangnan/dsh-session-context-menu".to_string(),
@@ -388,7 +404,12 @@ mod tests {
         let missing = missing_plugin_ids(&presets, &deps, &bundles, &root.join("node_modules"));
         assert!(missing.is_empty());
         // 目录缺失 → 缺失
-        let missing = missing_plugin_ids(&presets, &deps, &bundles, &root.join("missing-node_modules"));
+        let missing = missing_plugin_ids(
+            &presets,
+            &deps,
+            &bundles,
+            &root.join("missing-node_modules"),
+        );
         assert_eq!(missing, vec!["dsh-session-context-menu"]);
         fs::remove_dir_all(&root).ok();
     }

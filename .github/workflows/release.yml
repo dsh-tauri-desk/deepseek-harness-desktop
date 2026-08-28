@@ -1,20 +1,24 @@
 name: Build & Release
 
 on:
-  # 正式发布：推送 v* tag，或合并同仓库的 release/* PR；同一工作流创建 Release 并打包
-  # git tag -a v0.1.0 -m "release: DeepSeek Harness Desktop v0.1.0"
-  # git push origin v0.1.0
+  # 正式发布：推送 v* tag，或合并 release/* PR。
   push:
     tags:
       - 'v*'
-  # 合并 release/* PR 时创建 tag 并继续正式发布
+  # branches 只能过滤目标分支；版本文件过滤减少无关 PR 产生的空 workflow run，
+  # prepare job 再校验源分支、仓库与 merged 状态。
   pull_request:
     types: [closed]
-  # 手动触发：支持单平台、多平台测试打包（草稿 + 预发布，不打扰正式用户）
+    paths:
+      - package.json
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - src-tauri/tauri.conf.json
+  # 手动触发：创建预发布测试构建。
   workflow_dispatch:
     inputs:
       platform_filter:
-        description: 选择需要打包的平台 (仅在手动触发时生效)
+        description: 选择需要打包的平台
         required: true
         default: all
         type: choice
@@ -28,6 +32,11 @@ on:
 permissions:
   contents: write
 
+# 同一 tag/PR 的重复运行整体排队，平台内部再通过 needs 链串行写 Release。
+concurrency:
+  group: release-workflow-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Prepare Release
@@ -40,7 +49,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
       should_release: ${{ steps.meta.outputs.should_release }}
+      source_ref: ${{ steps.meta.outputs.source_ref }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v7
@@ -48,263 +59,191 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
 
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
       - name: Read release metadata
         id: meta
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            tag="$GITHUB_REF_NAME"; should_release=true
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            tag="v$(node -p "require('./package.json').version")"; should_release=true
+          if [ "$EVENT_NAME" = "push" ]; then
+            tag="$PUSH_TAG"
+            source_ref="$EVENT_SHA"
+            should_release=true
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            tag="v$(node -p "require('./package.json').version")"
+            source_ref="$MERGE_SHA"
+            should_release=true
           else
-            tag=""; should_release=false
+            tag=""
+            source_ref="$EVENT_SHA"
+            should_release=false
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+
+          prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "should_release=$should_release"
+            echo "source_ref=$source_ref"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create release tag
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v8
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
-          RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          RELEASE_SHA: ${{ steps.meta.outputs.source_ref }}
         with:
           script: |
-            const ref = `tags/${process.env.RELEASE_TAG}`
+            const ref = `tags/${process.env.RELEASE_TAG}`;
+            const sha = process.env.RELEASE_SHA;
             try {
-              await github.rest.git.getRef({owner: context.repo.owner, repo: context.repo.repo, ref})
-              await github.rest.git.updateRef({owner: context.repo.owner, repo: context.repo.repo, ref, sha: process.env.RELEASE_SHA, force: true})
+              await github.rest.git.getRef({ ...context.repo, ref });
+              await github.rest.git.updateRef({ ...context.repo, ref, sha, force: true });
             } catch (error) {
-              if (error.status !== 404) throw error
-              await github.rest.git.createRef({owner: context.repo.owner, repo: context.repo.repo, ref: `refs/${ref}`, sha: process.env.RELEASE_SHA})
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({ ...context.repo, ref: `refs/${ref}`, sha });
             }
 
-      - name: Create GitHub Release
+      # 使用 lockfile 固定的 changelogithub，避免带写权限 token 时动态执行 registry 包。
+      - name: Install changelog dependencies
+        if: steps.meta.outputs.should_release == 'true'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Sync git tag and generate changelog
+        if: steps.meta.outputs.should_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          pnpm exec changelogithub --draft --to "$RELEASE_TAG" --name "DeepSeek Harness Desktop $RELEASE_TAG"
+
+      - name: Append Artifacts section to release
         if: steps.meta.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "DeepSeek Harness Desktop $RELEASE_TAG" --generate-notes
-          fi
           gh release view "$RELEASE_TAG" --json body -q .body > release_notes.md
-          cat >> release_notes.md << 'EOF'
+          cat << 'EOF' >> release_notes.md
 
-          ### ��� Artifacts
+          ### 📦 Artifacts
           - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
           - **macOS (Intel)**: 下载 `x64.dmg`
           - **Windows**: 下载 `.exe`
-          - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）
+          - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）
           EOF
           gh release edit "$RELEASE_TAG" --notes-file release_notes.md
 
-  publish:
-    # 正式发布由 prepare 创建 tag/Release 后打包；手动触发时进行测试打包
+  # 三个平台只构建 Actions artifacts，互不写 GitHub Release，因此可以完全并行。
+  build-macos:
+    name: Build macOS Artifacts
     needs: prepare
-    if: github.event_name == 'workflow_dispatch' || (needs.prepare.result == 'success' && needs.prepare.outputs.should_release == 'true')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - id: macos-aarch64
-            platform: macos-latest
-            args: --target aarch64-apple-darwin
-            arch: aarch64
-          - id: macos-x86_64
-            platform: macos-latest
-            args: --target x86_64-apple-darwin
-            arch: x86_64
-          - id: windows
-            platform: windows-latest
-            # MSI(WiX) 只接受纯数字版本，见下方 "Prepare MSI version override" 步骤
-            args: --config release-msi-version.tmp.json
-          # Linux 打包跑在 ubuntu-22.04 而非 ubuntu-latest：
-          # 22.04 的 glibc/WebKitGTK 版本更老，产出的 .deb/.AppImage 才能在
-          # Ubuntu 22.04 及更高版本上运行；用 latest(24.04) 构建的产物会因依赖新
-          # 库而在 22.04 上装不上/跑不起来(issue #41)。
-          - id: linux
-            platform: ubuntu-22.04
-            args: ''
+    if: >-
+      needs.prepare.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.platform_filter == 'all' ||
+       startsWith(inputs.platform_filter, 'macos-'))
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      platform_filter: ${{ github.event_name == 'workflow_dispatch' && inputs.platform_filter || 'all' }}
+      source_ref: ${{ needs.prepare.outputs.source_ref }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-    runs-on: ${{ matrix.platform }}
-    # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
-    timeout-minutes: 60
+  build-windows:
+    name: Build Windows Artifacts
+    needs: prepare
+    if: >-
+      needs.prepare.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.platform_filter == 'all' ||
+       inputs.platform_filter == 'windows')
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_ref }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+  build-linux:
+    name: Build Linux Artifacts
+    needs: prepare
+    if: >-
+      needs.prepare.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.platform_filter == 'all' ||
+       inputs.platform_filter == 'linux')
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_ref }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+  # 单一 writer 下载全部成功构建的产物，一次性上传并发布 Release。
+  finalize:
+    name: Publish GitHub Release
+    needs: [prepare, build-macos, build-windows, build-linux]
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      ((github.event_name != 'workflow_dispatch' &&
+        needs.build-macos.result == 'success' &&
+        needs.build-windows.result == 'success' &&
+        needs.build-linux.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' &&
+        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
+        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+        (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped')))
+    runs-on: ubuntu-latest
     steps:
-      - name: Check if this platform should run
-        id: check
-        shell: bash
+      - name: Download build outputs
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify downloaded assets
         run: |
-          # Tag 触发全部构建；手动触发时仅构建与 platform_filter 匹配的平台
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || \
-             [ "${{ github.event.inputs.platform_filter }}" = "all" ] || \
-             [ "${{ github.event.inputs.platform_filter }}" = "${{ matrix.id }}" ]; then
-            echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "平台匹配成功，开始构建..."
+          find release-assets -type f -print
+          [ -n "$(find release-assets -type f -print -quit)" ] || {
+            echo '::error::No release assets were downloaded'
+            exit 1
+          }
+
+      - name: Upload assets and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # finalize 未 checkout，gh 无法从 .git 推断仓库，需显式指定。
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('test-{0}-{1}', github.ref_name, github.run_number) || needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' || needs.prepare.outputs.prerelease == 'true' }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --title "DeepSeek Harness Desktop $RELEASE_TAG"
+          fi
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          if [ "$PRERELEASE" = "true" ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
           else
-            echo "should_run=false" >> $GITHUB_OUTPUT
-            echo "平台不匹配，将跳过后续构建步骤。"
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
           fi
-
-      - name: Checkout repository
-        if: steps.check.outputs.should_run == 'true'
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        if: steps.check.outputs.should_run == 'true'
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        if: steps.check.outputs.should_run == 'true'
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install Rust stable
-        if: steps.check.outputs.should_run == 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.platform == 'macos-latest' && (matrix.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin') || '' }}
-
-      - name: Install dependencies (Ubuntu only)
-        if: steps.check.outputs.should_run == 'true' && matrix.platform == 'ubuntu-22.04'
-        run: |
-          # GitHub runner 上 apt-get update 偶发网络卡死（无输出、无超时），
-          # 加 Acquire 超时/重试 + 外层 timeout + 循环重试，避免整个 job 挂起数小时。
-          apt_ok=0
-          for i in 1 2 3; do
-            if timeout 180 sudo apt-get update \
-              -o Acquire::Retries=5 \
-              -o Acquire::http::Timeout=60 \
-              -o Acquire::https::Timeout=60 \
-              -o Acquire::ftp::Timeout=60; then
-              apt_ok=1
-              break
-            fi
-            echo "apt-get update 第 $i 次失败，10 秒后重试..."
-            sleep 10
-          done
-          [ "$apt_ok" = "1" ] || { echo "apt-get update 连续 3 次失败，中止"; exit 1; }
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - name: Install frontend dependencies
-        if: steps.check.outputs.should_run == 'true'
-        run: pnpm install --no-frozen-lockfile
-
-      # macOS 正式产物必须完成 Developer ID 签名与 Apple 公证；缺少凭据时直接失败，
-      # 避免误发仍需用户手动绕过 Gatekeeper 的 DMG。
-      - name: Validate macOS signing secrets
-        if: steps.check.outputs.should_run == 'true' && matrix.platform == 'macos-latest'
-        shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          missing=()
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!name}" ]; then
-              missing+=("$name")
-            fi
-          done
-
-          if [ "${#missing[@]}" -ne 0 ]; then
-            printf '::error::Missing required macOS signing secrets: %s\n' "${missing[*]}"
-            exit 1
-          fi
-
-      # Windows 的 MSI(WiX) 目标只接受纯数字 `major.minor.patch[.build]` 版本：
-      # 当 tauri.conf.json 的版本带 pre-release（如 0.7.14-rc.1 / 0.7.14-beta）或
-      # build metadata 时，tauri-bundler 的 convert_version 会直接报
-      # "optional pre-release identifier in app version must be numeric-only ... 65535"
-      # 导致打包失败（v0.7.0-rc.1 因此没有产出任何 Windows 安装包）。
-      # 这里把版本去掉 `-`/`+` 后缀后写入 bundle.windows.wix.version 覆盖项：
-      # MSI 用纯数字版本，NSIS 仍保留完整 semver，macOS/Linux 不受影响。
-      # 该选项来自 tauri-apps/tauri#11388（`wix > version`，需 tauri-cli >= 2.1）。
-      - name: Prepare MSI version override
-        if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
-        shell: bash
-        run: |
-          APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").version.replace(/[-+].*$/, "")')
-          node -e "require('fs').writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: process.argv[1] } } } }))" "$APP_VERSION"
-          echo "MSI (WiX) version override -> $APP_VERSION"
-
-      # 正式发布：Release 已由 prepare 任务创建，这里只上传产物。
-      # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
-      - name: Build and Release (For Tags)
-        if: steps.check.outputs.should_run == 'true' && github.event_name != 'workflow_dispatch'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
-          APPLE_CERTIFICATE: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
-        with:
-          tagName: ${{ needs.prepare.outputs.tag }}
-          releaseName: 'DeepSeek Harness Desktop ${{ needs.prepare.outputs.tag }}'
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          args: ${{ matrix.args }}
-
-      # 手动触发：单平台/全平台测试打包（草稿 + 预发布，不打扰正式用户）
-      - name: Build and Create Test Release (For Manual Trigger)
-        if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
-          APPLE_CERTIFICATE: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
-        with:
-          tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
-          releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
-          releaseBody: |
-            DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
-            触发分支: `${{ github.ref_name }}`
-            打包平台: `${{ github.event.inputs.platform_filter }}`
-          prerelease: true
-          args: ${{ matrix.args }}
-
-      - name: Verify macOS signature and notarization
-        if: steps.check.outputs.should_run == 'true' && matrix.platform == 'macos-latest'
-        shell: bash
-        run: |
-          app_path="$(find src-tauri/target -type d -path '*/release/bundle/macos/*.app' -print -quit)"
-          if [ -z "$app_path" ]; then
-            echo '::error::Built macOS app bundle was not found'
-            exit 1
-          fi
-
-          codesign --verify --deep --strict --verbose=2 "$app_path"
-          xcrun stapler validate "$app_path"
-          spctl --assess --type execute --verbose=4 "$app_path"
-
-      - name: Upload Artifacts (For Manual Trigger)
-        if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v6
-        with:
-          name: deepseek-harness-desktop-${{ matrix.id }}
-          path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/deb/*.deb
-          retention-days: 7

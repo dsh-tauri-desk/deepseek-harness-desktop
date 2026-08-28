@@ -11,33 +11,6 @@
     "winOnly": true
   },
   {
-    "id": "dsh-tauri",
-    "spec": "dsh-tauri@0.2.1",
-    "name": "DSH Tauri",
-    "internal": true,
-    "description": "Message bridge for the DeepSeek Harness desktop shell",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri",
-    "recommended": true
-  },
-  {
-    "id": "dsh-tauri-ui",
-    "spec": "dsh-tauri-ui@0.1.1",
-    "internal": true,
-    "name": "DSH Tauri UI",
-    "description": "Customized Tauri UI plugin for the DeepSeek Harness desktop shell (skeleton): registers the shell.overlay seat for the future desktop chrome",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-ui",
-    "recommended": true
-  },
-  {
-    "id": "dsh-tauri-worktree",
-    "spec": "dsh-tauri-worktree@0.1.3",
-    "internal": true,
-    "name": "DSH Tauri Worktree",
-    "description": "Per-session isolated Git Worktree for the desktop shell: switch a conversation to its own isolated worktree, then check changes back into a local dsh/ branch or discard them.",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-worktree",
-    "recommended": true
-  },
-  {
     "id": "dshmarket",
     "spec": "dshmarket",
     "name": "DSH Market",

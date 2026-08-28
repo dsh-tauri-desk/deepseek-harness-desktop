@@ -86,8 +86,9 @@ fn read_locked_commits(profile: &Path) -> HashMap<String, String> {
     let Ok(text) = std::fs::read_to_string(profile.join("pnpm-lock.yaml")) else {
         return out;
     };
-    let re = regex::Regex::new(r"codeload\.github\.com/([^/\s]+)/([^/\s]+)/tar\.gz/([0-9a-fA-F]{7,40})")
-        .expect("static codeload regex");
+    let re =
+        regex::Regex::new(r"codeload\.github\.com/([^/\s]+)/([^/\s]+)/tar\.gz/([0-9a-fA-F]{7,40})")
+            .expect("static codeload regex");
     for cap in re.captures_iter(&text) {
         let repo = format!("{}/{}", &cap[1], &cap[2]).to_lowercase();
         out.insert(repo, cap[3].to_string());
@@ -106,12 +107,22 @@ fn read_locked_commits(profile: &Path) -> HashMap<String, String> {
 fn extract_github_repo(spec: &str) -> Option<String> {
     if let Some(rest) = spec.strip_prefix("github:") {
         let path = rest.split('#').next().unwrap_or(rest).trim_end_matches('/');
-        let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+        let path = path
+            .strip_suffix(".git")
+            .unwrap_or(path)
+            .trim_end_matches('/');
         return (is_owner_repo(path)).then(|| path.to_string());
     }
     let after = spec.split_once("github.com/").map(|(_, r)| r)?;
-    let path = after.split(['#', '?']).next().unwrap_or(after).trim_end_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    let path = after
+        .split(['#', '?'])
+        .next()
+        .unwrap_or(after)
+        .trim_end_matches('/');
+    let path = path
+        .strip_suffix(".git")
+        .unwrap_or(path)
+        .trim_end_matches('/');
     let mut parts = path.split('/');
     let owner = parts.next()?;
     let repo = parts.next()?;
@@ -174,7 +185,10 @@ async fn fetch_head_sha(client: &reqwest::Client, repo: &str) -> Option<String> 
 
 /// npm registry `latest` dist-tag 版本（404/网络错误返回 None）。
 async fn fetch_npm_latest(client: &reqwest::Client, name: &str) -> Option<String> {
-    let url = format!("https://registry.npmjs.org/{}/latest", encode_registry_name(name));
+    let url = format!(
+        "https://registry.npmjs.org/{}/latest",
+        encode_registry_name(name)
+    );
     let v = fetch_json(client, &url).await?;
     v.get("version")?.as_str().map(String::from)
 }
@@ -188,7 +202,10 @@ async fn compute_update(
     locked: &HashMap<String, String>,
 ) -> UpdateInfo {
     if spec.starts_with("link:") || spec.starts_with("file:") {
-        return UpdateInfo { update_available: false, latest: None };
+        return UpdateInfo {
+            update_available: false,
+            latest: None,
+        };
     }
 
     if let Some(repo) = extract_github_repo(spec) {
@@ -205,7 +222,10 @@ async fn compute_update(
         (Some(i), Some(l)) => is_upgrade(i, l),
         _ => false,
     };
-    UpdateInfo { update_available, latest }
+    UpdateInfo {
+        update_available,
+        latest,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +315,13 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
             p.update_available = info.update_available;
             p.latest_version = info.latest.clone();
         }
-        cache.insert(key, CacheEntry { info, at: Instant::now() });
+        cache.insert(
+            key,
+            CacheEntry {
+                info,
+                at: Instant::now(),
+            },
+        );
     }
 
     Ok(plugins)

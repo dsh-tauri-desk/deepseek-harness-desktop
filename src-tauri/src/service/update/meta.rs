@@ -94,7 +94,10 @@ fn extract_asset_names(html: &str, tag: &str) -> Vec<String> {
     let mut start = 0;
     while let Some(pos) = html[start..].find(&needle) {
         let after = start + pos + needle.len();
-        let end = html[after..].find('"').map(|e| after + e).unwrap_or(html.len());
+        let end = html[after..]
+            .find('"')
+            .map(|e| after + e)
+            .unwrap_or(html.len());
         names.push(html[after..end].to_string());
         start = end;
     }
@@ -226,7 +229,10 @@ mod tests {
         let s = r#"<link rel="alternate" href="https://github.com/x/releases/tag/v0.6.6"/>"#;
         assert_eq!(find_token(s, "releases/tag/", "\""), Some("v0.6.6"));
         let s2 = "<updated>2026-08-19T09:27:38Z</updated>";
-        assert_eq!(find_token(s2, "<updated>", "</updated>"), Some("2026-08-19T09:27:38Z"));
+        assert_eq!(
+            find_token(s2, "<updated>", "</updated>"),
+            Some("2026-08-19T09:27:38Z")
+        );
         assert_eq!(find_token("no marker", "releases/tag/", "\""), None);
     }
 
@@ -242,7 +248,10 @@ mod tests {
         assert_eq!(
             parse_atom_entries(feed),
             vec![
-                ("v0.7.14-rc.1".to_string(), "2026-08-20T01:00:00Z".to_string()),
+                (
+                    "v0.7.14-rc.1".to_string(),
+                    "2026-08-20T01:00:00Z".to_string()
+                ),
                 ("v0.7.13".to_string(), "2026-08-19T00:00:00Z".to_string()),
                 ("test-main-42".to_string(), String::new()),
             ]
@@ -282,10 +291,7 @@ mod tests {
         let bad = r#"<td>app.dmg sha256:zz"#;
         assert!(parse_digest_from_expanded_assets(bad, "app.dmg").is_none());
         // 多字节内容前移后仍能解析（切片边界安全）
-        let unicode = format!(
-            "中文说明app.dmg{}更多内容",
-            hex
-        );
+        let unicode = format!("中文说明app.dmg{}更多内容", hex);
         assert!(parse_digest_from_expanded_assets(&unicode, "app.dmg").is_some());
     }
 

@@ -142,7 +142,10 @@ mod tests {
         assert_eq!(parse_version("v0.5.2").unwrap().to_string(), "0.5.2");
         assert_eq!(parse_version("0.5.2").unwrap().to_string(), "0.5.2");
         // pre-release 也是合法 semver
-        assert_eq!(parse_version("0.5.2-rc.1").unwrap().to_string(), "0.5.2-rc.1");
+        assert_eq!(
+            parse_version("0.5.2-rc.1").unwrap().to_string(),
+            "0.5.2-rc.1"
+        );
         // 非法 semver（如手动测试 release 的 tag / 只有两段）返回 None
         assert_eq!(parse_version("abc"), None);
         assert_eq!(parse_version("test-main-123"), None);
@@ -213,7 +216,10 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         {
             assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_x64.dmg"), 2);
-            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_amd64.AppImage"), 2);
+            assert_eq!(
+                arch_rank("Deepseek.Harness.Desktop_0.6.6_amd64.AppImage"),
+                2
+            );
             assert_eq!(arch_rank("Deepseek.Harness.Desktop-0.6.6-1.x86_64.rpm"), 2);
             assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"), 0);
         }

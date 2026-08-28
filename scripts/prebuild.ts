@@ -1,6 +1,6 @@
 /**
- * prebuild：把 `src-tauri/resources/preset-plugins.json` 中标记 `internal: true`
- * 的插件制备为随包产物，拷入 `src-tauri/resources/preset-plugins/<id>/`
+ * prebuild：把 `src-tauri/resources/internal-plugins.json` 中声明的内部插件
+ * 制备为随包产物，拷入 `src-tauri/resources/internal-plugins/<id>/`
  * （随 `bundle.resources` 随安装包分发）。两种来源：
  *
  * - `github:owner/repo`：从上游仓库克隆、安装依赖并构建（源码形态的插件）；
@@ -30,15 +30,14 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 
-interface PresetPlugin {
+interface InternalPlugin {
   id: string
   spec: string
-  internal?: boolean
 }
 
 const REPO_ROOT = resolve(import.meta.dirname, '..')
-const PRESET_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugins.json')
-const BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugins')
+const INTERNAL_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins.json')
+const BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins')
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
 
 function die(message: string): never {
@@ -83,7 +82,7 @@ function npmPackageName(spec: string): string {
  * `node_modules/<name>/`（发布包自带 lib/ 等运行必需文件，无需再构建）。
  * 依赖 pnpm 在 PATH 上（与 git 来源流程同一前提）。
  */
-function fetchNpmPackage(preset: PresetPlugin, temp: string): string {
+function fetchNpmPackage(preset: InternalPlugin, temp: string): string {
   const project = join(temp, 'project')
   mkdirSync(project, { recursive: true })
   writeFileSync(join(project, 'package.json'), JSON.stringify({ private: true }))
@@ -101,7 +100,7 @@ function fetchNpmPackage(preset: PresetPlugin, temp: string): string {
  * 缺失白名单时拷贝整目录但排除 node_modules/.git 等开发噪声；
  * `package.json` 恒在（它是 `pnpm add file:<dir>` 的包名/入口来源）。
  */
-function collectBundle(preset: PresetPlugin, clone: string): void {
+function collectBundle(preset: InternalPlugin, clone: string): void {
   const dest = join(BUNDLE_ROOT, preset.id)
   mkdirSync(dest, { recursive: true })
 
@@ -127,7 +126,7 @@ function collectBundle(preset: PresetPlugin, clone: string): void {
 }
 
 /** 构建单个 internal 插件：git 来源（克隆 → 装依赖 → 构建）或 npm 来源（拉产物）。 */
-function buildPlugin(preset: PresetPlugin): void {
+function buildPlugin(preset: InternalPlugin): void {
   const dest = join(BUNDLE_ROOT, preset.id)
   rmSync(dest, { recursive: true, force: true })
 
@@ -163,18 +162,17 @@ function buildPlugin(preset: PresetPlugin): void {
 }
 
 function main(): void {
-  if (!existsSync(PRESET_FILE)) {
-    die(`未找到预设清单 ${PRESET_FILE}`)
+  if (!existsSync(INTERNAL_PLUGINS_FILE)) {
+    die(`未找到内部插件清单 ${INTERNAL_PLUGINS_FILE}`)
   }
-  const presets = JSON.parse(readFileSync(PRESET_FILE, 'utf8')) as PresetPlugin[]
-  const internal = presets.filter(preset => preset.internal === true)
+  const internal = JSON.parse(readFileSync(INTERNAL_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
   if (internal.length === 0) {
-    console.log('[prebuild] 预设清单无 internal 插件，跳过')
+    console.log('[prebuild] 内部插件清单为空，跳过')
     return
   }
   console.log(`[prebuild] 拉取 ${internal.length} 个 internal 插件: ${internal.map(p => p.id).join(', ')}`)
-  for (const preset of internal) {
-    buildPlugin(preset)
+  for (const plugin of internal) {
+    buildPlugin(plugin)
   }
   console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}`)
 }

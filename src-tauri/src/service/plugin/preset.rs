@@ -1,7 +1,8 @@
-//! 预设插件清单：读取并解析随安装包分发的 `resources/preset-plugins.json`。
+//! 插件清单：分别读取随安装包分发的 `resources/preset-plugins.json` 与
+//! `resources/internal-plugins.json`。
 //!
-//! 社区新增推荐插件只需在该 JSON 中追加一项并提交 PR，无需改动 Rust 代码；
-//! 界面与安装逻辑自动生效。资源缺失/损坏时报错并回落为空清单，不阻断启动。
+//! 社区预设与内部插件分开维护；运行时合并为统一结构供安装、展示与自愈逻辑使用。
+//! 资源缺失/损坏时报错并回落为空清单，不阻断启动。
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -11,8 +12,10 @@ use crate::config;
 
 /// 预设插件清单文件名
 const PRESET_PLUGINS_FILE: &str = "preset-plugins.json";
+/// 内部插件清单文件名
+const INTERNAL_PLUGINS_FILE: &str = "internal-plugins.json";
 
-/// 预装插件静态信息，对应 `resources/preset-plugins.json` 中的条目
+/// 插件静态信息，对应预设或内部插件清单中的条目
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreinstallPluginInfo {
@@ -20,8 +23,9 @@ pub struct PreinstallPluginInfo {
     pub id: String,
     /// 传给 `dsh plugin add` 的依赖形式（npm 包名或 git 依赖形式）
     pub spec: String,
-    /// 内置插件：产物由构建期 `scripts/prebuild.ts` 从上游仓库拉取到
-    /// `resources/preset-plugins/<id>/` 随安装包分发，安装固定走 `file:` 本地
+    /// 内置插件：条目来自 `resources/internal-plugins.json`，产物由构建期
+    /// `scripts/prebuild.ts` 从上游仓库拉取到 `resources/internal-plugins/<id>/`
+    /// 随安装包分发，安装固定走 `link:` 本地
     /// 依赖；启动时强制核对「已安装 + 路径指向当前捆绑目录」，不满足即自动
     /// 重装（用户卸载后重启应用同样恢复），因此不出现在首次引导的勾选清单里。
     #[serde(default)]
@@ -48,39 +52,45 @@ pub struct PreinstallPluginInfo {
     pub win_only: bool,
 }
 
-/// 在资源根目录下查找预设清单：先探测扁平布局（exe 同级），再探测
+/// 在资源根目录下查找清单：先探测扁平布局（exe 同级），再探测
 /// `resources/` 子目录布局（Tauri 2 的 `bundle.resources` 按相对路径保留前缀）。
-fn find_in_resource_root(root: &std::path::Path) -> Option<PathBuf> {
-    let flat = root.join(PRESET_PLUGINS_FILE);
+fn find_manifest_in_resource_root(root: &std::path::Path, file_name: &str) -> Option<PathBuf> {
+    let flat = root.join(file_name);
     if flat.exists() {
         return Some(flat);
     }
-    let nested = root.join("resources").join(PRESET_PLUGINS_FILE);
+    let nested = root.join("resources").join(file_name);
     nested.exists().then_some(nested)
 }
 
-/// 定位预设插件清单文件：优先使用随安装包分发的资源目录，回落到源码开发目录。
+/// 定位插件清单文件：优先使用随安装包分发的资源目录，回落到源码开发目录。
 ///
 /// 注意：Tauri 2 在 Windows 上 `resource_dir()` 恒等于 exe 所在目录，而安装包
 /// （NSIS/MSI）与开发产物都会把资源按 `resources/**` 前缀落盘到
 /// `{resource_dir}/resources/` 子目录，因此必须探测该子目录；`CARGO_MANIFEST_DIR`
 /// 是编译期路径，仅开发机有效（CI/发布版在本机不可用），只作最后兜底。
-fn preset_plugins_path(app_handle: &AppHandle) -> Option<PathBuf> {
+fn plugins_manifest_path(app_handle: &AppHandle, file_name: &str) -> Option<PathBuf> {
     if let Ok(dir) = app_handle.path().resource_dir() {
-        if let Some(candidate) = find_in_resource_root(&dir) {
+        if let Some(candidate) = find_manifest_in_resource_root(&dir, file_name) {
             return Some(candidate);
         }
     }
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
-        .join(PRESET_PLUGINS_FILE);
+        .join(file_name);
     source.exists().then_some(source)
 }
 
-/// 内置插件资源目录名（相对资源根的固定前缀）
-const BUNDLED_PLUGINS_DIR: &str = "preset-plugins";
+fn preset_plugins_path(app_handle: &AppHandle) -> Option<PathBuf> {
+    plugins_manifest_path(app_handle, PRESET_PLUGINS_FILE)
+}
 
-/// 在资源根目录下定位某内置插件的捆绑目录：与 [`find_in_resource_root`] 相同的
+/// 内置插件资源目录名（相对资源根的固定前缀）
+const BUNDLED_PLUGINS_DIR: &str = "internal-plugins";
+/// 旧版内置插件资源目录名，仅用于启动迁移清理
+const LEGACY_BUNDLED_PLUGINS_DIR: &str = "preset-plugins";
+
+/// 在资源根目录下定位某内置插件的捆绑目录：与 [`find_manifest_in_resource_root`] 相同的
 /// 布局探测——先 `resources/` 子目录（安装包/开发产物按 `bundle.resources` 前缀
 /// 落盘），再扁平布局；以目录内存在 `package.json` 判定产物有效（prebuild 恒写入）。
 fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
@@ -92,7 +102,7 @@ fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
 }
 
 /// 定位内置插件捆绑目录：优先随安装包分发的资源目录，回落到源码
-/// `resources/preset-plugins/<id>`（开发机未跑 prebuild 时作为源码兜底）。
+/// `resources/internal-plugins/<id>`（开发机未跑 prebuild 时作为源码兜底）。
 ///
 /// 用于安装（`install.rs` 生成 `file:` 依赖）与启动自愈（`internal.rs` 核对路径）。
 ///
@@ -118,6 +128,54 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
     source.join("package.json").exists().then_some(source)
 }
 
+/// 删除旧版随包资源目录 `resources/preset-plugins`，避免升级安装保留不再使用的
+/// 内部插件副本。仅处理 Tauri 运行时资源根下的目录，绝不删除源码 checkout；逐个
+/// 尝试所有布局后再汇总错误，避免一个被占用的旧目录阻碍其余目录清理。
+pub(crate) fn remove_legacy_bundled_plugins(app_handle: &AppHandle) -> Result<(), String> {
+    let Ok(root) = app_handle.path().resource_dir() else {
+        return Ok(());
+    };
+    let candidates = vec![
+        root.join(LEGACY_BUNDLED_PLUGINS_DIR),
+        root.join("resources").join(LEGACY_BUNDLED_PLUGINS_DIR),
+    ];
+    remove_legacy_candidates(candidates, |path| std::fs::remove_dir_all(path))
+}
+
+/// 对候选旧目录执行最佳努力清理；删除动作参数化是为了验证单项失败后仍继续处理。
+fn remove_legacy_candidates(
+    mut candidates: Vec<PathBuf>,
+    mut remove: impl FnMut(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    candidates.sort();
+    candidates.dedup();
+    let mut failures = Vec::new();
+
+    for path in candidates {
+        if !path.is_dir() {
+            continue;
+        }
+        match remove(&path) {
+            Ok(()) => {
+                log::info!(
+                    "removed legacy bundled plugins directory: {}",
+                    path.display()
+                );
+            }
+            Err(e) => failures.push(format!(
+                "LEGACY_PRESET_PLUGINS_REMOVE_FAILED: {}: {e}",
+                path.display()
+            )),
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
 /// 开发模式内置插件源码根目录：读取 `<仓库根>/.env` 的 `DEV_INTERNAL_PLUGINS_DIR`。
 /// 仅 debug 构建生效（release 恒用随包目录，不受构建机环境影响）。
 ///
@@ -125,7 +183,9 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
 /// `CARGO_MANIFEST_DIR`（即 `src-tauri`）的上层目录得到，只在开发机成立。
 #[cfg(debug_assertions)]
 fn dev_internal_plugins_dir() -> Option<PathBuf> {
-    let env_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(".env");
+    let env_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(".env");
     let content = std::fs::read_to_string(env_file).ok()?;
     parse_dev_internal_dir(&content)
 }
@@ -173,30 +233,52 @@ pub(crate) fn bundled_dep_spec(dir: &std::path::Path) -> String {
     format!("link:{}", normalized.trim_end_matches('/'))
 }
 
-/// 解析预设清单 JSON
-fn parse_presets(json: &str) -> Result<Vec<PreinstallPluginInfo>, String> {
-    serde_json::from_str(json).map_err(|e| format!("PRESET_PLUGINS_INVALID_JSON: {e}"))
+/// 解析插件清单 JSON，并由清单来源统一设置内部插件标记。
+///
+/// 清单边界是可信的产品分类：即使条目误带或遗漏 `internal` 字段，也不能让社区
+/// 预设获得必装自愈权限，或让内部插件退出自愈流程，因此始终以文件来源覆盖该值。
+fn parse_plugins(json: &str, internal: bool) -> Result<Vec<PreinstallPluginInfo>, String> {
+    let mut plugins: Vec<PreinstallPluginInfo> =
+        serde_json::from_str(json).map_err(|e| format!("PLUGIN_MANIFEST_INVALID_JSON: {e}"))?;
+    for plugin in &mut plugins {
+        plugin.internal = internal;
+    }
+    Ok(plugins)
 }
 
-/// 读取并解析预设插件清单；资源缺失/损坏时记录错误并返回空清单
-pub(crate) fn load_presets(app_handle: &AppHandle) -> Vec<PreinstallPluginInfo> {
-    let Some(path) = preset_plugins_path(app_handle) else {
-        log::warn!("PRESET_PLUGINS_MISSING: {PRESET_PLUGINS_FILE} not found in resource dir or source resources dir");
+/// 读取单个插件清单；资源缺失/损坏时记录错误并返回空清单。
+///
+/// 插件元数据不是桌面壳启动的硬依赖；降级为空列表可让核心服务继续启动，同时用
+/// 明确日志保留发布资源缺失或损坏的诊断信息，避免清单故障导致应用整体不可用。
+fn load_manifest(
+    app_handle: &AppHandle,
+    file_name: &str,
+    internal: bool,
+) -> Vec<PreinstallPluginInfo> {
+    let Some(path) = plugins_manifest_path(app_handle, file_name) else {
+        log::warn!("PLUGIN_MANIFEST_MISSING: {file_name} not found in resource dir or source resources dir");
         return Vec::new();
     };
 
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            log::error!("PRESET_PLUGINS_READ_FAILED: {}: {e}", path.display());
+            log::error!("PLUGIN_MANIFEST_READ_FAILED: {}: {e}", path.display());
             return Vec::new();
         }
     };
 
-    parse_presets(&raw).unwrap_or_else(|e| {
-        log::error!("PRESET_PLUGINS_PARSE_FAILED: {}: {e}", path.display());
+    parse_plugins(&raw, internal).unwrap_or_else(|e| {
+        log::error!("PLUGIN_MANIFEST_PARSE_FAILED: {}: {e}", path.display());
         Vec::new()
     })
+}
+
+/// 读取预设与内部插件清单并合并；内部属性由文件归属决定，不依赖 JSON 字段。
+pub(crate) fn load_presets(app_handle: &AppHandle) -> Vec<PreinstallPluginInfo> {
+    let mut plugins = load_manifest(app_handle, PRESET_PLUGINS_FILE, false);
+    plugins.extend(load_manifest(app_handle, INTERNAL_PLUGINS_FILE, true));
+    plugins
 }
 
 /// 预装清单中某 id 对应的仓库地址
@@ -234,7 +316,10 @@ pub(crate) fn preinstall_pending(app_handle: &AppHandle) -> bool {
     if !setting.preinstall_done {
         return true;
     }
-    match (setting.preset_hash.as_deref(), current_preset_hash(app_handle)) {
+    match (
+        setting.preset_hash.as_deref(),
+        current_preset_hash(app_handle),
+    ) {
         (None, Some(_)) => true,
         (Some(prev), Some(cur)) => prev != cur,
         _ => false,
@@ -245,12 +330,22 @@ pub(crate) fn preinstall_pending(app_handle: &AppHandle) -> bool {
 mod tests {
     use super::*;
 
-    fn load_presets_for_test() -> Vec<PreinstallPluginInfo> {
+    fn load_manifest_for_test(file_name: &str, internal: bool) -> Vec<PreinstallPluginInfo> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
-            .join(PRESET_PLUGINS_FILE);
-        let raw = std::fs::read_to_string(path).expect("preset-plugins.json should exist");
-        parse_presets(&raw).expect("preset-plugins.json should be valid JSON")
+            .join(file_name);
+        let raw = std::fs::read_to_string(path).expect("plugin manifest should exist");
+        parse_plugins(&raw, internal).expect("plugin manifest should be valid JSON")
+    }
+
+    fn load_presets_for_test() -> Vec<PreinstallPluginInfo> {
+        load_manifest_for_test(PRESET_PLUGINS_FILE, false)
+    }
+
+    fn load_all_plugins_for_test() -> Vec<PreinstallPluginInfo> {
+        let mut plugins = load_presets_for_test();
+        plugins.extend(load_manifest_for_test(INTERNAL_PLUGINS_FILE, true));
+        plugins
     }
 
     #[test]
@@ -268,11 +363,23 @@ mod tests {
     }
 
     #[test]
-    fn preset_json_ids_are_unique() {
-        let presets = load_presets_for_test();
-        let ids: std::collections::HashSet<&str> =
-            presets.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids.len(), presets.len(), "preset ids must be unique");
+    fn plugin_manifest_ids_are_unique_across_files() {
+        let plugins = load_all_plugins_for_test();
+        let ids: std::collections::HashSet<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids.len(),
+            plugins.len(),
+            "plugin ids must be unique across manifests"
+        );
+    }
+
+    #[test]
+    fn internal_manifest_marks_all_entries_internal() {
+        let plugins = load_manifest_for_test(INTERNAL_PLUGINS_FILE, true);
+        assert!(!plugins.is_empty());
+        assert!(plugins.iter().all(|plugin| plugin.internal));
+        assert!(plugins.iter().any(|plugin| plugin.id == "dsh-tauri"));
+        assert!(!load_presets_for_test().iter().any(|plugin| plugin.internal));
     }
 
     #[test]
@@ -289,7 +396,8 @@ mod tests {
         )
         .expect("write temp preset file");
 
-        let found = find_in_resource_root(&dir).expect("nested resources layout should be found");
+        let found = find_manifest_in_resource_root(&dir, PRESET_PLUGINS_FILE)
+            .expect("nested resources layout should be found");
         assert_eq!(found, nested.join(PRESET_PLUGINS_FILE));
 
         std::fs::remove_dir_all(&dir).ok();
@@ -306,37 +414,67 @@ mod tests {
         )
         .expect("write temp preset file");
 
-        let found = find_in_resource_root(&dir).expect("flat layout should be found");
+        let found = find_manifest_in_resource_root(&dir, PRESET_PLUGINS_FILE)
+            .expect("flat layout should be found");
         assert_eq!(found, dir.join(PRESET_PLUGINS_FILE));
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn internal_flag_parses_with_default_false() {
-        // 无 internal 字段 → 默认 false（老清单兼容）
-        let plain: PreinstallPluginInfo = serde_json::from_str(
-            r#"{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"}"#,
-        )
-        .expect("plain preset should parse");
-        assert!(!plain.internal);
-        // 显式 internal:true → 解析为内置插件
-        let internal: PreinstallPluginInfo = serde_json::from_str(
-            r#"{"id":"x","spec":"github:a/b","internal":true,"name":"X","description":"","repoUrl":"u"}"#,
-        )
-        .expect("internal preset should parse");
-        assert!(internal.internal);
+    fn manifest_source_overrides_internal_field() {
+        let raw =
+            r#"[{"id":"x","spec":"y","internal":true,"name":"X","description":"","repoUrl":"u"}]"#;
+        let preset = parse_plugins(raw, false).expect("preset manifest should parse");
+        assert!(!preset[0].internal);
+        let internal = parse_plugins(raw, true).expect("internal manifest should parse");
+        assert!(internal[0].internal);
+    }
+
+    #[test]
+    fn legacy_cleanup_continues_after_failure_and_aggregates_errors() {
+        let root = std::env::temp_dir().join(format!("dsh-legacy-cleanup-{}", std::process::id()));
+        let first = root.join("a");
+        let second = root.join("b");
+        std::fs::create_dir_all(&first).expect("create first legacy dir");
+        std::fs::create_dir_all(&second).expect("create second legacy dir");
+        let mut attempted = Vec::new();
+
+        let error = remove_legacy_candidates(vec![first.clone(), second.clone()], |path| {
+            attempted.push(path.to_path_buf());
+            if path == first {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "locked",
+                ))
+            } else {
+                std::fs::remove_dir_all(path)
+            }
+        })
+        .expect_err("one failed cleanup should be reported");
+
+        assert_eq!(attempted, vec![first.clone(), second.clone()]);
+        assert!(error.contains("LEGACY_PRESET_PLUGINS_REMOVE_FAILED"));
+        assert!(error.contains(&first.display().to_string()));
+        assert!(error.contains("locked"));
+        assert!(first.is_dir());
+        assert!(!second.exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn bundled_dir_discovers_nested_layout() {
-        // 与 preset 文件一致：先探测 {root}/resources/preset-plugins/<id>
+        // 与 internal 文件一致：先探测 {root}/resources/internal-plugins/<id>
         let dir = std::env::temp_dir().join(format!("dsh-bundled-nested-{}", std::process::id()));
-        let nested = dir.join("resources").join(BUNDLED_PLUGINS_DIR).join("dsh-tauri");
+        let nested = dir
+            .join("resources")
+            .join(BUNDLED_PLUGINS_DIR)
+            .join("dsh-tauri");
         std::fs::create_dir_all(&nested).expect("create temp nested bundled dir");
         std::fs::write(nested.join("package.json"), "{}").expect("write bundle manifest");
 
-        let found = find_bundled_in_root(&dir, "dsh-tauri").expect("nested bundled dir should be found");
+        let found =
+            find_bundled_in_root(&dir, "dsh-tauri").expect("nested bundled dir should be found");
         assert_eq!(found, nested);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -349,7 +487,8 @@ mod tests {
         std::fs::create_dir_all(&flat).expect("create temp flat bundled dir");
         std::fs::write(flat.join("package.json"), "{}").expect("write bundle manifest");
 
-        let found = find_bundled_in_root(&dir, "dsh-tauri").expect("flat bundled dir should be found");
+        let found =
+            find_bundled_in_root(&dir, "dsh-tauri").expect("flat bundled dir should be found");
         assert_eq!(found, flat);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -359,7 +498,8 @@ mod tests {
     fn bundled_dir_requires_package_json() {
         // 无 package.json 的目录不是有效产物（prebuild 未执行）
         let dir = std::env::temp_dir().join(format!("dsh-bundled-empty-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("preset-plugins").join("dsh-tauri")).expect("create empty dir");
+        std::fs::create_dir_all(dir.join(BUNDLED_PLUGINS_DIR).join("dsh-tauri"))
+            .expect("create empty dir");
         assert!(find_bundled_in_root(&dir, "dsh-tauri").is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -367,8 +507,10 @@ mod tests {
     #[test]
     fn bundled_dep_spec_normalizes_windows_separators() {
         assert_eq!(
-            bundled_dep_spec(std::path::Path::new("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri")),
-            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+            bundled_dep_spec(std::path::Path::new(
+                "C:\\Apps\\dsh\\resources\\internal-plugins\\dsh-tauri"
+            )),
+            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"
         );
         // 尾部斜杠去除（Windows 盘符 C:\ 不会出现，路径恒为子目录）
         assert_eq!(
@@ -385,11 +527,11 @@ mod tests {
         // `//?/G:/...` 当相对路径解析、生成 `..\?\G:\...` 的坏联接而安装失败。
         // （dunce::simplified 在 Windows 上把 `\\?\` 归一回常规绝对路径）
         let dir = std::path::Path::new(
-            r"\\?\G:\Deepseek Harness Desktop\resources\preset-plugins\dsh-tauri",
+            r"\\?\G:\Deepseek Harness Desktop\resources\internal-plugins\dsh-tauri",
         );
         assert_eq!(
             bundled_dep_spec(dir),
-            "link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri"
+            "link:G:/Deepseek Harness Desktop/resources/internal-plugins/dsh-tauri"
         );
     }
 
@@ -426,7 +568,10 @@ mod tests {
     fn dev_internal_dir_unset_when_missing_key_or_empty_value() {
         // 其它键或注释：视为未设置
         assert_eq!(parse_dev_internal_dir("FOO=bar\n"), None);
-        assert_eq!(parse_dev_internal_dir("# DEV_INTERNAL_PLUGINS_DIR=C:/x\n"), None);
+        assert_eq!(
+            parse_dev_internal_dir("# DEV_INTERNAL_PLUGINS_DIR=C:/x\n"),
+            None
+        );
         // 显式置空：同样视为未设置（关闭覆盖）
         assert_eq!(parse_dev_internal_dir("DEV_INTERNAL_PLUGINS_DIR=\n"), None);
     }

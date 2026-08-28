@@ -1,0 +1,42 @@
+[
+  {
+    "id": "dsh-tauri",
+    "spec": "dsh-tauri",
+    "name": "DSH Tauri",
+    "description": "Message bridge for the DeepSeek Harness desktop shell",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri",
+    "recommended": true
+  },
+  {
+    "id": "dsh-tauri-ui",
+    "spec": "dsh-tauri-ui",
+    "name": "DSH Tauri UI",
+    "description": "Customized Tauri UI plugin for the DeepSeek Harness desktop shell (skeleton): registers the shell.overlay seat for the future desktop chrome",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-ui",
+    "recommended": true
+  },
+  {
+    "id": "dsh-tauri-worktree",
+    "spec": "dsh-tauri-worktree",
+    "name": "DSH Tauri Worktree",
+    "description": "Per-session isolated Git Worktree for the desktop shell: switch a conversation to its own isolated worktree, then check changes back into a local dsh/ branch or discard them.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-worktree",
+    "recommended": true
+  },
+  {
+    "id": "dsh-tauri-panel",
+    "spec": "dsh-tauri-panel",
+    "name": "DSH Tauri Panel",
+    "description": "Sidebar shell for the desktop: compact logo row (32px), a panel area holding the New Session item plus third-party panel items (sidebar.panel.action slot), and the panel.protocol service (open/render/close panel content) consumed by dsh-tauri-panel-extension.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel",
+    "recommended": true
+  },
+  {
+    "id": "dsh-tauri-panel-extension",
+    "spec": "dsh-tauri-panel-extension",
+    "name": "DSH Tauri Panel Extension",
+    "description": "Skills and MCP management in the DeepSeek Harness desktop extension panel.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension",
+    "recommended": true
+  }
+]

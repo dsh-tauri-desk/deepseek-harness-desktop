@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-desktop"
-version = "0.8.3"
+version = "0.9.1"
 description = "Desktop application for DeepSeek Harness (dsh)"
 authors = [ "deepseek-harness-desktop contributors" ]
 edition = "2021"
@@ -61,6 +61,13 @@ async-trait = "0.1"
 tokio = { version = "1", features = [ "full" ] }
 semver = "1"
 dunce = "1.0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSObject",
+  "NSProcessInfo",
+] }
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.16"

@@ -50,12 +50,7 @@ fn save(app_handle: &AppHandle, map: &HashMap<String, PluginError>) -> Result<()
 }
 
 /// 记录插件错误（同 id 幂等覆盖）
-pub fn record(
-    app_handle: &AppHandle,
-    id: &str,
-    action: &str,
-    message: &str,
-) -> Result<(), String> {
+pub fn record(app_handle: &AppHandle, id: &str, action: &str, message: &str) -> Result<(), String> {
     let mut map = load(app_handle);
     map.insert(
         id.to_string(),
@@ -98,6 +93,9 @@ mod tests {
         let json = serde_json::to_string(&map).unwrap();
         let back: HashMap<String, PluginError> = serde_json::from_str(&json).unwrap();
         assert_eq!(back.get("dshmarket").unwrap().action, "install");
-        assert_eq!(back.get("dshmarket").unwrap().message, "ERR_PNPM_IGNORED_BUILDS");
+        assert_eq!(
+            back.get("dshmarket").unwrap().message,
+            "ERR_PNPM_IGNORED_BUILDS"
+        );
     }
 }

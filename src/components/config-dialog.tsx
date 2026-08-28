@@ -36,14 +36,14 @@ export function ConfigDialog(props: ConfigDialogProps) {
     <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
       <Modal.Backdrop>
         <Modal.Container size="lg">
-          <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5">
+          <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5 h-screen">
             <Modal.CloseTrigger />
             <Modal.Header className="mb-3">
               <Modal.Heading>
                 {t('app.config')}
               </Modal.Heading>
             </Modal.Header>
-            <Modal.Body className="flex gap-6 pr-0">
+            <Modal.Body className="flex gap-6 pr-0 h-screen">
               <aside className="w-[164px]">
                 <nav className="flex flex-col gap-2 w-full">
                   {navs.map((item) => {
@@ -69,8 +69,8 @@ export function ConfigDialog(props: ConfigDialogProps) {
                   })}
                 </nav>
               </aside>
-              <div className="flex flex-col flex-1 overflow-auto h-[628px] pr-2.5">
-                <Switch value={activeTab}>
+              <div className="flex flex-col flex-1 overflow-auto min-h-0 max-h-[628px] pr-2.5">
+                <Switch value={activeTab} as="div">
                   <Case cond="debug">
                     <ConfigDebug />
                   </Case>

@@ -6,8 +6,8 @@
 //! 启动时加载。进程输出逐行通过 `preinstall-log` 事件实时推送给前端日志面板。
 //! 调用 dsh 前会先按需补齐捆绑 pnpm（老版本升级后可能缺失，安装流程内自愈）。
 //!
-//! 预设清单存放在随安装包分发的 `resources/preset-plugins.json`：社区新增推荐插件
-//! 只需在该 JSON 中追加一项并提交 PR，无需改动 Rust 代码；界面与安装逻辑自动生效。
+//! 社区预设与内部插件分别存放在随安装包分发的 `resources/preset-plugins.json`
+//! 和 `resources/internal-plugins.json`；新增条目无需改动 Rust 代码。
 //!
 //! **重新进入引导的判定**：该 JSON 随安装包发布、每次安装都被强制覆盖，旧文件不可比对，
 //! 因此引导结束（确认/跳过）时把文件内容指纹（FNV-1a）写入 app-data 的 `.store.dat`；
@@ -15,7 +15,7 @@
 //! 弹一次建立基线（见 [`preset::preinstall_pending`]）。
 //!
 //! 模块划分（参考 `service/cli/`、`service/download/`）：
-//! - [`preset`]：预设清单读取与解析（`resources/preset-plugins.json`）
+//! - [`preset`]：预设与内部插件清单读取、合并及资源目录定位
 //! - [`installed`]：profile 内已安装插件检测（解析 package.json 的依赖与 bundles）
 //! - [`internal`]：内置插件启动自愈（随包分发产物缺失/路径变更时强制重装）
 //! - [`verify`]：预装插件完整性自检（清单引用但 node_modules 产物缺失时 `pnpm install` 修复）
@@ -38,13 +38,15 @@ pub mod verify;
 pub mod watch;
 
 pub use cancel::cancel;
-pub use install::{install, remove, update};
 pub(crate) use install::harness_prefer_bundled_pnpm;
-pub use installed::{list, PreinstallPlugin};
+pub use install::{install, remove, update};
 pub(crate) use installed::ensure_profile_npmrc;
+pub use installed::{list, PreinstallPlugin};
 pub(crate) use internal::ensure as ensure_internal_plugins;
 pub use preset::repo_url_of;
-pub(crate) use preset::{current_preset_hash, preinstall_pending};
-pub use recovery::{detect as detect_recovery, uninstall as uninstall_recovery, PluginRecoveryInfo};
+pub(crate) use preset::{current_preset_hash, preinstall_pending, remove_legacy_bundled_plugins};
+pub use recovery::{
+    detect as detect_recovery, uninstall as uninstall_recovery, PluginRecoveryInfo,
+};
 pub(crate) use verify::ensure_preset_plugins;
 pub use watch::DshPlugin;

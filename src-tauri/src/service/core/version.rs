@@ -31,12 +31,22 @@ fn slot_dir(app_handle: &AppHandle, tag: &str) -> PathBuf {
 /// `dependencies/dsh-<tag>`（tag 以 `dsh-` 开头时旧命名会产生 `dsh-dsh-...`）。
 fn existing_slot_dir(app_handle: &AppHandle, tag: &str) -> Option<PathBuf> {
     let deps = dependencies_dir(app_handle);
-    let new = deps.join(tag);
+    let new = safe_slot_path(&deps, tag).ok()?;
     if new.is_dir() {
         return Some(new);
     }
-    let legacy = deps.join(format!("dsh-{tag}"));
+    let legacy = safe_slot_path(&deps, &format!("dsh-{tag}")).ok()?;
     legacy.is_dir().then_some(legacy)
+}
+
+/// 构造槽位路径，并拒绝越出 dependencies 根目录的既有路径或符号链接。
+fn safe_slot_path(deps: &Path, tag: &str) -> Result<PathBuf, String> {
+    fs_guard::validate_id(tag)?;
+    let path = deps.join(tag);
+    if path.exists() {
+        fs_guard::ensure_within(&path, deps)?;
+    }
+    Ok(path)
 }
 
 /// 读取发行版目录 `package.json` 中 `@deepseek-ai/dsh` 依赖版本（历史槽位展示用）。
@@ -66,7 +76,10 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     let mut rows: Vec<HarnessCore> = vec![HarnessCore {
         id: "local".to_string(),
         source: CoreSource::Local,
-        version: local.as_ref().map(|c| c.version.clone()).unwrap_or_default(),
+        version: local
+            .as_ref()
+            .map(|c| c.version.clone())
+            .unwrap_or_default(),
         tag: String::new(),
         path: local_bin.clone().unwrap_or_default(),
         dir: local
@@ -98,7 +111,10 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     let tags = match download::fetch_dsh_pkg_tags().await {
         Ok(tags) => tags,
         Err(e) => {
-            log::warn!("Failed to fetch dsh pkg tags ({}), showing only on-disk versions", e);
+            log::warn!(
+                "Failed to fetch dsh pkg tags ({}), showing only on-disk versions",
+                e
+            );
             Vec::new()
         }
     };
@@ -267,6 +283,7 @@ pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore,
 async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), String> {
     let deps = dependencies_dir(app_handle);
     let active_dir = config::get_dsh_install_path(app_handle);
+    fs_guard::validate_id(tag)?;
     let target_dir = existing_slot_dir(app_handle, tag)
         .ok_or_else(|| format!("CORE_VERSION_NOT_DOWNLOADED: {tag}"))?;
     let cur_tag = config::get_dsh_pkg_tag(app_handle);
@@ -287,14 +304,14 @@ async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), Str
     }
 
     // 1. 当前激活目录让出激活位：改名为自己的 tag 槽位（残留槽位先清理）
-    let backup_dir = match &cur_tag {
-        Some(cur) => deps.join(cur),
+    let backup_tag = cur_tag.clone().unwrap_or_else(|| {
         // 无 tag 记录（旧版安装）：用版本号兜底命名槽位
-        None => deps.join(format!(
+        format!(
             "dsh-{}",
             config::get_dsh_version(app_handle).unwrap_or_else(|| "unknown".to_string())
-        )),
-    };
+        )
+    });
+    let backup_dir = safe_slot_path(&deps, &backup_tag)?;
     if active_dir.exists() {
         if backup_dir.exists() && !download::remove_dir_with_retry(&backup_dir).await {
             return Err(format!(
@@ -302,13 +319,15 @@ async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), Str
                 backup_dir.display()
             ));
         }
-        download::rename_with_retry(&active_dir, &backup_dir).await.map_err(|e| {
-            format!(
-                "CORE_SWITCH_FAILED: {} -> {}: {e}",
-                active_dir.display(),
-                backup_dir.display()
-            )
-        })?;
+        download::rename_with_retry(&active_dir, &backup_dir)
+            .await
+            .map_err(|e| {
+                format!(
+                    "CORE_SWITCH_FAILED: {} -> {}: {e}",
+                    active_dir.display(),
+                    backup_dir.display()
+                )
+            })?;
     }
 
     // 2. 目标版本进入激活位；失败回滚
@@ -372,8 +391,7 @@ pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<Harne
     let buffer = download::download_file_from_sources(&tracker, urls)
         .await
         .map_err(|e| format!("CORE_DOWNLOAD_FAILED: {e}"))?;
-    download::verify_sha256(&buffer, &digest)
-        .map_err(|e| format!("CORE_INTEGRITY_FAILED: {e}"))?;
+    download::verify_sha256(&buffer, &digest).map_err(|e| format!("CORE_INTEGRITY_FAILED: {e}"))?;
     tracker.end_phase();
     let name = info
         .asset_url
@@ -401,7 +419,9 @@ pub async fn remove_version(app_handle: &AppHandle, id: &str) -> Result<(), Stri
     fs_guard::validate_id(tag)?;
     let cur_tag = config::get_dsh_pkg_tag(app_handle);
     if cur_tag.as_deref() == Some(tag) && active_source(app_handle) == CoreSource::App {
-        return Err(format!("CORE_ACTIVE_VERSION: cannot remove in-use version {tag}"));
+        return Err(format!(
+            "CORE_ACTIVE_VERSION: cannot remove in-use version {tag}"
+        ));
     }
     let dir = existing_slot_dir(app_handle, tag)
         .ok_or_else(|| format!("CORE_VERSION_NOT_FOUND: {tag}"))?;
@@ -423,7 +443,10 @@ pub async fn remove_version(app_handle: &AppHandle, id: &str) -> Result<(), Stri
 
 /// 解析激活预打包核心的版本号：优先记录 tag（`dsh-<version>-<commit>`），
 /// 解析不出（无 tag 记录/格式不符）时用安装目录清单版本兜底。
-fn active_app_version(active_tag: &Option<String>, manifest_version: Option<String>) -> Option<String> {
+fn active_app_version(
+    active_tag: &Option<String>,
+    manifest_version: Option<String>,
+) -> Option<String> {
     active_tag
         .as_deref()
         .and_then(download::parse_version_from_tag)
@@ -451,6 +474,36 @@ fn row_for_tag(app_handle: &AppHandle, tag: &str, dir: &Path) -> HarnessCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slot_paths_reject_traversal_and_accept_release_tag() {
+        let root = std::env::temp_dir().join(format!("dsh-core-slots-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(safe_slot_path(&root, "foo/../../target").is_err());
+        let valid = "dsh-0.1.0-rc.8-32331963388";
+        let expected = root.join(valid);
+        assert_eq!(safe_slot_path(&root, valid).unwrap(), expected);
+
+        std::fs::create_dir_all(&expected).unwrap();
+        assert_eq!(safe_slot_path(&root, valid).unwrap(), expected);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn slot_paths_reject_symlink_escape() {
+        let root = std::env::temp_dir().join(format!("dsh-core-slots-link-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("dsh-core-slots-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("dsh-evil")).unwrap();
+
+        assert!(safe_slot_path(&root, "dsh-evil").is_err());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
 
     #[test]
     fn list_dedupes_versions_keeping_last_tag() {

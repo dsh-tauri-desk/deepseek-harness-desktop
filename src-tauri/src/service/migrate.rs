@@ -104,12 +104,8 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
     merge_tree(legacy, target)?;
     // merge 也可能把 node_modules 无损搬入（目标缺失时），同样清除 pnpm 元数据
     purge_carried_pnpm_metadata(target);
-    fs::remove_dir_all(legacy).map_err(|e| {
-        format!(
-            "remove legacy {} after merge failed: {e}",
-            legacy.display()
-        )
-    })
+    fs::remove_dir_all(legacy)
+        .map_err(|e| format!("remove legacy {} after merge failed: {e}", legacy.display()))
 }
 
 /// 递归把 `src` 目录树合并进 `dst`：
@@ -121,9 +117,7 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
 ///   在合并完成后统一清除其中的 pnpm 元数据（见 `purge_carried_pnpm_metadata`）。
 fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("create {} failed: {e}", dst.display()))?;
-    for entry in fs::read_dir(src)
-        .map_err(|e| format!("read {} failed: {e}", src.display()))?
-    {
+    for entry in fs::read_dir(src).map_err(|e| format!("read {} failed: {e}", src.display()))? {
         let entry = entry.map_err(|e| format!("read_dir entry failed: {e}"))?;
         let name = entry.file_name();
         let src_path = entry.path();
@@ -148,7 +142,11 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
             }
         } else if !dst_path.exists() || src_newer(&src_path, &dst_path) {
             fs::copy(&src_path, &dst_path).map_err(|e| {
-                format!("copy {} -> {} failed: {e}", src_path.display(), dst_path.display())
+                format!(
+                    "copy {} -> {} failed: {e}",
+                    src_path.display(),
+                    dst_path.display()
+                )
             })?;
         }
     }
@@ -272,10 +270,8 @@ mod tests {
 
     /// 构造一个带内容与 mtime 的临时目录树，返回 (root, 清理守卫)。
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "dsh-migrate-test-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("dsh-migrate-test-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -291,7 +287,8 @@ mod tests {
     fn set_mtime(path: &Path, secs_since_epoch: u64) {
         let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs_since_epoch);
         let f = fs::OpenOptions::new().write(true).open(path).unwrap();
-        f.set_times(std::fs::FileTimes::new().set_modified(t)).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(t))
+            .unwrap();
     }
 
     // ------------------------------------------------------------------
@@ -306,7 +303,10 @@ mod tests {
 
         write(&legacy.join("settings.yaml"), "theme: dark\n");
         write(&legacy.join("sessions/s1/data.json"), "{}");
-        write(&legacy.join("profiles/web/package.json"), "{\"name\":\"web\"}");
+        write(
+            &legacy.join("profiles/web/package.json"),
+            "{\"name\":\"web\"}",
+        );
         write(&legacy.join("profiles/web/node_modules/x/index.js"), "// x");
         // 旧版 pnpm 元数据记录了旧位置的绝对路径 → 迁移后必须清除（issue #103）
         write(
@@ -322,12 +322,16 @@ mod tests {
         assert!(target.join("profiles/web/package.json").is_file());
         // rename 无损搬移：node_modules 一并带入（不丢依赖）
         assert!(
-            target.join("profiles/web/node_modules/x/index.js").is_file(),
+            target
+                .join("profiles/web/node_modules/x/index.js")
+                .is_file(),
             "rename must carry node_modules over losslessly"
         );
         // 但 pnpm 安装元数据必须清除，否则任何 pnpm 操作都会因旧路径抛错
         assert!(
-            !target.join("profiles/web/node_modules/.modules.yaml").exists(),
+            !target
+                .join("profiles/web/node_modules/.modules.yaml")
+                .exists(),
             "carried pnpm .modules.yaml must be purged"
         );
     }
@@ -366,8 +370,14 @@ mod tests {
         // target 独有 → 保留
         write(&target.join("only-target.txt"), "T");
         // node_modules 两边都有 → 保留目标
-        write(&legacy.join("profiles/web/node_modules/p/index.js"), "// legacy p");
-        write(&target.join("profiles/web/node_modules/p/index.js"), "// target p");
+        write(
+            &legacy.join("profiles/web/node_modules/p/index.js"),
+            "// legacy p",
+        );
+        write(
+            &target.join("profiles/web/node_modules/p/index.js"),
+            "// target p",
+        );
 
         migrate_impl(&legacy, &target).unwrap();
 
@@ -397,17 +407,24 @@ mod tests {
         let target = temp_dir("b-nm-target");
 
         write(&legacy.join("profiles/web/node_modules/x/index.js"), "// x");
-        write(&legacy.join("profiles/web/node_modules/.modules.yaml"), "virtualStoreDir: C:\\legacy\\node_modules\\.pnpm\n");
+        write(
+            &legacy.join("profiles/web/node_modules/.modules.yaml"),
+            "virtualStoreDir: C:\\legacy\\node_modules\\.pnpm\n",
+        );
         write(&legacy.join("profiles/web/package.json"), "{}");
 
         migrate_impl(&legacy, &target).unwrap();
         assert!(target.join("profiles/web/package.json").is_file());
         assert!(
-            target.join("profiles/web/node_modules/x/index.js").is_file(),
+            target
+                .join("profiles/web/node_modules/x/index.js")
+                .is_file(),
             "legacy node_modules is carried over when target has none"
         );
         assert!(
-            !target.join("profiles/web/node_modules/.modules.yaml").exists(),
+            !target
+                .join("profiles/web/node_modules/.modules.yaml")
+                .exists(),
             "carried pnpm metadata must be purged after merge too"
         );
     }
@@ -507,7 +524,10 @@ mod tests {
         fs::create_dir_all(&vsd).unwrap();
         write(
             &node_modules.join(".modules.yaml"),
-            &format!("lockfileVersion: '9.0'\nvirtualStoreDir: {}\n", vsd.display()),
+            &format!(
+                "lockfileVersion: '9.0'\nvirtualStoreDir: {}\n",
+                vsd.display()
+            ),
         );
 
         heal_stale_pnpm_metadata(&home).unwrap();

@@ -103,7 +103,8 @@ async fn download_from_source(
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("UPDATE_DOWNLOAD: {e}"))?;
-        file.write_all(&chunk).map_err(|e| format!("UPDATE_FILE: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("UPDATE_FILE: {e}"))?;
         downloaded += chunk.len() as u64;
         let pct = if total > 0 {
             (downloaded as f64 / total as f64) * 100.0
@@ -170,8 +171,8 @@ fn ensure_installer_executable(path: &std::path::Path) -> Result<(), String> {
 /// 这里按块流式喂给 `Sha256`，完成时仅保留 32 字节摘要。摘要格式接受
 /// `sha256:<64hex>` 或裸 `<64hex>`（统一转小写比较）。
 fn verify_installer_sha256(path: &std::path::Path, expected: &str) -> Result<(), String> {
-    use std::io::Read;
     use sha2::Digest;
+    use std::io::Read;
     let expected = expected
         .strip_prefix("sha256:")
         .unwrap_or(expected)
@@ -184,7 +185,9 @@ fn verify_installer_sha256(path: &std::path::Path, expected: &str) -> Result<(),
     let mut hasher = sha2::Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buf).map_err(|e| format!("UPDATE_FILE: {e}"))?;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("UPDATE_FILE: {e}"))?;
         if n == 0 {
             break;
         }
@@ -313,15 +316,16 @@ pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), 
     // 用 `dunce::canonicalize`（std `fs::canonicalize`）——它返回的路径不带
     // Windows `\\?\` verbatim 前缀，`starts_with` 与日志展示更一致。
     let canonical = dunce::canonicalize(p).map_err(|e| format!("UPDATE_OPEN: {e}"))?;
-    let updates_real = dunce::canonicalize(&updates_dir)
-        .map_err(|e| format!("UPDATE_DIR: {e}"))?;
+    let updates_real = dunce::canonicalize(&updates_dir).map_err(|e| format!("UPDATE_DIR: {e}"))?;
     if !canonical.starts_with(&updates_real) {
         log::error!(
             "Rejecting open_installer outside updates dir: {} (root {})",
             canonical.display(),
             updates_real.display()
         );
-        return Err("UPDATE_PATH_REJECTED: installer path is outside updates directory".to_string());
+        return Err(
+            "UPDATE_PATH_REJECTED: installer path is outside updates directory".to_string(),
+        );
     }
     log::info!("Opening desktop installer: {}", p.display());
     // 更新前先停下本应用持有的 Harness 服务：安装器在安装时会强杀桌面端进程
@@ -364,7 +368,11 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         ensure_installer_executable(&file).unwrap();
         let mode = std::fs::metadata(&file).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111, "应包含所有者/组/其他可执行位，mode={mode:o}");
+        assert_eq!(
+            mode & 0o111,
+            0o111,
+            "应包含所有者/组/其他可执行位，mode={mode:o}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -391,8 +399,16 @@ mod tests {
         };
         let sources = download_sources(&with_digest);
         assert_eq!(sources.len(), 2);
-        assert!(sources[1].contains("ghfast.top"), "镜像应为 ghfast.top 前缀: {}", sources[1]);
-        assert!(sources[1].ends_with("/releases/download/v0.7.4/x.dmg"), "镜像保留完整资产路径: {}", sources[1]);
+        assert!(
+            sources[1].contains("ghfast.top"),
+            "镜像应为 ghfast.top 前缀: {}",
+            sources[1]
+        );
+        assert!(
+            sources[1].ends_with("/releases/download/v0.7.4/x.dmg"),
+            "镜像保留完整资产路径: {}",
+            sources[1]
+        );
     }
 
     /// 流式校验：正确的文件通过、错误的摘要拒绝，且不把整个文件读进内存。

@@ -1,5 +1,6 @@
 use super::constants::*;
 use serde::{Deserialize, Serialize};
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 
@@ -45,7 +46,15 @@ pub struct Setting {
     /// 端口（3080/3081）。避免端口只增不减、一路从 3080 漂到 3084+（issue #91）。
     #[serde(default)]
     pub manual_port: Option<u16>,
+    /// 桌面主 WebView 的缩放比例。旧配置缺失时回落到 100%，读取与写入时均会
+    /// 归一化到受支持的 50%–200% 范围和 10% 步长。
+    #[serde(default = "default_zoom_factor")]
+    pub zoom_factor: f64,
 }
+
+pub const ZOOM_FACTOR_MIN: f64 = 0.5;
+pub const ZOOM_FACTOR_MAX: f64 = 2.0;
+pub const ZOOM_FACTOR_STEP: f64 = 0.1;
 
 /// 默认档案：桌面端内置的 web 档案
 fn default_active_profile() -> String {
@@ -55,6 +64,21 @@ fn default_active_profile() -> String {
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
 fn default_cli_link_enabled() -> bool {
     true
+}
+
+/// 界面默认缩放为 100%。
+pub fn default_zoom_factor() -> f64 {
+    1.0
+}
+
+/// 将外部或旧存储中的缩放值限制到桌面端支持的稳定步长。
+pub fn normalize_zoom_factor(value: f64) -> f64 {
+    if !value.is_finite() {
+        return default_zoom_factor();
+    }
+    let clamped = value.clamp(ZOOM_FACTOR_MIN, ZOOM_FACTOR_MAX);
+    let steps_per_unit = 1.0 / ZOOM_FACTOR_STEP;
+    (clamped * steps_per_unit).round() / steps_per_unit
 }
 
 /// 默认服务端口：debug 构建与生产隔离，避免开发时与已运行的桌面端争用 3080。
@@ -82,6 +106,7 @@ impl Default for Setting {
             active_profile: default_active_profile(),
             active_core: None,
             manual_port: None,
+            zoom_factor: default_zoom_factor(),
         }
     }
 }
@@ -100,18 +125,12 @@ fn store_dat_file_name() -> &'static str {
     }
 }
 
-pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
-    let store = app_handle
-        .store(store_dat_file_name())
-        .expect("Failed to load store");
-    store.set(STORE_SETTING_KEY, serde_json::to_value(&setting).unwrap());
-    store.save().expect("Failed to save store");
-    app_handle
-        .emit("setting_updated", &serde_json::to_value(&setting).unwrap())
-        .expect("Failed to emit event");
+fn setting_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
+fn read_store_dat_setting(app_handle: &AppHandle) -> Setting {
     let store = app_handle
         .store(store_dat_file_name())
         .expect("Failed to load store");
@@ -121,9 +140,78 @@ pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
             .and_then(|s| serde_json::from_str(s).ok())
             .or_else(|| Some(v.clone()))
     });
-    value
+    let mut setting = value
         .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_else(Setting::default)
+        .unwrap_or_else(Setting::default);
+    setting.zoom_factor = normalize_zoom_factor(setting.zoom_factor);
+    setting
+}
+
+fn write_store_dat_setting(app_handle: &AppHandle, setting: &Setting) -> serde_json::Value {
+    let store = app_handle
+        .store(store_dat_file_name())
+        .expect("Failed to load store");
+    let value = serde_json::to_value(setting).unwrap();
+    store.set(STORE_SETTING_KEY, value.clone());
+    store.save().expect("Failed to save store");
+    value
+}
+
+fn emit_setting(app_handle: &AppHandle, value: &serde_json::Value) {
+    app_handle
+        .emit("setting_updated", value)
+        .expect("Failed to emit event");
+}
+
+fn preserve_persisted_zoom(mut replacement: Setting, persisted_zoom: f64) -> Setting {
+    replacement.zoom_factor = normalize_zoom_factor(persisted_zoom);
+    replacement
+}
+
+/// 兼容旧调用方的整对象写入，但始终保留锁内读到的最新缩放，避免长流程用陈旧
+/// `Setting` 覆盖刚刚由快捷键写入的值。
+pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
+    let value = {
+        let _guard = setting_write_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let current = read_store_dat_setting(app_handle);
+        let setting = preserve_persisted_zoom(setting, current.zoom_factor);
+        write_store_dat_setting(app_handle, &setting)
+    };
+    emit_setting(app_handle, &value);
+}
+
+/// 在一个短临界区内读取、修改并写回设置，避免多个精确字段更新彼此丢失。
+pub fn update_store_dat_setting<F>(app_handle: &AppHandle, update: F) -> Setting
+where
+    F: FnOnce(&mut Setting),
+{
+    let (setting, value) = {
+        let _guard = setting_write_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut setting = read_store_dat_setting(app_handle);
+        update(&mut setting);
+        setting.zoom_factor = normalize_zoom_factor(setting.zoom_factor);
+        let value = write_store_dat_setting(app_handle, &setting);
+        (setting, value)
+    };
+    emit_setting(app_handle, &value);
+    setting
+}
+
+pub fn set_store_dat_zoom_factor(app_handle: &AppHandle, zoom_factor: f64) -> Setting {
+    update_store_dat_setting(app_handle, |setting| {
+        setting.zoom_factor = zoom_factor;
+    })
+}
+
+pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
+    let _guard = setting_write_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    read_store_dat_setting(app_handle)
 }
 
 /// 已安装 Harness 发行版对应的 GitHub release commit hash
@@ -148,4 +236,51 @@ pub fn set_dsh_pkg_tag(app_handle: &AppHandle, tag: String) {
     let mut setting = get_store_dat_setting(app_handle);
     setting.dsh_pkg_tag = Some(tag);
     set_store_dat_setting(app_handle, setting);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_zoom_factor, normalize_zoom_factor, preserve_persisted_zoom, Setting,
+        ZOOM_FACTOR_MAX, ZOOM_FACTOR_MIN,
+    };
+
+    #[test]
+    fn zoom_factor_defaults_for_legacy_settings() {
+        let setting: Setting = serde_json::from_value(serde_json::json!({
+            "installed": true,
+            "port": 3080,
+            "auto_start": true,
+            "language": "en-US"
+        }))
+        .expect("legacy setting should deserialize");
+
+        assert_eq!(setting.zoom_factor, default_zoom_factor());
+    }
+
+    #[test]
+    fn zoom_factor_is_clamped_and_rounded() {
+        assert_eq!(normalize_zoom_factor(0.1), ZOOM_FACTOR_MIN);
+        assert_eq!(normalize_zoom_factor(3.0), ZOOM_FACTOR_MAX);
+        assert!((normalize_zoom_factor(1.14) - 1.1).abs() < f64::EPSILON);
+        let canonical = normalize_zoom_factor(1.16);
+        assert_eq!(canonical, 1.2);
+        assert_eq!(serde_json::to_string(&canonical).unwrap(), "1.2");
+    }
+
+    #[test]
+    fn invalid_zoom_factor_resets_to_default() {
+        assert_eq!(normalize_zoom_factor(f64::NAN), default_zoom_factor());
+        assert_eq!(normalize_zoom_factor(f64::INFINITY), default_zoom_factor());
+    }
+
+    #[test]
+    fn legacy_full_setting_write_preserves_latest_zoom() {
+        let mut stale = Setting::default();
+        stale.zoom_factor = 0.8;
+
+        let merged = preserve_persisted_zoom(stale, 1.6);
+
+        assert_eq!(merged.zoom_factor, 1.6);
+    }
 }

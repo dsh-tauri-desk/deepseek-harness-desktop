@@ -10,6 +10,7 @@ import { Empty } from '@/components/empty'
 import { Item } from '@/components/item'
 import { Logs } from '@/components/logs'
 import { store } from '@/store'
+import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
 
 /**
@@ -95,11 +96,12 @@ function LogPanel({ logs }: { logs: readonly string[] }) {
 
   async function copyLogs() {
     try {
-      await navigator.clipboard.writeText(text || '')
+      await writeClipboardText(text || '')
       toast(t('messages.log_copied'), {})
     }
     catch (err) {
       console.error('[Harness] copy preinstall logs failed:', err)
+      toast(t('messages.logs_copy_failed'), { variant: 'danger' })
     }
   }
 

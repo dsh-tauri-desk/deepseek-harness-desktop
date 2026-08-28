@@ -5,6 +5,7 @@ src-tauri/target
 src-tauri/gen
 src-tauri/resources/node
 src-tauri/resources/preset-plugins/
+src-tauri/resources/internal-plugins/
 *.log
 .DS_Store
 .idea
@@ -16,3 +17,5 @@ release-msi-version.tmp.json
 skills
 .serena
 .cargo/config.toml
+source/
+.gitmodules

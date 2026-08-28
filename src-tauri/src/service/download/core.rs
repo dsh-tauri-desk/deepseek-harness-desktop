@@ -110,8 +110,15 @@ async fn download_with_retry<'a, R: Runtime>(
             );
             tokio::time::sleep(delay).await;
         }
-        match download_attempt(&client, tracker, url, attempt, MAX_DOWNLOAD_ATTEMPTS, &mut buffer)
-            .await
+        match download_attempt(
+            &client,
+            tracker,
+            url,
+            attempt,
+            MAX_DOWNLOAD_ATTEMPTS,
+            &mut buffer,
+        )
+        .await
         {
             Ok(()) => {
                 log::info!("Download completed, {} bytes total", buffer.len());
@@ -230,7 +237,12 @@ async fn download_attempt<'a, R: Runtime>(
         );
     }
 
-    log::info!("Download attempt {}/{} succeeded, {} bytes in buffer", attempt, max_attempts, buffer.len());
+    log::info!(
+        "Download attempt {}/{} succeeded, {} bytes in buffer",
+        attempt,
+        max_attempts,
+        buffer.len()
+    );
     Ok(())
 }
 
@@ -573,10 +585,7 @@ fn github_client() -> Result<reqwest::Client, String> {
 /// 带 GitHub 未认证限流（403）冷却：冷却期内直接返回 Err（由调用方走兜底来源），
 /// 命中 403 时记录冷却开始。返回的 `reqwest::Response` 已通过 `error_for_status`，
 /// 403 已被拦截并标记冷却，不会作为普通错误继续向下传输。
-async fn github_api_get(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<reqwest::Response, String> {
+async fn github_api_get(client: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
     if crate::service::download::github_api::rate_limited() {
         return Err("GitHub API rate limited (cached, using fallback sources)".to_string());
     }
@@ -600,12 +609,13 @@ async fn fetch_releases_latest(client: &reqwest::Client) -> Result<serde_json::V
 
 /// 通过 commits 端点把 release tag 解析为完整 commit hash。
 async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
-    let commit: serde_json::Value = github_api_get(client, &format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
-        .await
-        .map_err(|e| format!("Release commit request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse release commit response: {e}"))?;
+    let commit: serde_json::Value =
+        github_api_get(client, &format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
+            .await
+            .map_err(|e| format!("Release commit request failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse release commit response: {e}"))?;
     commit
         .get("sha")
         .and_then(|v| v.as_str())
@@ -752,9 +762,7 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
         Ok(sha) => sha,
         Err(e) => {
             if crate::service::download::github_api::rate_limited() {
-                log::debug!(
-                    "GitHub API commit resolution rate-limited, using build-id fallback"
-                );
+                log::debug!("GitHub API commit resolution rate-limited, using build-id fallback");
             } else {
                 log::warn!(
                     "Failed to resolve commit for tag {} ({}), using build-id fallback",
@@ -769,14 +777,15 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     // 4. 资产 URL 与摘要：仅 API 可达时资产/摘要可信；否则 URL 平台确定性回退、digest=None
     let (asset_url, mut digest) = match api_release.as_ref() {
         Some(release) => {
-            let asset = release.get("assets").and_then(|value| value.as_array()).and_then(
-                |assets| {
+            let asset = release
+                .get("assets")
+                .and_then(|value| value.as_array())
+                .and_then(|assets| {
                     assets.iter().find(|asset| {
                         asset.get("name").and_then(|value| value.as_str())
                             == Some(expected_name.as_str())
                     })
-                },
-            );
+                });
             let asset_url = asset
                 .and_then(|a| a.get("browser_download_url").and_then(|v| v.as_str()))
                 .map(|u| u.to_string())
@@ -838,22 +847,25 @@ pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
         .to_string();
 
     // 1. 优先 API 拉该 tag 的 release（含资产 + 可信摘要）
-    let release = github_api_get(&client, &format!("{DSH_PKG_GITHUB_API}/releases/tags/{tag}"))
-        .await
-        .map_err(|e| format!("Release {tag} request failed: {e}"))?;
+    let release = github_api_get(
+        &client,
+        &format!("{DSH_PKG_GITHUB_API}/releases/tags/{tag}"),
+    )
+    .await
+    .map_err(|e| format!("Release {tag} request failed: {e}"))?;
     let json: serde_json::Value = release
         .json()
         .await
         .map_err(|e| format!("Failed to parse release {tag} response: {e}"))?;
 
-    let asset = json.get("assets").and_then(|value| value.as_array()).and_then(
-        |assets| {
+    let asset = json
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .and_then(|assets| {
             assets.iter().find(|asset| {
-                asset.get("name").and_then(|value| value.as_str())
-                    == Some(expected_name.as_str())
+                asset.get("name").and_then(|value| value.as_str()) == Some(expected_name.as_str())
             })
-        },
-    );
+        });
     let asset_url = asset
         .and_then(|a| a.get("browser_download_url").and_then(|v| v.as_str()))
         .map(|u| u.to_string())
@@ -1045,7 +1057,10 @@ mod tests {
         // 尚未开始且总长未知也不产生 NaN
         assert_eq!(download_progress_percent(0, 0), -1.0);
         // 数值绝对不出现非有限值
-        for pct in [download_progress_percent(50, 0), download_progress_percent(0, 0)] {
+        for pct in [
+            download_progress_percent(50, 0),
+            download_progress_percent(0, 0),
+        ] {
             assert!(pct.is_finite(), "progress must be finite, got {pct}");
         }
     }
@@ -1070,7 +1085,9 @@ mod tests {
         assert!(validate_download_url("https://example.com/file.zip").is_err());
         // 国内镜像源（含 npmmirror 302 后的最终落地域名）
         assert!(validate_download_url("https://npmmirror.com/mirrors/node/v22/file.zip").is_ok());
-        assert!(validate_download_url("https://cdn.npmmirror.com/binaries/node/v22/file.zip").is_ok());
+        assert!(
+            validate_download_url("https://cdn.npmmirror.com/binaries/node/v22/file.zip").is_ok()
+        );
         assert!(validate_download_url("https://registry.npmmirror.com/pnpm/-/pnpm.tgz").is_ok());
         assert!(validate_download_url(
             "https://ghfast.top/https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
@@ -1108,7 +1125,10 @@ mod tests {
         commit_staged_install(&staging, &dest, &backup)
             .await
             .expect("recover and commit");
-        assert_eq!(fs::read_to_string(dest.join("version.txt")).unwrap(), "next");
+        assert_eq!(
+            fs::read_to_string(dest.join("version.txt")).unwrap(),
+            "next"
+        );
         assert!(!backup.exists());
         fs::remove_dir_all(root).ok();
     }
@@ -1139,8 +1159,7 @@ mod tests {
         let html = concat!(
             "…/deepseek-harness-pkg-windows.zip…<span>sha256:4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0</span>",
         );
-        let got =
-            parse_digest_from_expanded_assets(html, "deepseek-harness-pkg-windows.zip");
+        let got = parse_digest_from_expanded_assets(html, "deepseek-harness-pkg-windows.zip");
         assert_eq!(
             got.as_deref(),
             Some("sha256:4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0")
@@ -1152,7 +1171,10 @@ mod tests {
         );
         // 摘要缺失 → None
         assert_eq!(
-            parse_digest_from_expanded_assets("<p>no digest here</p>", "deepseek-harness-pkg-windows.zip"),
+            parse_digest_from_expanded_assets(
+                "<p>no digest here</p>",
+                "deepseek-harness-pkg-windows.zip"
+            ),
             None
         );
     }

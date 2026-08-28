@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
-use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::{fmt, util::SubscriberInitExt, EnvFilter};
 const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
@@ -99,14 +99,21 @@ impl SizeRotatingWriter {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         *guard = Some(f);
         Ok(())
     }
     fn rotate_if_needed(&self) {
         let len = {
             let guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
-            guard.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0)
+            guard
+                .as_ref()
+                .and_then(|f| f.metadata().ok())
+                .map(|m| m.len())
+                .unwrap_or(0)
         };
         if len <= self.max_bytes {
             return;
@@ -159,7 +166,11 @@ impl Write for SizeRotatingWriter {
     }
     fn flush(&mut self) -> io::Result<()> {
         let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = guard.as_mut() { f.flush() } else { Ok(()) }
+        if let Some(f) = guard.as_mut() {
+            f.flush()
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -190,7 +201,11 @@ impl<'a> Write for SizeRotatingWriterGuard<'a> {
     }
     fn flush(&mut self) -> io::Result<()> {
         let mut guard = self.parent.file.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = guard.as_mut() { f.flush() } else { Ok(()) }
+        if let Some(f) = guard.as_mut() {
+            f.flush()
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -222,10 +237,13 @@ impl Write for SharedRotatingWriter {
     }
     fn flush(&mut self) -> io::Result<()> {
         let mut guard = self.0.file.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = guard.as_mut() { f.flush() } else { Ok(()) }
+        if let Some(f) = guard.as_mut() {
+            f.flush()
+        } else {
+            Ok(())
+        }
     }
 }
-
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedRotatingWriter {
     type Writer = SizeRotatingWriterGuard<'a>;
@@ -257,17 +275,25 @@ pub fn init() {
     // 前端独立文件：desktop.frontdesk.log（与 dsh 的 `target: "dsh"` 标识对称，`target: "frontend"`）
     if let Some(path) = frontdesk_log_file_path() {
         let w = Arc::new(Mutex::new(SizeRotatingWriter::new(
-            path, MAX_LOG_BYTES, MAX_BACKUPS,
+            path,
+            MAX_LOG_BYTES,
+            MAX_BACKUPS,
         )));
         let _ = FRONTDESK_WRITER.set(w);
     }
     let timer = OffsetTime::new(
         time::UtcOffset::UTC,
-        time::format_description::parse_borrowed::<2>("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z").unwrap(),
+        time::format_description::parse_borrowed::<2>(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z",
+        )
+        .unwrap(),
     );
     let file_timer = OffsetTime::new(
         time::UtcOffset::UTC,
-        time::format_description::parse_borrowed::<2>("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z").unwrap(),
+        time::format_description::parse_borrowed::<2>(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z",
+        )
+        .unwrap(),
     );
     let stdout_layer = fmt::layer()
         .with_writer(std::io::stdout)
@@ -355,11 +381,16 @@ pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
             "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z",
         )
         .unwrap();
-        let ts = now.format(&fmt).unwrap_or_else(|_| "1970-01-01 00:00:00.000Z".to_string());
+        let ts = now
+            .format(&fmt)
+            .unwrap_or_else(|_| "1970-01-01 00:00:00.000Z".to_string());
         if is_generic_frontend {
             format!("[{}] {:>5} frontend: {}\n", ts, level_str, message)
         } else {
-            format!("[{}] {:>5} frontend: [{}] {}\n", ts, level_str, target, message)
+            format!(
+                "[{}] {:>5} frontend: [{}] {}\n",
+                ts, level_str, target, message
+            )
         }
     };
     let bytes = formatted.as_bytes();
@@ -386,8 +417,17 @@ mod tests {
     }
     #[test]
     fn frontend_level_parse() {
-        assert!(matches!(FrontendLevel::from_str("warn"), FrontendLevel::Warn));
-        assert!(matches!(FrontendLevel::from_str("WARN"), FrontendLevel::Warn));
-        assert!(matches!(FrontendLevel::from_str("unknown"), FrontendLevel::Info));
+        assert!(matches!(
+            FrontendLevel::from_str("warn"),
+            FrontendLevel::Warn
+        ));
+        assert!(matches!(
+            FrontendLevel::from_str("WARN"),
+            FrontendLevel::Warn
+        ));
+        assert!(matches!(
+            FrontendLevel::from_str("unknown"),
+            FrontendLevel::Info
+        ));
     }
 }

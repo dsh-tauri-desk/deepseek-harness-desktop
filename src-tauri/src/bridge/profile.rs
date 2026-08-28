@@ -20,10 +20,7 @@ pub fn create_profile(app_handle: AppHandle, name: String) -> Result<profile::Pr
 
 /// 切换当前使用中的档案（持久化；重启服务后生效，由前端触发）
 #[tauri::command]
-pub fn set_active_profile(
-    app_handle: AppHandle,
-    id: String,
-) -> Result<profile::Profile, String> {
+pub fn set_active_profile(app_handle: AppHandle, id: String) -> Result<profile::Profile, String> {
     profile::set_active(&app_handle, &id)
 }
 

@@ -272,7 +272,10 @@ mod tests {
         );
 
         // 未声明 package 时回落到 id
-        let plain = PreinstallPluginInfo { package: None, ..installed };
+        let plain = PreinstallPluginInfo {
+            package: None,
+            ..installed
+        };
         assert_eq!(installed_name(&plain), "dsh-session-context-menu");
     }
 }

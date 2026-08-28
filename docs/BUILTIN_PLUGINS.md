@@ -1,14 +1,14 @@
 # Built-in (Internal) Plugins
 
-Built-in plugins（内置插件）are plugins bundled with the installed desktop app and treated as part of the application itself. They are marked with `"internal": true` in `src-tauri/resources/preset-plugins.json`, fetched at build time by `scripts/prebuild.ts` into `src-tauri/resources/preset-plugins/<id>/`, shipped with the installer via `bundle.resources`, and auto-installed (and auto-healed) at service start by `src-tauri/src/service/plugin/internal.rs`.
+Built-in plugins（内置插件）are plugins bundled with the installed desktop app and treated as part of the application itself. They are declared in `src-tauri/resources/internal-plugins.json`, fetched at build time by `scripts/prebuild.ts` into `src-tauri/resources/internal-plugins/<id>/`, shipped with the installer via `bundle.resources`, and auto-installed (and auto-healed) at service start by `src-tauri/src/service/plugin/internal.rs`.
 
-Examples today: `dsh-tauri` and `dsh-tauri-ui`.
+Examples today: `dsh-tauri`, `dsh-tauri-ui`, `dsh-tauri-worktree`, `dsh-tauri-panel`, and `dsh-tauri-panel-extension`.
 
 ## Built-in vs. normal preset plugin
 
 | | Normal preset plugin | Built-in (internal) plugin |
 | --- | --- | --- |
-| Declared in `preset-plugins.json` | Yes | Yes, with `"internal": true` |
+| Manifest | `preset-plugins.json` | `internal-plugins.json` |
 | Source | npm / GitHub, installed at first-launch onboarding | Bundled in the installer, auto-installed at startup |
 | Shown in the first-launch checklist | Yes (`recommended` / `fix` / `defaultChecked` chips) | No — they are mandatory (filtered out in `installed.rs`) |
 | User can uninstall | Yes | Effectively no — restored on the next launch |
@@ -16,7 +16,7 @@ Examples today: `dsh-tauri` and `dsh-tauri-ui`.
 
 ## How the mechanism works
 
-**Build time** — `scripts/prebuild.ts` is run automatically by `pnpm build` (the `prebuild` script, which Tauri invokes as its `beforeBuildCommand` = `pnpm build`). For each `internal: true` entry it produces `src-tauri/resources/preset-plugins/<id>/`:
+**Build time** — `scripts/prebuild.ts` is run automatically by `pnpm build` (the `prebuild` script, which Tauri invokes as its `beforeBuildCommand` = `pnpm build`). For each entry in `internal-plugins.json` it produces `src-tauri/resources/internal-plugins/<id>/`:
 
 - `github:owner/repo` — `git clone --depth 1` → `pnpm install` → `pnpm run build` (if a `build` script exists) → copy the build output plus `package.json`.
 - `name[@version]` (npm, incl. scoped `@scope/name`) — `pnpm add <spec> --ignore-scripts` in a temporary project → copy `node_modules/<name>/`.
@@ -25,7 +25,7 @@ Examples today: `dsh-tauri` and `dsh-tauri-ui`.
 
 ## Add a new built-in plugin
 
-### 1. Declare it in `src-tauri/resources/preset-plugins.json`
+### 1. Declare it in `src-tauri/resources/internal-plugins.json`
 
 Append an entry:
 
@@ -33,7 +33,6 @@ Append an entry:
 {
   "id": "dsh-my-plugin",
   "spec": "github:you/dsh-my-plugin",
-  "internal": true,
   "name": "DSH My Plugin",
   "description": "What the plugin does",
   "repoUrl": "https://github.com/you/dsh-my-plugin"
@@ -43,15 +42,14 @@ Append an entry:
 Field reference:
 
 - `id` — unique preset id (the repo jump / lookup key; also the default npm package name used for install-state detection). Ids must be unique across the list (enforced by the `preset_json_ids_are_unique` unit test).
-- `spec` — the source. Either `github:owner/repo` (source form) or a bare npm package name `name[@version]` (published form, skips the build). This is what `prebuild.ts` feeds to git/pnpm.
-- `internal` — `true` marks it as a built-in plugin (drives build-time bundling and runtime self-heal). Defaults to `false`.
+- `spec` — the source. Either `github:owner/repo` (source form) or an npm package spec `name[@version]` (published form, skips the build). Omit `@version` to resolve the registry's latest release at build time, which avoids manifest-only version bumps. This is what `prebuild.ts` feeds to git/pnpm.
 - `name`, `description`, `repoUrl` — display metadata. `repoUrl` is used for the repo-jump link in the UI.
 - `package` — optional. When the real npm package name differs from `id` (typical for scoped `@scope/name`), declare it here; it is used for install-state detection and self-heal matching. Defaults to `id`.
 - Chip flags `recommended` / `fix` / `defaultChecked` — not meaningful for internal plugins (they never appear in the checklist) but harmless to keep.
 
 ### 2. Bundle it at build time
 
-No manual step. `pnpm tauri build` runs `pnpm build` → `pnpm prebuild` → `tsx scripts/prebuild.ts`, which reads the manifest, picks all `internal: true`, and produces `src-tauri/resources/preset-plugins/<id>/`. The build machine needs `git` and `pnpm` on PATH and network access to GitHub (for `github:` sources) and npm (for package-name sources).
+No manual step. `pnpm tauri build` runs `pnpm build` → `pnpm prebuild` → `tsx scripts/prebuild.ts`, which reads the internal manifest and produces `src-tauri/resources/internal-plugins/<id>/`. The build machine needs `git` and `pnpm` on PATH and network access to GitHub (for `github:` sources) and npm (for package-name sources).
 
 The bundled directory is shipped with the installer via `bundle.resources` (`"resources": ["resources/**/*"]` in `src-tauri/tauri.conf.json`).
 
@@ -69,7 +67,7 @@ Rules:
 
 - `.env` is gitignored and local-only; the key is only read in `debug_assertions` builds (release always uses the packaged dir).
 - If the id is missing in `<dir>`, the plugin is skipped rather than falling back to the packaged dir, so the misconfiguration is noticed explicitly.
-- Setting it empty or deleting the key disables the override (falls back to the packaged `resources/preset-plugins/<id>`).
+- Setting it empty or deleting the key disables the override (falls back to the packaged `resources/internal-plugins/<id>`).
 
 ## Gotchas
 
@@ -81,7 +79,7 @@ Rules:
 
 ## Reference
 
-- `src-tauri/resources/preset-plugins.json` — the preset manifest you edit.
+- `src-tauri/resources/internal-plugins.json` — the internal plugin manifest you edit.
 - `scripts/prebuild.ts` — build-time bundling (git / npm sources).
 - `src-tauri/src/service/plugin/preset.rs` — manifest parsing, bundled-dir discovery, and the `link:` spec builder.
 - `src-tauri/src/service/plugin/internal.rs` — runtime self-heal.

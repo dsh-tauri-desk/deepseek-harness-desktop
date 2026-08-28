@@ -31,12 +31,8 @@ pub(super) fn loopback_http_client(timeout: Duration) -> Result<reqwest::Client,
 /// 必须等到真实 JS bundle（而非 HTML fallback）可取，才视为可挂载 iframe。
 pub(super) fn health_probe_plugin_urls(port: u16) -> Vec<String> {
     vec![
-        format!(
-            "http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"
-        ),
-        format!(
-            "http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-runtime/client.js"
-        ),
+        format!("http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"),
+        format!("http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-runtime/client.js"),
     ]
 }
 
@@ -167,7 +163,11 @@ fn append_log(log_path: &PathBuf, line: &str) {
             if log_path.exists() {
                 let _ = std::fs::rename(log_path, indexed_log_path(log_path, 1));
             }
-            let _ = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(log_path);
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(log_path);
         }
     }
 }
@@ -177,10 +177,7 @@ fn indexed_log_path(log_path: &PathBuf, index: usize) -> PathBuf {
     if index == 0 {
         return log_path.clone();
     }
-    let mut name = log_path
-        .file_name()
-        .unwrap_or_default()
-        .to_os_string();
+    let mut name = log_path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{}", index));
     log_path.with_file_name(name)
 }
@@ -228,10 +225,7 @@ mod tests {
     /// 且每次启动都会新建当前日志文件。
     #[test]
     fn rotate_keeps_only_last_three_starts() {
-        let dir = std::env::temp_dir().join(format!(
-            "dsh_rotate_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("dsh_rotate_test_{}", std::process::id()));
         let log = dir.join("dsh-web.log");
         let _ = fs::remove_dir_all(&dir);
 
@@ -266,10 +260,9 @@ mod tests {
         assert!(urls
             .iter()
             .all(|u| !u.ends_with("3080/") && !u.ends_with("://127.0.0.1:3080")));
-        assert!(
-            urls.iter()
-                .any(|u| u.contains("dsh-client-ui-layout/client.js"))
-        );
+        assert!(urls
+            .iter()
+            .any(|u| u.contains("dsh-client-ui-layout/client.js")));
     }
 
     #[test]
@@ -278,9 +271,15 @@ mod tests {
             true,
             "<!doctype html><html lang=\"en\"><body>HARNESS Loading plugins...</body></html>"
         ));
-        assert!(!looks_like_plugin_bundle(true, "<html><head></head></html>"));
+        assert!(!looks_like_plugin_bundle(
+            true,
+            "<html><head></head></html>"
+        ));
         assert!(!looks_like_plugin_bundle(true, "   "));
-        assert!(!looks_like_plugin_bundle(false, "window.__ModuleLoader__={}"));
+        assert!(!looks_like_plugin_bundle(
+            false,
+            "window.__ModuleLoader__={}"
+        ));
         assert!(looks_like_plugin_bundle(
             true,
             "window.__ModuleLoader__.load({id:\"@deepseek-ai/dsh-client-ui-layout\"})"
@@ -290,10 +289,7 @@ mod tests {
     /// keep=0 时把当前日志也删掉。
     #[test]
     fn rotate_with_keep_zero_removes_all() {
-        let dir = std::env::temp_dir().join(format!(
-            "dsh_rotate_zero_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("dsh_rotate_zero_{}", std::process::id()));
         let log = dir.join("dsh-web.log");
         let _ = fs::remove_dir_all(&dir);
         write(&log, "x");

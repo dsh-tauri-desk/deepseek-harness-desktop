@@ -692,7 +692,10 @@ export const harness = defineStore({
       }
       catch (err) {
         console.error('[Harness] preinstall failed:', err)
-        this.preinstall.error = String(err)
+        const error = String(err)
+        this.preinstall.error = error.startsWith('NETWORK_ERROR:')
+          ? i18next.t('preinstall.network_error')
+          : error
         if (err instanceof Error && (err as StartupError).readinessTimedOut) {
           void this.recoverReadiness(bootToken)
         }

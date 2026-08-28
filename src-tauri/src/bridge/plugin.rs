@@ -99,7 +99,9 @@ pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
 /// 「无更新」处理）。前端在插件面板挂载后调用一次以补齐 `updateAvailable`，使升级
 /// 按钮只在确有更新（或异常修复）时出现，而不是常驻。
 #[tauri::command]
-pub async fn refresh_plugin_updates(app_handle: AppHandle) -> Result<Vec<plugin::DshPlugin>, String> {
+pub async fn refresh_plugin_updates(
+    app_handle: AppHandle,
+) -> Result<Vec<plugin::DshPlugin>, String> {
     plugin::update::refresh(&app_handle).await
 }
 
@@ -130,7 +132,12 @@ pub fn report_plugin_error(
     error: String,
     action: Option<String>,
 ) -> Result<(), String> {
-    plugin::errors::record(&app_handle, &id, action.as_deref().unwrap_or("runtime"), &error)?;
+    plugin::errors::record(
+        &app_handle,
+        &id,
+        action.as_deref().unwrap_or("runtime"),
+        &error,
+    )?;
     plugin::watch::force_emit(&app_handle);
     // 运行期异常：直接推送修复界面（应用仍在运行，前端以醒目对话框呈现）。
     let info = plugin::PluginRecoveryInfo {

@@ -59,7 +59,10 @@ fn patch_source(source: &str) -> PatchOutcome {
         return PatchOutcome::AnchorMissing;
     };
     let mut patched = source.to_string();
-    patched.insert_str(line_start, &format!("{indent}exports.SlotOutlet = SlotOutlet;\n"));
+    patched.insert_str(
+        line_start,
+        &format!("{indent}exports.SlotOutlet = SlotOutlet;\n"),
+    );
     PatchOutcome::Patched(patched)
 }
 
@@ -107,7 +110,10 @@ pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
             fs::write(&client_js, patched).map_err(|e| {
                 format!("RENDERER_PATCH_WRITE: {} failed: {e}", client_js.display())
             })?;
-            log::info!("renderer SlotOutlet export patched: {}", client_js.display());
+            log::info!(
+                "renderer SlotOutlet export patched: {}",
+                client_js.display()
+            );
         }
     }
     Ok(())

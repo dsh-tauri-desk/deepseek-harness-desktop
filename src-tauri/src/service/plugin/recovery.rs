@@ -18,11 +18,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
 use tauri::AppHandle;
 
 use super::errors;
 use super::installed::profile_dir;
+use crate::service::fs_guard;
 
 /// 前端监听的事件名：需要弹出插件异常修复界面时推送。
 pub(crate) const RECOVERY_REQUIRED_EVENT: &str = "plugin-recovery-required";
@@ -46,18 +49,42 @@ fn is_package_name(s: &str) -> bool {
     if s.is_empty() || s.contains(':') || s.chars().any(|c| c.is_whitespace()) {
         return false;
     }
-    // 路径穿越防护：`.` 与 `..` 虽由字符集放行（包名允许点），但单独出现
-    // 或作为路径片段时会被 `Path::join` 解析为上级目录——必须显式拒绝。
-    if s == "." || s == ".." || s.starts_with("..") || s.ends_with('/') || s.ends_with("..") {
+
+    let (scope, name) = if let Some((scope, name)) = s.split_once('/') {
+        // scoped 包名必须恰好只有一层 scope/name，不能把多个路径片段带入 join。
+        if !s.starts_with('@') || name.is_empty() || name.contains('/') {
+            return false;
+        }
+        (Some(scope), name)
+    } else {
+        if s.starts_with('@') {
+            return false;
+        }
+        (None, s)
+    };
+
+    fn valid_component(component: &str, is_scope: bool) -> bool {
+        let component = if is_scope {
+            component.strip_prefix('@').unwrap_or(component)
+        } else {
+            component
+        };
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && !component.starts_with('.')
+            && !component.ends_with('.')
+            && !component.starts_with("..")
+            && !component.ends_with("..")
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    }
+
+    if scope.is_some_and(|scope| !valid_component(scope, true)) {
         return false;
     }
-    let body = s.strip_prefix('@').unwrap_or(s);
-    // scoped 必须带 `/`（@scope/name）
-    if s.starts_with('@') && !body.contains('/') {
-        return false;
-    }
-    body.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/')
+    valid_component(name, false)
 }
 
 /// 是否是可行动的第三方插件引用（排除核心包与 @deepseek-ai 官方包）。
@@ -108,7 +135,8 @@ fn extract_plugin_refs(text: &str) -> Vec<String> {
         }
     }
     // 「Failed to load plugins」错误卡片：紧随其后的若干行通常是包名。
-    for m in Regex::new(r"(?m)^Failed to load plugins\s*$").expect("literal")
+    for m in Regex::new(r"(?m)^Failed to load plugins\s*$")
+        .expect("literal")
         .find_iter(text)
     {
         let rest = &text[m.end()..];
@@ -144,8 +172,7 @@ fn extract_slot_conflict(text: &str) -> Option<String> {
 
 /// 对日志文本分类失败原因，返回（判别键, 动态详情）。
 fn classify_reason(text: &str) -> (String, String) {
-    let dup_route =
-        Regex::new(r#"duplicate prefix route\s+["']([^"']+)["']"#).expect("literal");
+    let dup_route = Regex::new(r#"duplicate prefix route\s+["']([^"']+)["']"#).expect("literal");
     if let Some(c) = dup_route.captures(text) {
         let route = c.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
         return ("duplicate_route".into(), route);
@@ -153,9 +180,7 @@ fn classify_reason(text: &str) -> (String, String) {
     if let Some(entry) = extract_duplicate_loader_entry(text) {
         return ("duplicate_loader_entry".into(), entry);
     }
-    if let Some(re) = Regex::new(r#"cannot resolve profile bundle\s+["']?([^"'\n]+)["']?"#)
-        .ok()
-    {
+    if let Some(re) = Regex::new(r#"cannot resolve profile bundle\s+["']?([^"'\n]+)["']?"#).ok() {
         if let Some(c) = re.captures(text) {
             return (
                 "cannot_resolve_bundle".into(),
@@ -164,13 +189,18 @@ fn classify_reason(text: &str) -> (String, String) {
         }
     }
     if text.contains("declares no dsh.bundle") {
-        let pkg = extract_plugin_refs(text).into_iter().next().unwrap_or_default();
+        let pkg = extract_plugin_refs(text)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         return ("no_dsh_bundle".into(), pkg);
     }
     if let Some(slot) = extract_slot_conflict(text) {
         return ("slot_conflict".into(), slot);
     }
-    if text.contains("failed to import loader entry") || text.contains("failed to apply loader entry") {
+    if text.contains("failed to import loader entry")
+        || text.contains("failed to apply loader entry")
+    {
         return ("load_failed".into(), String::new());
     }
     ("unknown".into(), String::new())
@@ -249,9 +279,7 @@ fn bundle_owns_package(profile: &Path, bundle: &str, package: &str) -> bool {
     let Some(meta) = read_plugin_meta(&dir) else {
         return false;
     };
-    if meta.deps.iter().any(|d| d == package)
-        || meta.optional_deps.iter().any(|d| d == package)
-    {
+    if meta.deps.iter().any(|d| d == package) || meta.optional_deps.iter().any(|d| d == package) {
         return true;
     }
     if let Some(patch) = &meta.patch_path {
@@ -276,7 +304,12 @@ fn plugin_references_packages(profile: &Path, plugin: &str, packages: &HashSet<S
             return true;
         }
     }
-    for file in ["cordis.patch.yml", "index.js", "lib/index.js", "dist/index.js"] {
+    for file in [
+        "cordis.patch.yml",
+        "index.js",
+        "lib/index.js",
+        "dist/index.js",
+    ] {
         if let Ok(content) = fs::read_to_string(dir.join(file)) {
             if packages.iter().any(|p| content.contains(p)) {
                 return true;
@@ -298,8 +331,11 @@ fn plugin_declares_loader_entry(profile: &Path, plugin: &str, entry_id: &str) ->
     let Ok(content) = fs::read_to_string(dir.join(patch)) else {
         return false;
     };
-    let re = Regex::new(&format!(r#"^\s*-\s+id:\s*["']?{}["']?(?:\s*(?:#.*)?)?$"#,
-        regex::escape(entry_id))).ok();
+    let re = Regex::new(&format!(
+        r#"^\s*-\s+id:\s*["']?{}["']?(?:\s*(?:#.*)?)?$"#,
+        regex::escape(entry_id)
+    ))
+    .ok();
     re.map(|re| re.is_match(&content)).unwrap_or(false)
 }
 
@@ -427,8 +463,9 @@ fn resolve_recovery_plugins(
         if matched.len() == 1 {
             return matched.into_iter().map(|s| s.clone()).collect();
         }
-        let providers: HashSet<String> =
-            packages_providing_slot(&profile, slot).into_iter().collect();
+        let providers: HashSet<String> = packages_providing_slot(&profile, slot)
+            .into_iter()
+            .collect();
         if !providers.is_empty() {
             let owners: Vec<&String> = roots
                 .iter()
@@ -450,7 +487,12 @@ pub fn detect(app_handle: &AppHandle, log_lines: &[String]) -> PluginRecoveryInf
     let duplicate_entry = extract_duplicate_loader_entry(&text);
     let slot_conflict = extract_slot_conflict(&text);
     let (reason, detail) = classify_reason(&text);
-    let plugins = resolve_recovery_plugins(app_handle, &refs, duplicate_entry.as_deref(), slot_conflict.as_deref());
+    let plugins = resolve_recovery_plugins(
+        app_handle,
+        &refs,
+        duplicate_entry.as_deref(),
+        slot_conflict.as_deref(),
+    );
     let raw_error = refs_text(&text);
     PluginRecoveryInfo {
         plugins,
@@ -485,7 +527,10 @@ fn refs_text(text: &str) -> String {
 /// 从 manifest 中移除指定插件（`dependencies` + `dsh.profile.bundles`），返回是否有改动。
 fn remove_plugin_from_manifest(manifest: &mut serde_json::Value, id: &str) -> bool {
     let mut modified = false;
-    if let Some(deps) = manifest.get_mut("dependencies").and_then(|d| d.as_object_mut()) {
+    if let Some(deps) = manifest
+        .get_mut("dependencies")
+        .and_then(|d| d.as_object_mut())
+    {
         if deps.remove(id).is_some() {
             modified = true;
         }
@@ -505,20 +550,73 @@ fn remove_plugin_from_manifest(manifest: &mut serde_json::Value, id: &str) -> bo
     modified
 }
 
+/// 删除插件入口：符号链接或 junction 只删除入口本身，普通目录递归删除。
+fn remove_plugin_entry(entry: &Path) -> std::io::Result<()> {
+    let file_type = fs::symlink_metadata(entry)?.file_type();
+    #[cfg(windows)]
+    if file_type.is_symlink_dir() {
+        return fs::remove_dir(entry);
+    }
+    if file_type.is_symlink() {
+        return fs::remove_file(entry);
+    }
+    fs::remove_dir_all(entry)
+}
+
 /// 删除 `node_modules/<id>`；scoped 目录删除后若 scope 空则一并清理。
 fn remove_plugin_dir(profile: &Path, id: &str) {
     let node_modules = profile.join("node_modules");
-    let dir = node_modules.join(id);
-    if let Err(e) = fs::remove_dir_all(&dir) {
+    let Ok(node_modules_root) = fs_guard::ensure_within(&node_modules, profile) else {
+        log::warn!(
+            "refusing to remove plugin from node_modules outside profile: {}",
+            node_modules.display()
+        );
+        return;
+    };
+    let entry = node_modules.join(id);
+    let Ok(entry_metadata) = fs::symlink_metadata(&entry) else {
+        return;
+    };
+    let entry_is_dangling_symlink = entry_metadata.file_type().is_symlink() && !entry.exists();
+    if entry_is_dangling_symlink {
+        // 悬空链接无法规范化目标，只验证父目录，确保删除的仍是 node_modules 内入口。
+        let Some(parent) = entry.parent() else {
+            return;
+        };
+        if let Err(e) = fs_guard::ensure_within(parent, &node_modules_root) {
+            log::warn!(
+                "refusing to remove dangling plugin symlink outside node_modules: {} ({e})",
+                entry.display()
+            );
+            return;
+        }
+    } else if let Err(e) = fs_guard::ensure_within(&entry, &node_modules_root) {
+        log::warn!(
+            "refusing to remove plugin outside node_modules: {} ({e})",
+            entry.display()
+        );
+        return;
+    }
+    if let Err(e) = remove_plugin_entry(&entry) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            log::warn!("failed to remove plugin dir {}: {e}", dir.display());
+            log::warn!("failed to remove plugin dir {}: {e}", entry.display());
         }
     }
-    if let Some(scope) = id.starts_with('@').then(|| id.split('/').next().unwrap_or_default()) {
+    if let Some(scope) = id
+        .starts_with('@')
+        .then(|| id.split('/').next().unwrap_or_default())
+    {
         if !scope.is_empty() && scope != id {
-            let scope_dir = node_modules.join(scope);
-            if scope_dir.is_dir() && scope_dir.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false) {
-                let _ = fs::remove_dir_all(&scope_dir);
+            let scope_entry = node_modules.join(scope);
+            if scope_entry.is_dir()
+                && scope_entry
+                    .read_dir()
+                    .map(|mut d| d.next().is_none())
+                    .unwrap_or(false)
+            {
+                if fs_guard::ensure_within(&scope_entry, &node_modules_root).is_ok() {
+                    let _ = remove_plugin_entry(&scope_entry);
+                }
             }
         }
     }
@@ -556,9 +654,9 @@ fn strip_cordis_patch_for(profile: &Path, id: &str) {
 /// 一个 patch 条目是否「针对」目标插件：顶层 id 字段或任意字段值等于该包名。
 fn patch_entry_targets(entry: &serde_yaml::Value, id: &str) -> bool {
     match entry {
-        serde_yaml::Value::Mapping(map) => map.iter().any(|(k, v)| {
-            k.as_str() == Some(id) || v.as_str() == Some(id)
-        }),
+        serde_yaml::Value::Mapping(map) => map
+            .iter()
+            .any(|(k, v)| k.as_str() == Some(id) || v.as_str() == Some(id)),
         serde_yaml::Value::String(s) => s == id,
         _ => false,
     }
@@ -576,10 +674,10 @@ pub fn uninstall(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     if !manifest_path.exists() {
         return Err("PLUGIN_RECOVERY_NO_MANIFEST: profile package.json missing".to_string());
     }
-    let content = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("PLUGIN_RECOVERY_READ: {e}"))?;
-    let mut manifest: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("PLUGIN_RECOVERY_PARSE: {e}"))?;
+    let content =
+        fs::read_to_string(&manifest_path).map_err(|e| format!("PLUGIN_RECOVERY_READ: {e}"))?;
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("PLUGIN_RECOVERY_PARSE: {e}"))?;
 
     let modified = remove_plugin_from_manifest(&mut manifest, id);
     if modified {
@@ -617,10 +715,118 @@ mod tests {
         assert!(!is_package_name("has space"));
         assert!(!is_package_name("with:colon"));
         assert!(!is_package_name("@bare"));
+        assert!(!is_package_name("foo/../../target"));
+        assert!(!is_package_name("@scope/../../target"));
+        assert!(!is_package_name("@scope/pkg/extra"));
+        assert!(!is_package_name(r"foo\..\target"));
+        assert!(!is_package_name(r"@scope\pkg"));
+        assert!(!is_package_name("@scope/@pkg"));
+        assert!(!is_package_name("@scope/.."));
+        assert!(!is_package_name("@scope/."));
+        assert!(!is_package_name(".pnpm"));
+        assert!(!is_package_name(".hidden"));
+        assert!(!is_package_name("foo."));
+        assert!(!is_package_name("@.scope/pkg"));
+        assert!(!is_package_name("@scope/.hidden"));
+        assert!(!is_package_name("@scope/foo."));
+        assert!(is_package_name("foo.bar"));
+        assert!(is_package_name("@scope/pkg.name"));
         assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
         // dshmarket 是第三方市场插件，可卸载（不应被当作核心保护包）
         assert!(is_actionable_plugin_ref("dshmarket"));
         assert!(is_actionable_plugin_ref("dsh-better-sidebar"));
+    }
+
+    #[test]
+    fn remove_plugin_dir_rejects_path_escape() {
+        let root = std::env::temp_dir().join(format!("dsh-plugin-recovery-{}", std::process::id()));
+        let profile = root.join("profile");
+        std::fs::create_dir_all(profile.join("node_modules/foo")).unwrap();
+        let outside = profile.join("target");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        remove_plugin_dir(&profile, "foo/../../target");
+
+        assert!(outside.exists(), "path traversal target must remain");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_plugin_dir_removes_valid_plugin() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-plugin-recovery-valid-{}", std::process::id()));
+        let profile = root.join("profile");
+        let plugin = profile.join("node_modules/dsh-example");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("index.js"), "module.exports = {};").unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(!plugin.exists(), "valid plugin directory should be removed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_plugin_dir_removes_symlink_without_target() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-plugin-recovery-pnpm-symlink-{}",
+            std::process::id()
+        ));
+        let profile = root.join("profile");
+        let link = profile.join("node_modules/dsh-example");
+        let target = profile.join("node_modules/.pnpm/dsh-example@1/node_modules/dsh-example");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(target.exists(), "pnpm canonical target must remain");
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "only the package symlink entry should be removed"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_plugin_dir_removes_dangling_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-plugin-recovery-dangling-symlink-{}",
+            std::process::id()
+        ));
+        let profile = root.join("profile");
+        let link = profile.join("node_modules/dsh-example");
+        let missing_target = profile.join("node_modules/.pnpm/missing/dsh-example");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&missing_target, &link).unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "dangling plugin symlink entry should be removed"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_plugin_dir_rejects_node_modules_symlink_escape() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-plugin-recovery-link-{}", std::process::id()));
+        let profile = root.join("profile");
+        let outside = root.join("outside-node-modules");
+        let plugin = outside.join("dsh-example");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::os::unix::fs::symlink(&outside, profile.join("node_modules")).unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(plugin.exists(), "plugin outside profile must remain");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -649,7 +855,10 @@ mod tests {
         let route_log = r#"duplicate prefix route "/sidebar/api""#;
         assert_eq!(classify_reason(route_log).0, "duplicate_route");
         let entry_log = "duplicate loader entry id: \"dshSidebarApi\"";
-        assert_eq!(extract_duplicate_loader_entry(entry_log).as_deref(), Some("dshSidebarApi"));
+        assert_eq!(
+            extract_duplicate_loader_entry(entry_log).as_deref(),
+            Some("dshSidebarApi")
+        );
         let slot_log = r#"single slot "sidebar" already has a registration"#;
         assert_eq!(extract_slot_conflict(slot_log).as_deref(), Some("sidebar"));
     }
@@ -667,7 +876,10 @@ mod tests {
         assert!(manifest["dependencies"].get("dsh-better-sidebar").is_none());
         assert!(manifest["dependencies"].get("dshmarker").is_some());
         assert_eq!(
-            manifest["dsh"]["profile"]["bundles"].as_array().unwrap().len(),
+            manifest["dsh"]["profile"]["bundles"]
+                .as_array()
+                .unwrap()
+                .len(),
             1
         );
     }

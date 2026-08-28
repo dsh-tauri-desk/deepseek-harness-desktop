@@ -3,12 +3,12 @@ use std::sync::atomic::AtomicBool;
 #[cfg(windows)]
 use std::sync::Arc;
 
+#[cfg(windows)]
+use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{
     webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse},
     Emitter, Runtime, Url, Webview,
 };
-#[cfg(windows)]
-use tauri::webview::{PageLoadEvent, PageLoadPayload};
 #[cfg(windows)]
 use tauri::{WebviewWindow, Wry};
 use tauri_plugin_opener::OpenerExt;
@@ -74,10 +74,8 @@ pub fn on_page_load(
     // 需要在页面加载时注册；非 Windows 已在 build_main_window 里通过
     // initialization_script_for_all_frames 注入，这里不需要再做处理。
     if payload.event() == PageLoadEvent::Started
-        && !notification_handlers_registered_for_page.swap(
-            true,
-            std::sync::atomic::Ordering::SeqCst,
-        )
+        && !notification_handlers_registered_for_page
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
     {
         log::info!("[notification] top-level page load started; scheduling handler registration");
         let parent = webview_window.clone();

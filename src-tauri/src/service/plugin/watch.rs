@@ -193,15 +193,28 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
         .collect()
 }
 
+/// 将仍然有效的错误记录并入插件列表。
+///
+/// 安装失败记录描述的是当时「清单已有引用、但 node_modules 产物缺失」的状态；后续
+/// 重试或外部修复成功后，插件 package.json 已能解析出版本，旧记录便不再代表当前状态。
+/// 若继续合并这类历史记录，前端会同时误显异常图标和作为修复入口的升级按钮。
+fn merge_current_errors(plugins: &mut [DshPlugin], registry: &HashMap<String, PluginError>) {
+    for plugin in plugins {
+        plugin.error = registry.get(&plugin.id).and_then(|error| {
+            let recovered_install = error.action == "install" && !plugin.version.is_empty();
+            (!recovered_install).then(|| error.clone())
+        });
+    }
+}
+
 /// 已安装插件列表（含解析后的元信息与错误记录），前端首次加载/手动刷新用
 pub fn list(app_handle: &AppHandle) -> Vec<DshPlugin> {
     let presets = load_presets(app_handle);
     let mut plugins = parse_plugins(&profile_dir(app_handle), &presets);
-    // 合并错误注册表：错误记录变化不反映在文件指纹里，这里每次列表重建时并入
+    // 合并错误注册表：错误记录变化不反映在文件指纹里，这里每次列表重建时并入。
+    // 已恢复的安装错误会被过滤，避免持久化历史状态污染当前健康状态。
     let registry = errors::load(app_handle);
-    for plugin in &mut plugins {
-        plugin.error = registry.get(&plugin.id).cloned();
-    }
+    merge_current_errors(&mut plugins, &registry);
     plugins
 }
 
@@ -308,7 +321,8 @@ mod tests {
     /// 构造临时 profile：package.json + node_modules 下的插件包清单
     /// （tag 用于区分不同测试的临时目录，避免并行执行时互相清理）
     fn build_profile(tag: &str, packages: &[(&str, &str)]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("dsh-watch-test-{}-{}", tag, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dsh-watch-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir.join("node_modules")).unwrap();
         let mut manifest = serde_json::json!({
@@ -329,9 +343,8 @@ mod tests {
             }
         }
         manifest["dependencies"] = serde_json::Value::Object(deps);
-        manifest["dsh"]["profile"]["bundles"] = serde_json::Value::Array(
-            bundles.into_iter().map(serde_json::Value::String).collect(),
-        );
+        manifest["dsh"]["profile"]["bundles"] =
+            serde_json::Value::Array(bundles.into_iter().map(serde_json::Value::String).collect());
         std::fs::write(
             dir.join("package.json"),
             serde_json::to_string_pretty(&manifest).unwrap(),
@@ -396,14 +409,8 @@ mod tests {
         let dir = build_profile(
             "fallback",
             &[
-                (
-                    "dsh-at-file",
-                    r#"{"name":"dsh-at-file"}"#,
-                ),
-                (
-                    "dshmarket",
-                    r#"{"name":"dshmarket","dsh":{"bundle":{}}}"#,
-                ),
+                ("dsh-at-file", r#"{"name":"dsh-at-file"}"#),
+                ("dshmarket", r#"{"name":"dshmarket","dsh":{"bundle":{}}}"#),
             ],
         );
         let plugins = parse_plugins(&dir, &presets_for_test());
@@ -427,10 +434,7 @@ mod tests {
                     "dsh-tauri",
                     r#"{"name":"dsh-tauri","version":"0.2.0","description":"bridge"}"#,
                 ),
-                (
-                    "dshmarket",
-                    r#"{"name":"dshmarket","version":"1.13.1"}"#,
-                ),
+                ("dshmarket", r#"{"name":"dshmarket","version":"1.13.1"}"#),
             ],
         );
         let mut presets = presets_for_test();
@@ -455,6 +459,80 @@ mod tests {
         assert!(!market.internal);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recovered_install_error_is_not_exposed_as_current_error() {
+        let mut plugins = vec![DshPlugin {
+            id: "dsh-notification".into(),
+            name: "DSH Notification".into(),
+            version: "0.1.3".into(),
+            description: String::new(),
+            repo_url: String::new(),
+            bundled: true,
+            recommended: false,
+            fix: false,
+            internal: false,
+            update_available: false,
+            latest_version: None,
+            error: None,
+        }];
+        let registry = HashMap::from([(
+            "dsh-notification".into(),
+            PluginError {
+                message: "PREINSTALL_SILENT_FAIL: missing artifact".into(),
+                action: "install".into(),
+                at: "1700000000".into(),
+            },
+        )]);
+
+        merge_current_errors(&mut plugins, &registry);
+
+        assert!(plugins[0].error.is_none());
+    }
+
+    #[test]
+    fn unresolved_install_and_runtime_errors_remain_visible() {
+        let plugin = DshPlugin {
+            id: "dsh-notification".into(),
+            name: "DSH Notification".into(),
+            version: String::new(),
+            description: String::new(),
+            repo_url: String::new(),
+            bundled: true,
+            recommended: false,
+            fix: false,
+            internal: false,
+            update_available: false,
+            latest_version: None,
+            error: None,
+        };
+        let install_error = PluginError {
+            message: "missing artifact".into(),
+            action: "install".into(),
+            at: "1700000000".into(),
+        };
+        let mut plugins = vec![plugin.clone()];
+        merge_current_errors(
+            &mut plugins,
+            &HashMap::from([("dsh-notification".into(), install_error.clone())]),
+        );
+        assert_eq!(plugins[0].error, Some(install_error));
+
+        let runtime_error = PluginError {
+            message: "runtime failure".into(),
+            action: "runtime".into(),
+            at: "1700000001".into(),
+        };
+        let mut healthy_plugins = vec![DshPlugin {
+            version: "0.1.3".into(),
+            ..plugin
+        }];
+        merge_current_errors(
+            &mut healthy_plugins,
+            &HashMap::from([("dsh-notification".into(), runtime_error.clone())]),
+        );
+        assert_eq!(healthy_plugins[0].error, Some(runtime_error));
     }
 
     #[test]

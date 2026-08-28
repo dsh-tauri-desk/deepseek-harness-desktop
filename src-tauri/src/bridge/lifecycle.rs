@@ -138,8 +138,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
             ) {
                 // 安装文件已是最新 release，只是记录滞后：修正记录后下次
                 // 启动直接走 commit 快速比对，不再误判、也绝不整包重下
-                download::UpdateCheck::UpToDate
-                | download::UpdateCheck::HealUpToDate => {
+                download::UpdateCheck::UpToDate | download::UpdateCheck::HealUpToDate => {
                     if record_commit.as_deref() != Some(latest.commit.as_str()) {
                         log::info!(
                             "Installed Harness files already at latest release, healing stale record: {} ({})",

@@ -1,14 +1,14 @@
 # 内置插件（Internal Plugins）
 
-内置插件（built-in plugin）是指随安装包分发、被视作应用本身一部分的插件。它们在 `src-tauri/resources/preset-plugins.json` 中标记 `"internal": true`，由 `scripts/prebuild.ts` 在构建期拉取到 `src-tauri/resources/preset-plugins/<id>/`，随 `bundle.resources` 一并打进安装包，并在服务启动时由 `src-tauri/src/service/plugin/internal.rs` 自动安装（并自愈）。
+内置插件（built-in plugin）是指随安装包分发、被视作应用本身一部分的插件。它们在 `src-tauri/resources/internal-plugins.json` 中声明，由 `scripts/prebuild.ts` 在构建期拉取到 `src-tauri/resources/internal-plugins/<id>/`，随 `bundle.resources` 一并打进安装包，并在服务启动时由 `src-tauri/src/service/plugin/internal.rs` 自动安装（并自愈）。
 
-目前的内置插件：`dsh-tauri`、`dsh-tauri-ui`。
+目前的内置插件：`dsh-tauri`、`dsh-tauri-ui`、`dsh-tauri-worktree`、`dsh-tauri-panel`、`dsh-tauri-panel-extension`。
 
 ## 内置插件 vs. 普通预装插件
 
 | | 普通预装插件 | 内置（internal）插件 |
 | --- | --- | --- |
-| 在 `preset-plugins.json` 声明 | 是 | 是，且带 `"internal": true` |
+| 清单 | `preset-plugins.json` | `internal-plugins.json` |
 | 来源 | npm / GitHub，首次引导时安装 | 随安装包分发，启动时自动安装 |
 | 出现在首次引导清单 | 是（`recommended` / `fix` / `defaultChecked` chip） | 否——它们“必装”，在 `installed.rs` 里被过滤掉 |
 | 用户可卸载 | 可以 | 基本不行——下次启动自动恢复 |
@@ -16,7 +16,7 @@
 
 ## 机制是怎么运作的
 
-**构建期** — `scripts/prebuild.ts` 由 `pnpm build` 自动触发（`prebuild` 脚本，而 Tauri 的 `beforeBuildCommand` 恰好是 `pnpm build`）。对每个 `internal: true` 条目，它产出 `src-tauri/resources/preset-plugins/<id>/`：
+**构建期** — `scripts/prebuild.ts` 由 `pnpm build` 自动触发（`prebuild` 脚本，而 Tauri 的 `beforeBuildCommand` 恰好是 `pnpm build`）。对 `internal-plugins.json` 中的每个条目，它产出 `src-tauri/resources/internal-plugins/<id>/`：
 
 - `github:owner/repo` — `git clone --depth 1` → `pnpm install` → `pnpm run build`（存在 `build` 脚本时）→ 拷贝构建产物与 `package.json`。
 - `name[@version]`（npm 包名，含 scoped `@scope/name`）— 在临时工程里 `pnpm add <spec> --ignore-scripts` → 拷贝 `node_modules/<name>/`。
@@ -25,7 +25,7 @@
 
 ## 添加一个新的内置插件
 
-### 1. 在 `src-tauri/resources/preset-plugins.json` 中声明
+### 1. 在 `src-tauri/resources/internal-plugins.json` 中声明
 
 追加一条：
 
@@ -33,7 +33,6 @@
 {
   "id": "dsh-my-plugin",
   "spec": "github:you/dsh-my-plugin",
-  "internal": true,
   "name": "DSH My Plugin",
   "description": "插件做什么",
   "repoUrl": "https://github.com/you/dsh-my-plugin"
@@ -43,15 +42,14 @@
 字段说明：
 
 - `id` — 预设唯一 id（仓库跳转 / 查找键；也是未显式声明 `package` 时的默认包名，用于“已安装”检测）。清单内 id 必须唯一（由 `preset_json_ids_are_unique` 单测保证）。
-- `spec` — 来源。要么 `github:owner/repo`（源码形态），要么裸 npm 包名 `name[@version]`（已发布产物形态，跳过构建）。这是 `prebuild.ts` 喂给 git/pnpm 的值。
-- `internal` — `true` 标记为内置插件（驱动构建期打包与运行期自愈）。默认 `false`。
+- `spec` — 来源。要么 `github:owner/repo`（源码形态），要么 npm 包规格 `name[@version]`（已发布产物形态，跳过构建）。省略 `@version` 时会在构建期解析 registry 中的最新正式版本，避免仅为升级插件而修改清单版本号。这是 `prebuild.ts` 喂给 git/pnpm 的值。
 - `name`、`description`、`repoUrl` — 展示元数据；`repoUrl` 供界面“仓库跳转”链接使用。
 - `package` — 可选。当真实 npm 包名与 `id` 不一致（常见于 scoped 包 `@scope/name`）时在这里声明；用于“已安装”检测与自愈对账。缺省回落 `id`。
 - chip 标记 `recommended` / `fix` / `defaultChecked` — 对内置插件无意义（它们不进清单），保留也无妨。
 
 ### 2. 构建期打包
 
-无需手工操作。`pnpm tauri build` 会执行 `pnpm build` → `pnpm prebuild` → `tsx scripts/prebuild.ts`，读取清单、筛出所有 `internal: true` 并产出 `src-tauri/resources/preset-plugins/<id>/`。构建机需要 PATH 上有 `git` 与 `pnpm`，并能访问 GitHub（`github:` 来源）与 npm registry（包名来源）。
+无需手工操作。`pnpm tauri build` 会执行 `pnpm build` → `pnpm prebuild` → `tsx scripts/prebuild.ts`，读取内部插件清单并产出 `src-tauri/resources/internal-plugins/<id>/`。构建机需要 PATH 上有 `git` 与 `pnpm`，并能访问 GitHub（`github:` 来源）与 npm registry（包名来源）。
 
 捆绑目录通过 `bundle.resources` 随安装包分发（`src-tauri/tauri.conf.json` 中的 `"resources": ["resources/**/*"]`）。
 
@@ -69,7 +67,7 @@
 
 - `.env` 已被 `.gitignore` 忽略，仅本地生效；该键只在 `debug_assertions` 构建读取（release 恒用随包目录）。
 - 若 `<dir>` 缺该 id，则跳过（不回落随包目录），让开发者显式感知配置错误。
-- 置空或删除该键 = 关闭覆盖（回落随包分发的 `resources/preset-plugins/<id>`）。
+- 置空或删除该键 = 关闭覆盖（回落随包分发的 `resources/internal-plugins/<id>`）。
 
 ## 常见坑
 
@@ -81,7 +79,7 @@
 
 ## 参考
 
-- `src-tauri/resources/preset-plugins.json` — 你要编辑的预设清单。
+- `src-tauri/resources/internal-plugins.json` — 你要编辑的内部插件清单。
 - `scripts/prebuild.ts` — 构建期打包（git / npm 两种来源）。
 - `src-tauri/src/service/plugin/preset.rs` — 清单解析、捆绑目录发现、`link:` spec 构造。
 - `src-tauri/src/service/plugin/internal.rs` — 运行期自愈。

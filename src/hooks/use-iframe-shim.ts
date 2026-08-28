@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect } from 'react'
 import { useEvent, useInterval, useMountedState } from 'react-use'
 import { queryClient } from '@/config/client'
+import { store } from '@/store'
 import { getIframeOrigin } from '@/utils/iframe'
 
 interface NativeNotificationMessage {
@@ -38,6 +39,11 @@ interface ClipboardImageRequest {
   source?: 'dsh-clipboard-image-bridge'
   type?: 'dsh://clipboard-image:read'
   id?: string
+}
+
+interface PluginBootMessage {
+  source?: 'dsh-plugin-boot-bridge'
+  type?: 'dsh://plugin-boot:stalled' | 'dsh://plugin-boot:ready'
 }
 
 export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
@@ -137,9 +143,31 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
       })
   }
 
+  function handlePluginBoot(event: MessageEvent<PluginBootMessage>) {
+    const data = event.data
+    if (!data || typeof data !== 'object' || data.source !== 'dsh-plugin-boot-bridge') {
+      return
+    }
+    if (event.source !== iframeRef.current?.contentWindow) {
+      return
+    }
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin) {
+      return
+    }
+    if (data.type === 'dsh://plugin-boot:ready') {
+      store.harness.markIframeBootReady()
+      return
+    }
+    if (data.type === 'dsh://plugin-boot:stalled') {
+      void store.harness.recoverIframeBoot()
+    }
+  }
+
   useEvent('message', handleMessage)
   useEvent('message', handlePluginError)
   useEvent('message', handleClipboardImage)
+  useEvent('message', handlePluginBoot)
 
   // 系统通知点击 → 通知 iframe 聚焦对应会话
   useEffect(() => {

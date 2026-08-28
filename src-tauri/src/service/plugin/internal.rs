@@ -23,11 +23,14 @@ use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, Preinsta
 ///
 /// 最佳努力：任何失败只记告警（调用方不阻断启动）；捆绑目录缺失（开发环境未跑
 /// prebuild）时跳过，交由常规引导流程处理；批量待装列表为空则不触发任何安装。
-/// 内置插件阶段事件载荷：「loading」= 核对/安装进行中（前端加载屏显示
-/// `status.loading_internal`），「done」= 结束（回到常规 `status.loading`）。
+/// 内置插件阶段事件载荷：除开始/结束外定期发送 heartbeat，令前端只在安装确实
+/// 无进展时触发 inactivity deadline，同时仍受绝对上限约束。
 #[derive(serde::Serialize, Clone)]
 struct InternalPluginsPhase {
     phase: &'static str,
+    detail: &'static str,
+    completed: usize,
+    total: usize,
 }
 
 /// 串行化内置插件核对/安装：auto_start（Rust 侧 start→launch）与前端 boot 流程
@@ -43,22 +46,48 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let _guard = ENSURE_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-    // 前端据此在「Loading internal plugins…」与「Loading plugins…」间切换；
-    // 事件在服务进程启动前发出，于健康轮询期间到达，先于 dsh 自家的 boot 输出。
-    let _ = app_handle.emit(
-        "internal-plugins-phase",
-        InternalPluginsPhase { phase: "loading" },
-    );
-    let outcome = ensure_inner(app_handle, &internal).await;
-    let _ = app_handle.emit(
-        "internal-plugins-phase",
-        InternalPluginsPhase { phase: "done" },
-    );
+    let total = internal.len();
+    emit_phase(app_handle, "loading", "waiting", 0, total);
+    let operation = async {
+        let _guard = ENSURE_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        emit_phase(app_handle, "progress", "checking", 0, total);
+        ensure_inner(app_handle, &internal).await
+    };
+    tokio::pin!(operation);
+    let period = std::time::Duration::from_secs(5);
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let outcome = loop {
+        tokio::select! {
+            outcome = &mut operation => break outcome,
+            _ = heartbeat.tick() => {
+                emit_phase(app_handle, "progress", "heartbeat", 0, total);
+            }
+        }
+    };
+    emit_phase(app_handle, "done", "done", total, total);
     outcome
+}
+
+fn emit_phase(
+    app_handle: &AppHandle,
+    phase: &'static str,
+    detail: &'static str,
+    completed: usize,
+    total: usize,
+) {
+    let _ = app_handle.emit(
+        "internal-plugins-phase",
+        InternalPluginsPhase {
+            phase,
+            detail,
+            completed,
+            total,
+        },
+    );
 }
 
 /// 实际的核对与安装：遍历 internal 预设，未安装 / 路径不对 / 被卸载 → 批量重装。
@@ -131,6 +160,7 @@ async fn ensure_inner(
 
     let ids: Vec<String> = need.iter().map(|(id, _, _)| id.clone()).collect();
     log::info!("Reinstalling internal preset plugins: {ids:?}");
+    emit_phase(app_handle, "progress", "installing", 0, ids.len());
 
     // pnpm add 会先解析清单里的所有既有依赖。0.9.0 将随包目录从
     // `preset-plugins` 迁至 `internal-plugins` 后，旧 file:/link: 路径已不存在，pnpm

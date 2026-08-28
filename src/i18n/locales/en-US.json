@@ -182,6 +182,8 @@
   "sessions.sort.created_at": "Time",
   "sessions.sort.size": "Size",
   "sessions.sort.turns": "Turns",
+  "sessions.stat.turns": "{{count}} turns",
+  "sessions.stat.steps": "{{count}} steps",
   "sessions.selected": "{{count}} selected",
   "sessions.refresh": "Refresh",
   "sessions.total": "{{count}} sessions",

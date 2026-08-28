@@ -419,8 +419,9 @@ fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<(), Strin
     Ok(())
 }
 
-/// 彻底删除会话（文件系统 + 两索引）
 pub fn delete<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) -> Result<(), String> {
+    // 归一：去首尾空白，拒绝空串（validate_session_id 内亦 trim，但此处统一后绪 join/索引键）
+    let ids: Vec<String> = ids.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     if ids.is_empty() {
         return Err("INVALID_ID: ids is empty".to_string());
     }
@@ -529,8 +530,8 @@ pub fn delete<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) ->
     Ok(())
 }
 
-/// 恢复归档会话（从 archived 移回 active）
 pub fn restore<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) -> Result<(), String> {
+    let ids: Vec<String> = ids.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     if ids.is_empty() {
         return Err("INVALID_ID: ids is empty".to_string());
     }
@@ -646,6 +647,7 @@ pub fn restore<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) -
 }
 
 pub fn reveal_path<R: tauri::Runtime>(app_handle: &AppHandle<R>, id: String) -> Result<PathBuf, String> {
+    let id = id.trim().to_string();
     crate::service::fs_guard::validate_session_id(&id)?;
     let root = sessions_root(app_handle);
     let mut found: Option<PathBuf> = None;

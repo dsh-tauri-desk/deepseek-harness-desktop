@@ -79,14 +79,14 @@ export function ConfigDialog(props: ConfigDialogProps) {
                   <Case cond="profiles">
                     <ConfigProfile />
                   </Case>
+                  <Case cond="sessions">
+                    <ConfigSessions />
+                  </Case>
                   <Case cond="plugins">
                     <ConfigPlugin />
                   </Case>
                   <Case cond="harness">
                     <ConfigCore />
-                  </Case>
-                  <Case cond="sessions">
-                    <ConfigSessions />
                   </Case>
                 </Switch>
               </div>

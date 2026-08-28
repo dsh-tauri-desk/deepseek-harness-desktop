@@ -182,6 +182,8 @@
   "sessions.sort.created_at": "时间",
   "sessions.sort.size": "大小",
   "sessions.sort.turns": "轮次",
+  "sessions.stat.turns": "{{count}} 轮",
+  "sessions.stat.steps": "{{count}} 步",
   "sessions.selected": "已选 {{count}} 项",
   "sessions.refresh": "刷新",
   "sessions.total": "共 {{count}} 个会话",

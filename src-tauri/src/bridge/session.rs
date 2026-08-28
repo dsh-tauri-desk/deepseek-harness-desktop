@@ -29,7 +29,7 @@ pub async fn get_session_files_paged(
     let sort_asc = sort_asc.unwrap_or(false);
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(50);
-    let limit = limit.clamp(1, 2000);
+    let limit = limit.clamp(1, 5000);
     tokio::task::spawn_blocking(move || session::list_paged(&app_handle, filter, search, sort_key, sort_asc, offset, limit))
         .await
         .map_err(|e| format!("SESSION_SCAN_FAILED: join failed: {e}"))?

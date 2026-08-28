@@ -54,7 +54,7 @@ pub fn validate_session_id(id: &str) -> Result<(), String> {
     if id.len() > 255 {
         return Err("INVALID_ID: id too long".to_string());
     }
-    if id.contains('/') || id.contains('\\') || id.contains('\0') || id.contains(':') {
+    if id.contains('/') || id.contains('\\') || id.contains('\0') || id.contains(':') || id.contains('\n') || id.contains('\r') {
         return Err(format!("INVALID_ID: id contains forbidden characters: {id}"));
     }
     if id == "." || id == ".." || id.starts_with("..") || id.ends_with("..") {

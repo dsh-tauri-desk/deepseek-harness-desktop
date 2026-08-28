@@ -46,10 +46,9 @@ export function useDshSessionsPaged(params: UseDshSessionsPagedParams) {
   })
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions-paged'] })
-    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions'] })
+    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions-paged'], refetchType: 'all' })
+    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions'], refetchType: 'all' })
   }
-
   const del = useMutation({
     mutationFn: (ids: string[]) => invoke<void>('delete_session_files', { ids }),
     onSuccess: () => invalidate(),
@@ -125,11 +124,10 @@ export function useDshSessionsInfinite(params: UseDshSessionsInfiniteParams) {
   const isParseFailed = pages[0]?.isParseFailed ?? false
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions-paged-infinite'] })
-    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions-paged'] })
-    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions'] })
+    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions-paged-infinite'], refetchType: 'all' })
+    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions-paged'], refetchType: 'all' })
+    void queryClient.invalidateQueries({ queryKey: ['dsh-sessions'], refetchType: 'all' })
   }
-
   const del = useMutation({
     mutationFn: (ids: string[]) => invoke<void>('delete_session_files', { ids }),
     onSuccess: () => invalidate(),

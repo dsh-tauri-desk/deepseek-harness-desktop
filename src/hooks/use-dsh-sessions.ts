@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 
-/** Rust 侧 service::session::SessionFileInfo 序列化形态（camelCase） */
+/** Rust 侧 service::session::SessionFileInfo 序列化形态（camelCase） — 供分页与非分页共用 */
 export interface SessionFileInfo {
   id: string
   title: string | null

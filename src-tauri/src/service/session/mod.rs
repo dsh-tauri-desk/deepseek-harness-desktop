@@ -324,7 +324,90 @@ pub fn list<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<SessionF
     Ok(out)
 }
 
-/// 原子写入 JSON 文件（tmp + rename）
+/// 分页结果
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCounts {
+    pub all: usize,
+    pub active: usize,
+    pub archived: usize,
+    pub orphan: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagedSessionResult {
+    pub total: usize,
+    pub counts: SessionCounts,
+    pub items: Vec<SessionFileInfo>,
+    pub is_parse_failed: bool,
+}
+
+/// 分页+过滤+排序扫描（同步，调用方应在 spawn_blocking 中执行）
+/// - filter: all/active/archived/orphan
+/// - search: 标题/id/cwd 子串（大小写不敏感）
+/// - sort_key: createdAt/size/turns
+pub fn list_paged<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
+    filter: Option<String>,
+    search: Option<String>,
+    sort_key: Option<String>,
+    sort_asc: bool,
+    offset: usize,
+    limit: usize,
+) -> Result<PagedSessionResult, String> {
+    let all = list(app_handle)?;
+    let is_parse_failed = all.iter().any(|s| s.is_parse_failed);
+    let counts = SessionCounts {
+        all: all.len(),
+        active: all.iter().filter(|s| s.archived_status == "active").count(),
+        archived: all.iter().filter(|s| s.archived_status == "archived").count(),
+        orphan: all.iter().filter(|s| s.archived_status == "orphan").count(),
+    };
+    let filter_val = filter.unwrap_or_else(|| "all".to_string());
+    let search_lower = search.map(|s| s.to_lowercase()).unwrap_or_default();
+    let has_search = !search_lower.is_empty();
+    let mut filtered: Vec<SessionFileInfo> = all
+        .into_iter()
+        .filter(|s| {
+            if filter_val != "all" && s.archived_status != filter_val {
+                return false;
+            }
+            if has_search {
+                let title = s.title.as_deref().unwrap_or("").to_lowercase();
+                if !title.contains(&search_lower) && !s.id.to_lowercase().contains(&search_lower) && !s.cwd.to_lowercase().contains(&search_lower) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+    let total = filtered.len();
+    let sort_k = sort_key.unwrap_or_else(|| "createdAt".to_string());
+    filtered.sort_by(|a, b| {
+        let primary = if sort_k == "size" {
+            a.size.cmp(&b.size)
+        } else if sort_k == "turns" {
+            a.turns.cmp(&b.turns)
+        } else {
+            a.created_at.cmp(&b.created_at)
+        };
+        let ord = if sort_asc { primary } else { primary.reverse() };
+        if ord == std::cmp::Ordering::Equal {
+            a.id.cmp(&b.id)
+        } else {
+            ord
+        }
+    });
+    let items = if offset >= filtered.len() {
+        Vec::new()
+    } else {
+        let end = (offset + limit).min(filtered.len());
+        filtered[offset..end].to_vec()
+    };
+    Ok(PagedSessionResult { total, counts, items, is_parse_failed })
+}
+
 fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     // 避免 workspace.json -> workspace.tmp 歧义，改为 workspace.json.tmp
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp");

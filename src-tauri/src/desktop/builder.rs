@@ -550,6 +550,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::desktop::notification::show_native_notification,
         crate::bridge::log_frontend,
         crate::bridge::get_session_files,
+        crate::bridge::get_session_files_paged,
         crate::bridge::delete_session_files,
         crate::bridge::open_session_dir,
     ]

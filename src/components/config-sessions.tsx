@@ -1,10 +1,11 @@
 import { ArrowRotateRight, FolderOpen, TrashBin } from '@gravity-ui/icons'
 import { Button, Checkbox, Chip, Input, Label, Spinner } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
-import { useMemo, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
-import { useDshSessions } from '@/hooks/use-dsh-sessions'
+import { useDshSessionsPaged } from '@/hooks/use-dsh-sessions-paged'
 import type { SessionFileInfo } from '@/hooks/use-dsh-sessions'
 import { toast } from '@/utils/toast'
 import { Ellipsis } from './ellipsis'
@@ -136,48 +137,38 @@ function SessionRow({ session: s, selected, onToggle, onDelete, onOpenDir, delet
 
 export function ConfigSessions() {
   const { t } = useTranslation()
-  const { sessions, loading, error, refresh, deleteSessions, openDir, deletePending, openId } = useDshSessions()
-
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
   const [filter, setFilter] = useState<FilterType>('all')
-  const [search, setSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('createdAt')
   const [sortAsc, setSortAsc] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
-  const hasParseFailed = useMemo(() => sessions.some(s => s.isParseFailed), [sessions])
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(searchInput), 300)
+    return () => clearTimeout(id)
+  }, [searchInput])
 
-  const filtered = useMemo(() => sessions.filter((s) => {
-    if (filter !== 'all' && s.archivedStatus !== filter) return false
-    if (search) {
-      const q = search.toLowerCase()
-      const title = (s.title ?? '').toLowerCase()
-      const cwd = (s.cwd ?? '').toLowerCase()
-      if (!title.includes(q) && !s.id.toLowerCase().includes(q) && !cwd.includes(q)) return false
-    }
-    return true
-  }), [sessions, filter, search])
+  // 纯虚拟：后端仍承担 filter/search/sort 下沉，但不分页，一次性返回全部过滤结果（500条虚拟化）
+  const { items, total, counts, isParseFailed, loading, fetching, error, refresh, deleteSessions, openDir, deletePending, openId } = useDshSessionsPaged({
+    filter,
+    search: debouncedSearch,
+    sortKey,
+    sortAsc,
+    offset: 0,
+    limit: 2000,
+  })
 
-  const sorted = useMemo(() => {
-    const copy = [...filtered]
-    copy.sort((a, b) => {
-      let cmp = 0
-      if (sortKey === 'size') cmp = a.size - b.size
-      else if (sortKey === 'turns') cmp = a.turns - b.turns
-      else cmp = a.createdAt - b.createdAt
-      return sortAsc ? cmp : -cmp
-    })
-    return copy
-  }, [filtered, sortKey, sortAsc])
+  const areAllFilteredSelected = items.length > 0 && items.every(s => selected.has(s.id))
 
-  const counts = useMemo(() => ({
-    all: sessions.length,
-    active: sessions.filter(s => s.archivedStatus === 'active').length,
-    archived: sessions.filter(s => s.archivedStatus === 'archived').length,
-    orphan: sessions.filter(s => s.archivedStatus === 'orphan').length,
-  }), [sessions])
-
-  const areAllFilteredSelected = sorted.length > 0 && sorted.every(s => selected.has(s.id))
+  const parentRef = useRef<HTMLDivElement>(null)
+  const rowVirtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 88,
+    overscan: 5,
+  })
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -192,13 +183,13 @@ export function ConfigSessions() {
     if (areAllFilteredSelected) {
       setSelected((prev) => {
         const next = new Set(prev)
-        for (const s of sorted) next.delete(s.id)
+        for (const s of items) next.delete(s.id)
         return next
       })
     } else {
       setSelected((prev) => {
         const next = new Set(prev)
-        for (const s of sorted) next.add(s.id)
+        for (const s of items) next.add(s.id)
         return next
       })
     }
@@ -206,16 +197,14 @@ export function ConfigSessions() {
 
   async function handleDelete(ids: string[]) {
     if (ids.length === 0) return
-    // 中概率：长标题/路径撑破 AlertDialog 400px，需单项截断+总长截断
     function truncatePreview(text: string, max = 24) {
-      const t = text.trim()
-      return t.length > max ? `${t.slice(0, max)}…` : t
+      const tt = text.trim()
+      return tt.length > max ? `${tt.slice(0, max)}…` : tt
     }
-    const rawPreview = ids.slice(0, 3).map(id => truncatePreview(sessions.find(s => s.id === id)?.title || id))
+    const rawPreview = ids.slice(0, 3).map(id => truncatePreview(items.find(s => s.id === id)?.title || sessionsFallbackTitle(id)))
     const preview = rawPreview.join('、')
     const more = ids.length > 3 ? t('sessions.delete.batch_more', { count: ids.length - 3 }) : ''
     const previewText = preview + more
-    // 兜底：总长>72截断，避免 3*24+后缀仍溢出
     const previewCapped = previewText.length > 72 ? `${previewText.slice(0, 72)}…` : previewText
     const confirmed = await openDialog({
       status: 'danger',
@@ -228,7 +217,6 @@ export function ConfigSessions() {
     })
     if (!confirmed) return
     try {
-      // 超100自动分批
       for (let i = 0; i < ids.length; i += 100) {
         // eslint-disable-next-line no-await-in-loop
         await deleteSessions(ids.slice(i, i + 100))
@@ -242,6 +230,10 @@ export function ConfigSessions() {
     } catch (e) {
       toast(String(e), { timeout: 3000 })
     }
+  }
+
+  function sessionsFallbackTitle(id: string) {
+    return id
   }
 
   async function handleOpenDir(id: string) {
@@ -260,7 +252,7 @@ export function ConfigSessions() {
         description={t('sessions.description')}
       />
 
-      <If cond={hasParseFailed}>
+      <If cond={isParseFailed}>
         <div className="rounded-md border border-warning/30 bg-warning/5 p-2 text-xs text-warning">
           {t('sessions.parse_failed_warning')}
         </div>
@@ -272,8 +264,8 @@ export function ConfigSessions() {
             variant="secondary"
             className="h-8 flex-1 rounded-md"
             placeholder={t('sessions.search.placeholder')}
-            value={search}
-            onChange={e => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
           />
           <Button
             size="sm"
@@ -310,7 +302,7 @@ export function ConfigSessions() {
             >
               {t(`sessions.filter.${k}`)}
               {' '}
-              ({counts[k]})
+              ({counts[k as keyof typeof counts]})
             </Chip>
           ))}
           <div className="ml-auto flex items-center gap-1">
@@ -354,13 +346,13 @@ export function ConfigSessions() {
 
       <PanelState loading={loading} error={error}>
         <If
-          cond={sorted.length === 0}
+          cond={items.length === 0}
           else={(
             <div className="flex flex-col gap-4">
               <div className="flex items-center gap-2 px-1">
                 <Checkbox
                   isSelected={areAllFilteredSelected}
-                  isIndeterminate={!areAllFilteredSelected && sorted.some(s => selected.has(s.id))}
+                  isIndeterminate={!areAllFilteredSelected && items.some(s => selected.has(s.id))}
                   onChange={toggleSelectAll}
                   isDisabled={deletePending}
                   aria-label={t('sessions.select_all')}
@@ -373,27 +365,49 @@ export function ConfigSessions() {
                   </Checkbox.Content>
                 </Checkbox>
                 <span className="text-xs text-muted">{t('sessions.select_all')}</span>
-                <span className="ml-auto text-xs text-muted">{t('sessions.total', { count: sorted.length })}</span>
+                <span className="ml-auto flex items-center gap-2 text-xs text-muted">
+                  <If cond={fetching && !loading}>
+                    <Spinner size="sm" color="current" />
+                  </If>
+                  {t('sessions.total', { count: total })}
+                </span>
               </div>
-              <div className="flex flex-col gap-4">
-                {sorted.map(s => (
-                  <SessionRow
-                    key={s.id}
-                    session={s}
-                    selected={selected.has(s.id)}
-                    onToggle={() => toggleSelect(s.id)}
-                    onDelete={() => handleDelete([s.id])}
-                    onOpenDir={() => handleOpenDir(s.id)}
-                    deletePending={deletePending}
-                    isOpening={openId === s.id}
-                  />
-                ))}
+
+              <div ref={parentRef} className="max-h-[480px] overflow-auto rounded-md border border-line/30">
+                <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}>
+                  {rowVirtualizer.getVirtualItems().map(virtualRow => {
+                    const s = items[virtualRow.index]
+                    return (
+                      <div
+                        key={s.id}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start}px)`,
+                        }}
+                        className="p-1"
+                      >
+                        <SessionRow
+                          session={s}
+                          selected={selected.has(s.id)}
+                          onToggle={() => toggleSelect(s.id)}
+                          onDelete={() => handleDelete([s.id])}
+                          onOpenDir={() => handleOpenDir(s.id)}
+                          deletePending={deletePending}
+                          isOpening={openId === s.id}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             </div>
           )}
         >
           <Empty>
-            {sessions.length === 0 ? t('sessions.empty_hint') : t('sessions.search.empty')}
+            {total === 0 && debouncedSearch === '' && filter === 'all' ? t('sessions.empty_hint') : t('sessions.search.empty')}
           </Empty>
         </If>
       </PanelState>

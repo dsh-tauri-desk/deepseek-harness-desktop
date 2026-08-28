@@ -334,6 +334,25 @@ fn git_output(binary: &Path, arg: &str) -> Option<std::process::Output> {
         .ok()
 }
 
+/// 检查 Git HTTPS transport helper 的两种 Windows 发行布局。
+///
+/// 完整安装版通常把 helper 放在 `--exec-path`，而官方 MinGit 2.53 把它放在
+/// 同一平台根目录（`mingw64` 或 `clangarm64`）下的 `bin`。只检查前者会在每次
+/// 启动时把已安装且可用的 MinGit 误判为缺失，反复进入依赖安装流程（issue #166）。
+#[cfg(any(windows, test))]
+fn git_https_helper_exists(exec_path: &Path) -> bool {
+    const HELPER: &str = "git-remote-https.exe";
+
+    if exec_path.join(HELPER).is_file() {
+        return true;
+    }
+
+    exec_path
+        .parent()
+        .and_then(Path::parent)
+        .is_some_and(|platform_root| platform_root.join("bin").join(HELPER).is_file())
+}
+
 /// 检查 Git CLI 与 HTTPS transport helper 是否完整，避免 PATH 中只有残缺壳程序
 /// （`git --version` 可成功但无法执行 `ls-remote`）阻止自动修复。
 #[cfg(windows)]
@@ -346,10 +365,7 @@ fn git_binary_works(binary: &Path) -> bool {
         return false;
     };
     let exec_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    !exec_path.is_empty()
-        && PathBuf::from(exec_path)
-            .join("git-remote-https.exe")
-            .is_file()
+    !exec_path.is_empty() && git_https_helper_exists(Path::new(&exec_path))
 }
 
 /// 返回桌面端应注入子进程 PATH 的已选 Git `cmd` 目录。
@@ -538,6 +554,52 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 为文件布局测试生成互不冲突的临时目录。
+    fn unique_runtime_test_dir(name: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("dsh-runtime-{name}-{}-{nonce}", std::process::id()))
+    }
+
+    /// 完整 Git 安装版把 HTTPS helper 直接放在 exec path 时仍应识别。
+    #[test]
+    fn git_https_helper_accepts_exec_path_layout() {
+        let root = unique_runtime_test_dir("git-exec-helper");
+        let exec_path = root.join("mingw64").join("libexec").join("git-core");
+        fs::create_dir_all(&exec_path).expect("create exec path");
+        fs::write(exec_path.join("git-remote-https.exe"), b"stub").expect("write helper");
+
+        assert!(git_https_helper_exists(&exec_path));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 官方 MinGit 2.53 的 helper 位于平台根目录下的 `bin`；缺失时仍必须拒绝。
+    #[test]
+    fn git_https_helper_accepts_mingit_bin_layout_and_rejects_missing() {
+        for platform_root in ["mingw64", "clangarm64"] {
+            let root = unique_runtime_test_dir(platform_root);
+            let exec_path = root.join(platform_root).join("libexec").join("git-core");
+            fs::create_dir_all(&exec_path).expect("create exec path");
+            assert!(!git_https_helper_exists(&exec_path));
+
+            let helper = root
+                .join(platform_root)
+                .join("bin")
+                .join("git-remote-https.exe");
+            fs::create_dir_all(helper.parent().expect("helper parent")).expect("create MinGit bin");
+            fs::write(helper, b"stub").expect("write helper");
+
+            assert!(git_https_helper_exists(&exec_path));
+
+            let _ = fs::remove_dir_all(root);
+        }
+    }
 
     #[test]
     fn node_base_url_switches_on_region() {

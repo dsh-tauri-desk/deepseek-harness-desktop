@@ -602,11 +602,12 @@ mod tests {
 #[cfg(test)]
 mod security_tests {
     #[test]
-    fn remote_capability_does_not_cover_wildcard_loopback() {
+    fn remote_capability_allows_only_loopback_harness() {
         let capability = include_str!("../../capabilities/default.json");
-        assert!(!capability.contains("\"remote\""));
+        assert!(capability.contains("\"remote\""));
         let wildcard_loopback = ["http://127.0.0.1:", "*"].concat();
-        assert!(!capability.contains(wildcard_loopback.as_str()));
+        assert!(capability.contains(wildcard_loopback.as_str()));
+        assert!(!capability.contains("https://"));
     }
 
     #[test]

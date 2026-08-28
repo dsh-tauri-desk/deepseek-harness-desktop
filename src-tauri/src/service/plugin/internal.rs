@@ -113,7 +113,7 @@ async fn ensure_inner(
             .get(&name)
             .is_some_and(|actual| dep_matches_spec(actual, &expected));
         let entry = profile.join("node_modules").join(&name);
-        let link_ok = entry.join("package.json").is_file();
+        let link_ok = internal_plugin_entry_is_ready(&entry);
         if !dep_ok || !link_ok {
             log::info!(
                 "INTERNAL_PLUGIN_NEEDS_REINSTALL: {name}（dep_ok={dep_ok}, link_ok={link_ok}, expected={expected}）"
@@ -162,6 +162,14 @@ async fn ensure_inner(
         return Err(format!("INTERNAL_PLUGIN_INSTALL_FAILED: {e}"));
     }
     Ok(())
+}
+
+/// 读取并解析入口清单，避免仅凭文件存在就把截断或不可读的内置插件视为健康。
+fn internal_plugin_entry_is_ready(entry: &Path) -> bool {
+    let Ok(raw) = std::fs::read(entry.join("package.json")) else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&raw).is_ok_and(|manifest| manifest.is_object())
 }
 
 /// 从 profile 清单精准移除待重装 internal 包的依赖与 bundle 引用。
@@ -302,6 +310,33 @@ fn dep_matches_spec(actual: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_plugin_entry_requires_readable_manifest_object() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-internal-entry-readiness-{}",
+            std::process::id()
+        ));
+        let manifest = root.join("package.json");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(!internal_plugin_entry_is_ready(&root));
+
+        std::fs::write(&manifest, br#"{"name":"dsh-tauri"}"#).unwrap();
+        assert!(internal_plugin_entry_is_ready(&root));
+
+        std::fs::write(&manifest, br#"{"name":"dsh-tauri""#).unwrap();
+        assert!(!internal_plugin_entry_is_ready(&root));
+
+        std::fs::write(&manifest, b"[]").unwrap();
+        assert!(!internal_plugin_entry_is_ready(&root));
+
+        std::fs::write(&manifest, [0xff, 0xfe, 0xfd]).unwrap();
+        assert!(!internal_plugin_entry_is_ready(&root));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn stale_internal_manifest_entries_are_removed_without_touching_other_plugins() {

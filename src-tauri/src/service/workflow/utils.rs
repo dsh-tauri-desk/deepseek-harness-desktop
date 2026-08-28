@@ -101,39 +101,59 @@ where
     if let Some(stdout) = stdout {
         let log_path = log_path.clone();
         thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        log::info!(target: "dsh", "{}", line);
-                        append_log(&log_path, &line);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to read dsh stdout: {}", e);
-                        break;
-                    }
-                }
-            }
+            drain_subprocess_output(BufReader::new(stdout), log_path, log::Level::Info);
         });
     }
 
     // 在独立线程中读取 stderr
     if let Some(stderr) = stderr {
         thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        log::warn!(target: "dsh", "{}", line);
-                        append_log(&log_path, &line);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to read dsh stderr: {}", e);
-                        break;
-                    }
-                }
-            }
+            drain_subprocess_output(BufReader::new(stderr), log_path, log::Level::Warn);
         });
+    }
+}
+
+/// 逐行读取子进程输出并写入日志。
+///
+/// 任何一行是非法 UTF-8 时**必须**用 lossy 替换继续读下去，不能中断：管道
+/// 读端一旦被关闭，dsh 主进程下一次写 stderr 就会收到 EPIPE，Node 以退出码 1
+/// 静默崩溃（插件子进程——python MCP 服务器等——在中文本地化 Windows 下按
+/// ANSI 代码页输出 GBK 日志是常态），桌面端表现为 Harness 反复崩溃、WebView
+/// 永久卡在 "Loading plugins"。同样的非法字节在日志里以 U+FFFD 呈现，不影响
+/// 其余行的可读性。真正需要停手的只有 EOF 与管道自身的 I/O 错误。
+fn drain_subprocess_output<R: Read + Send + 'static>(
+    mut reader: BufReader<R>,
+    log_path: PathBuf,
+    level: log::Level,
+) {
+    loop {
+        let mut bytes = Vec::new();
+        match reader.read_until(b'\n', &mut bytes) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                // 去除行尾 \n / \r\n（与旧 lines() 行为一致）
+                let bytes = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+                let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+                let line = String::from_utf8_lossy(bytes);
+                match level {
+                    log::Level::Warn => log::warn!(target: "dsh", "{}", line),
+                    _ => log::info!(target: "dsh", "{}", line),
+                }
+                append_log(&log_path, &line);
+            }
+            Err(e) => {
+                log::error!("Failed to read dsh {}: {}", log_level_name(level), e);
+                break;
+            }
+        }
+    }
+}
+
+/// `log::Level` 的小写名称（内部日志用词与旧实现一致）。
+fn log_level_name(level: log::Level) -> &'static str {
+    match level {
+        log::Level::Warn => "stderr",
+        _ => "stdout",
     }
 }
 
@@ -219,6 +239,69 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    /// 回归：非法 UTF-8 行（中文 Windows 下 python 插件输出 GBK 的典型形态）
+    /// 绝不能让读取器中断——旧实现 break 会关闭管道读端，dsh 下次写 stderr
+    /// 收到 EPIPE 以退出码 1 崩溃，表现为 Harness 崩溃循环 + WebView 卡在
+    /// "Loading plugins"。
+    #[test]
+    fn drain_keeps_reading_after_invalid_utf8_lines() {
+        let dir = std::env::temp_dir().join(format!("dsh_drain_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("out.log");
+
+        // "因为测试" 的 GBK 编码（与系统 ANSI 代码页 936 输出一致）
+        let mut data = b"first line\n".to_vec();
+        data.extend_from_slice(b"\xd2\xf2\xce\xaa\xb2\xe2\xca\xd4\n");
+        data.extend_from_slice(b"second line\n");
+
+        drain_subprocess_output(
+            std::io::BufReader::new(std::io::Cursor::new(data)),
+            log.clone(),
+            log::Level::Warn,
+        );
+
+        let content = fs::read_to_string(&log).unwrap();
+        assert!(
+            content.contains("first line"),
+            "first line must be logged, got: {content:?}"
+        );
+        assert!(
+            content.contains("second line"),
+            "reader must NOT stop at invalid UTF-8 (old code broke and closed the pipe); got: {content:?}"
+        );
+        // 非法字节以 U+FFFD 呈现，行内容不丢失
+        assert!(content.contains('\u{FFFD}'));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `log::Level` 与日志名称的映射。
+    #[test]
+    fn log_level_name_maps_streams() {
+        assert_eq!(log_level_name(log::Level::Warn), "stderr");
+        assert_eq!(log_level_name(log::Level::Info), "stdout");
+        assert_eq!(log_level_name(log::Level::Debug), "stdout");
+    }
+
+    /// 行尾处理与旧 `lines()` 行为一致：\n 与 \r\n 均被剥离。
+    #[test]
+    fn drain_strips_line_endings() {
+        let dir = std::env::temp_dir().join(format!("dsh_drain_crlf_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("out.log");
+
+        drain_subprocess_output(
+            std::io::BufReader::new(std::io::Cursor::new(b"a\r\nb\n".to_vec())),
+            log.clone(),
+            log::Level::Info,
+        );
+
+        let content = fs::read_to_string(&log).unwrap();
+        assert_eq!(content, "a\nb\n");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// 模拟连续 5 次启动，验证磁盘上始终只保留最近 `keep` 份日志，

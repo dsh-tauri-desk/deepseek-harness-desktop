@@ -1009,9 +1009,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 不一致（相对 PATH 条目 / junction / 子进程 PATH 布局差异），导致 pnpm
     // shim 报 "Node.js runtime not found"（issue #121，与 build_plugin_envs
     // 的注入保持一致）。先规范化为绝对路径：相对路径在子进程 CWD 下会解析
-    // 到错误位置；已存在（上面校验过）的 node 可安全 canonicalize。
+    // 到错误位置；已存在（上面校验过）的 node 可安全 canonicalize。用
+    // dunce::canonicalize 而不是 std::fs::canonicalize：后者在 Windows 上会
+    // 返回 `\\?\` verbatim 前缀，cmd.exe 无法直接启动这种路径，导致 pnpm/dsh
+    // shim 报 "The system cannot find the path specified."。
     let node_abs =
-        std::fs::canonicalize(&node_binary_path).unwrap_or_else(|_| node_binary_path.clone());
+        dunce::canonicalize(&node_binary_path).unwrap_or_else(|_| node_binary_path.clone());
     explicit.insert(
         "DSH_NODE".to_string(),
         node_abs.to_string_lossy().into_owned(),

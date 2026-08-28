@@ -40,9 +40,13 @@ rem must not re-derive it from PATH (which can miss nodes the app found).
 rem Pure batch version check (for /f tokens + numeric compare), no powershell
 rem child: avoids console flashes when invoked without a console and skips the
 rem per-call powershell startup cost.
-if defined DSH_NODE (
-  if exist "%DSH_NODE%" goto :node_dsh
-)
+if not defined DSH_NODE goto :skip_dsh_node
+set "NODE=%DSH_NODE%"
+rem Windows canonical paths may carry a \\?\ verbatim prefix that cmd.exe
+rem cannot launch directly; strip it before checking/using the path.
+if "%NODE:~0,4%"=="\\?\" set "NODE=%NODE:~4%"
+if exist "%NODE%" goto :launch
+:skip_dsh_node
 where node >nul 2>nul
 if errorlevel 1 goto :use_bundled
 for /f "tokens=1,2 delims=v." %%a in ('node --version 2^>nul ^| findstr /b "v"') do set "NODE_MAJOR=%%a" & set "NODE_MINOR=%%b"
@@ -71,8 +75,12 @@ const PS1_NODE_RESOLVE: &str = r#"
 # own child processes), then a version-compatible local node, then the
 # bundled runtime — see the CMD shim for why DSH_NODE wins first.
 $node = $null
-if ($env:DSH_NODE -and (Test-Path -LiteralPath $env:DSH_NODE)) {
+if ($env:DSH_NODE) {
     $node = $env:DSH_NODE
+    # Windows canonical paths may carry a \\?\ verbatim prefix; strip it so
+    # PowerShell/cmd can launch the path directly.
+    if ($node.StartsWith('\\?\')) { $node = $node.Substring(4) }
+    if (-not (Test-Path -LiteralPath $node)) { $node = $null }
 }
 if (-not $node) {
     $localNode = Get-Command node -ErrorAction SilentlyContinue
@@ -1120,6 +1128,11 @@ mod tests {
             node_ok_at < node_dsh_label_at,
             "the :node_dsh label must come after :node_ok"
         );
+        // Windows canonical paths may carry a \\?\ verbatim prefix; the shim
+        // must strip it before launching node (issue: pnpm --version fails
+        // with "The system cannot find the path specified.").
+        assert!(content.contains("NODE:~0,4%"));
+        assert!(content.contains("NODE:~4%"));
     }
 
     #[test]
@@ -1131,6 +1144,9 @@ mod tests {
             dsh_node_at < local_at,
             "DSH_NODE must be checked before the local node search"
         );
+        // Same verbatim-prefix stripping as the CMD shim.
+        assert!(content.contains("StartsWith"));
+        assert!(content.contains("Substring(4)"));
     }
 
     #[test]

@@ -66,38 +66,10 @@ jobs:
 
       - name: Read release metadata
         id: meta
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_TAG: ${{ github.ref_name }}
-          EVENT_SHA: ${{ github.sha }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-        run: |
-          if [ "$EVENT_NAME" = "push" ]; then
-            tag="$PUSH_TAG"
-            source_ref="$EVENT_SHA"
-            should_release=true
-          elif [ "$EVENT_NAME" = "pull_request" ]; then
-            tag="v$(node -p "require('./package.json').version")"
-            source_ref="$MERGE_SHA"
-            should_release=true
-          else
-            tag=""
-            source_ref="$EVENT_SHA"
-            should_release=false
-          fi
-
-          prerelease=false
-          if [[ "$tag" == *-* ]]; then
-            prerelease=true
-          fi
-
-          {
-            echo "tag=$tag"
-            echo "prerelease=$prerelease"
-            echo "should_release=$should_release"
-            echo "source_ref=$source_ref"
-          } >> "$GITHUB_OUTPUT"
+        run: node scripts/release-identity.mjs
 
       - name: Create release tag
         if: github.event_name == 'pull_request'

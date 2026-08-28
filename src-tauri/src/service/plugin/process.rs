@@ -113,10 +113,10 @@ pub(crate) async fn run_plugin_process(
         PidGuard::set(pid);
         let _pid_guard = PidGuard;
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, WaitForSingleObject, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
             };
+            use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
             let handle = handle;
             unsafe {
                 let wait = WaitForSingleObject(

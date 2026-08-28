@@ -20,7 +20,9 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(windows))]
+use std::time::Instant;
 use tauri::AppHandle;
 
 use crate::config;
@@ -233,10 +235,11 @@ async fn spawn_and_wait(
         let envs = envs.clone();
         let captured = captured.clone();
         let (exit_code, output) = tauri::async_runtime::spawn_blocking(move || {
-            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+            };
             use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, GetProcessId, WaitForSingleObject, WAIT_FAILED, WAIT_OBJECT_0,
-                WAIT_TIMEOUT,
+                GetExitCodeProcess, GetProcessId, WaitForSingleObject,
             };
 
             let (stdout, stderr, handle) = workflow::win_spawn::spawn_with_hidden_console_tracked(

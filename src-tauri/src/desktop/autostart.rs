@@ -122,14 +122,19 @@ mod tests {
     #[cfg(windows)]
     use super::{
         ensure_windows_run_key, remove_windows_startup_approval, windows_run_entry_exists,
-        RUN_REGISTRY_KEY,
+        RUN_REGISTRY_KEY, STARTUP_APPROVED_REGISTRY_KEY,
     };
     #[cfg(windows)]
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ};
     #[cfg(windows)]
-    use winreg::RegKey;
+    use winreg::{RegKey, RegValue};
 
     const TEST_APP_NAME: &str = "Deepseek Harness Desktop Autostart Test";
+    const SYSTEM_TEST_ENV: &str = "DSH_RUN_AUTOSTART_TESTS";
+    #[cfg(windows)]
+    const STARTUP_APPROVED_ENABLED_VALUE: [u8; 12] = [
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
 
     struct AutostartCleanup {
         manager: AutoLaunch,
@@ -152,6 +157,11 @@ mod tests {
         (manager, executable)
     }
 
+    /// 系统级测试只在 CI 或显式启用时运行，避免受限环境误报失败。
+    fn system_test_enabled() -> bool {
+        std::env::var_os("CI").is_some() || std::env::var_os(SYSTEM_TEST_ENV).is_some()
+    }
+
     #[cfg(windows)]
     fn clear_test_entry(manager: &AutoLaunch) -> Result<(), String> {
         ensure_windows_run_key()?;
@@ -170,7 +180,7 @@ mod tests {
             .map_err(|error| format!("AUTOSTART_TEST_CLEANUP_FAILED: {error}"))
     }
 
-    fn round_trip() -> (AutostartCleanup, PathBuf) {
+    fn enable_test_entry() -> (AutostartCleanup, PathBuf) {
         let (manager, executable) = test_manager();
         clear_test_entry(&manager).expect("stale test autostart entry should be removed");
         let cleanup = AutostartCleanup { manager };
@@ -197,7 +207,7 @@ mod tests {
         (cleanup, executable)
     }
 
-    fn finish_round_trip(cleanup: &AutostartCleanup) {
+    fn assert_disable_is_idempotent(cleanup: &AutostartCleanup) {
         clear_test_entry(&cleanup.manager).expect("test autostart entry should disable");
         assert!(
             !cleanup
@@ -212,7 +222,26 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_autostart_registration_round_trip() {
-        let (cleanup, executable) = round_trip();
+        if !system_test_enabled() {
+            eprintln!("skipped: set {SYSTEM_TEST_ENV}=1 to run the Windows autostart system test");
+            return;
+        }
+
+        let startup_approved = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(STARTUP_APPROVED_REGISTRY_KEY)
+            .expect("StartupApproved Run key should be available")
+            .0;
+        startup_approved
+            .set_raw_value(
+                TEST_APP_NAME,
+                &RegValue {
+                    vtype: RegType::REG_BINARY,
+                    bytes: vec![0x03; 12],
+                },
+            )
+            .expect("disabled test approval value should be written");
+
+        let (cleanup, executable) = enable_test_entry();
         let value: String = RegKey::predef(HKEY_CURRENT_USER)
             .open_subkey_with_flags(RUN_REGISTRY_KEY, KEY_READ)
             .expect("Windows Run key should be readable")
@@ -222,13 +251,28 @@ mod tests {
             value.contains(executable.to_string_lossy().as_ref()),
             "Run value should contain the current test executable"
         );
-        finish_round_trip(&cleanup);
+        let approval = startup_approved
+            .get_raw_value(TEST_APP_NAME)
+            .expect("enabled StartupApproved value should exist");
+        assert_eq!(approval.vtype, RegType::REG_BINARY);
+        assert_eq!(approval.bytes, STARTUP_APPROVED_ENABLED_VALUE);
+
+        assert_disable_is_idempotent(&cleanup);
+        assert!(
+            startup_approved.get_raw_value(TEST_APP_NAME).is_err(),
+            "StartupApproved value should be removed after disabling"
+        );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_autostart_registration_round_trip() {
-        let (cleanup, executable) = round_trip();
+        if !system_test_enabled() {
+            eprintln!("skipped: set {SYSTEM_TEST_ENV}=1 to run the macOS autostart system test");
+            return;
+        }
+
+        let (cleanup, executable) = enable_test_entry();
         let plist = std::env::var_os("HOME")
             .map(PathBuf::from)
             .expect("HOME should be available")
@@ -244,13 +288,18 @@ mod tests {
             .status()
             .expect("plutil should run");
         assert!(status.success(), "LaunchAgent plist should be valid");
-        finish_round_trip(&cleanup);
+        assert_disable_is_idempotent(&cleanup);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_autostart_registration_round_trip() {
-        let (cleanup, executable) = round_trip();
+        if !system_test_enabled() {
+            eprintln!("skipped: set {SYSTEM_TEST_ENV}=1 to run the Linux autostart system test");
+            return;
+        }
+
+        let (cleanup, executable) = enable_test_entry();
         let desktop_entry = std::env::var_os("HOME")
             .map(PathBuf::from)
             .expect("HOME should be available")
@@ -261,6 +310,6 @@ mod tests {
             std::fs::read_to_string(desktop_entry).expect("desktop entry should be readable");
         assert!(content.contains(&format!("Name={TEST_APP_NAME}")));
         assert!(content.contains(&format!("Exec={}", executable.display())));
-        finish_round_trip(&cleanup);
+        assert_disable_is_idempotent(&cleanup);
     }
 }

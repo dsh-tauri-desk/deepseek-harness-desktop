@@ -29,7 +29,7 @@ pub async fn get_session_files_paged(
     let sort_asc = sort_asc.unwrap_or(false);
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(50);
-    let limit = limit.clamp(1, 200);
+    let limit = limit.clamp(1, 2000);
     tokio::task::spawn_blocking(move || session::list_paged(&app_handle, filter, search, sort_key, sort_asc, offset, limit))
         .await
         .map_err(|e| format!("SESSION_SCAN_FAILED: join failed: {e}"))?
@@ -41,6 +41,14 @@ pub async fn delete_session_files(app_handle: AppHandle, ids: Vec<String>) -> Re
     tokio::task::spawn_blocking(move || session::delete(&app_handle, ids))
         .await
         .map_err(|e| format!("SESSION_DELETE_FAILED: join failed: {e}"))?
+}
+
+/// 恢复归档会话（从 archived 移回 active）
+#[tauri::command]
+pub async fn restore_session_files(app_handle: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || session::restore(&app_handle, ids))
+        .await
+        .map_err(|e| format!("SESSION_RESTORE_FAILED: join failed: {e}"))?
 }
 
 /// 在文件管理器中打开会话所在目录

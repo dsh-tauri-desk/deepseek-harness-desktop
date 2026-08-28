@@ -428,7 +428,7 @@ pub fn delete<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) ->
         return Err("INVALID_ID: too many ids (max 100)".to_string());
     }
     for id in &ids {
-        crate::service::fs_guard::validate_id(id)?;
+        crate::service::fs_guard::validate_session_id(id)?;
     }
     let root = sessions_root(app_handle);
     let workspace_path = storages_dir(app_handle).join("workspace.json");
@@ -529,9 +529,124 @@ pub fn delete<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) ->
     Ok(())
 }
 
-/// 获取会话所在目录路径（供 bridge 打开）
+/// 恢复归档会话（从 archived 移回 active）
+pub fn restore<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) -> Result<(), String> {
+    if ids.is_empty() {
+        return Err("INVALID_ID: ids is empty".to_string());
+    }
+    if ids.len() > 100 {
+        return Err("INVALID_ID: too many ids (max 100)".to_string());
+    }
+    for id in &ids {
+        crate::service::fs_guard::validate_session_id(id)?;
+    }
+    let workspace_path = storages_dir(app_handle).join("workspace.json");
+    if !workspace_path.exists() {
+        return Err("SESSION_RESTORE_FAILED: workspace.json not found".to_string());
+    }
+    let data = fs::read_to_string(&workspace_path)
+        .map_err(|e| format!("SESSION_RESTORE_FAILED: read workspace.json failed: {e}"))?;
+    let mut value: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| format!("SESSION_RESTORE_FAILED: parse workspace.json failed: {e}"))?;
+    let mut expanded = HashSet::new();
+    for id in &ids {
+        expanded.insert(id.clone());
+        if id.starts_with("session-") {
+            expanded.insert(id["session-".len()..].to_string());
+        } else {
+            expanded.insert(format!("session-{}", id));
+        }
+    }
+    // 1) 从 archived 移除
+    let mut removed_archived = 0usize;
+    if let Some(global) = value.get_mut("global") {
+        if let Some(arr) = global.get_mut("archivedSessionIds").and_then(|v| v.as_array_mut()) {
+            let before = arr.len();
+            arr.retain(|v| {
+                if let Some(s) = v.as_str() {
+                    !expanded.contains(s)
+                } else {
+                    true
+                }
+            });
+            removed_archived = before - arr.len();
+        }
+    }
+    if removed_archived == 0 {
+        // 无归档命中视为已恢复或非归档，仍尝试确保 active
+    }
+    // 2) 确保在 active 中（workspaces[].sessionIds）
+    // 优先按 projcache cwd 精确匹配 workspace
+    let proj_map = load_projcache_map(app_handle);
+    // 预取 workspaces 表
+    let tables = value.get_mut("tables").and_then(|v| v.as_object_mut());
+    if let Some(workspaces) = tables.and_then(|t| t.get_mut("workspaces").and_then(|v| v.as_object_mut())) {
+        // 收集现有 active 集合用于去重
+        let mut active_all = HashSet::new();
+        for ws in workspaces.values() {
+            if let Some(arr) = ws.get("sessionIds").and_then(|v| v.as_array()) {
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        active_all.insert(s.to_string());
+                    }
+                }
+            }
+        }
+        for id in &ids {
+            // 已在 active 则跳过（检查当前 id 的双形态）
+            let mut cur_active = false;
+            if active_all.contains(id) {
+                cur_active = true;
+            } else if id.starts_with("session-") {
+                if active_all.contains(&id["session-".len()..].to_string()) {
+                    cur_active = true;
+                }
+            } else if active_all.contains(&format!("session-{}", id)) {
+                cur_active = true;
+            }
+            if cur_active {
+                continue;
+            }
+            // 寻找目标 workspace：优先 cwd 精确匹配
+            let mut target_ws_key: Option<String> = None;
+            if let Some(entry) = find_proj_entry(&proj_map, id) {
+                if let Some(cwd) = &entry.identity.cwd {
+                    for (k, ws) in workspaces.iter() {
+                        if let Some(path) = ws.get("path").and_then(|v| v.as_str()) {
+                            if path == cwd {
+                                target_ws_key = Some(k.clone());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // 兜底：取首个 workspace
+            if target_ws_key.is_none() {
+                if let Some((k, _)) = workspaces.iter().next() {
+                    target_ws_key = Some(k.clone());
+                }
+            }
+            if let Some(key) = target_ws_key {
+                if let Some(ws) = workspaces.get_mut(&key) {
+                    if let Some(arr) = ws.get_mut("sessionIds").and_then(|v| v.as_array_mut()) {
+                        // 去重后再 push 原始 id
+                        let exists = arr.iter().any(|v| v.as_str() == Some(id.as_str()));
+                        if !exists {
+                            arr.push(serde_json::Value::String(id.clone()));
+                            active_all.insert(id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    atomic_write_json(&workspace_path, &value)?;
+    Ok(())
+}
+
 pub fn reveal_path<R: tauri::Runtime>(app_handle: &AppHandle<R>, id: String) -> Result<PathBuf, String> {
-    crate::service::fs_guard::validate_id(&id)?;
+    crate::service::fs_guard::validate_session_id(&id)?;
     let root = sessions_root(app_handle);
     let mut found: Option<PathBuf> = None;
     if let Ok(workspaces) = fs::read_dir(&root) {

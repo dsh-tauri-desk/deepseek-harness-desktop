@@ -2,10 +2,11 @@ import { ArrowRotateRight, FolderOpen, TrashBin } from '@gravity-ui/icons'
 import { Button, Checkbox, Chip, Input, Label, Spinner } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
-import { useDshSessionsPaged } from '@/hooks/use-dsh-sessions-paged'
+import { useDshSessionsInfinite } from '@/hooks/use-dsh-sessions-paged'
 import type { SessionFileInfo } from '@/hooks/use-dsh-sessions'
 import { toast } from '@/utils/toast'
 import { Ellipsis } from './ellipsis'
@@ -17,7 +18,6 @@ import { PanelState } from './panel-state'
 
 type FilterType = 'all' | 'active' | 'archived' | 'orphan'
 type SortKey = 'createdAt' | 'size' | 'turns'
-
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -43,16 +43,17 @@ interface SessionRowProps {
   selected: boolean
   onToggle: () => void
   onDelete: () => void
+  onRestore: () => void
   onOpenDir: () => void
   deletePending: boolean
+  restorePending: boolean
   isOpening: boolean
 }
 
-function SessionRow({ session: s, selected, onToggle, onDelete, onOpenDir, deletePending, isOpening }: SessionRowProps) {
+function SessionRow({ session: s, selected, onToggle, onDelete, onRestore, onOpenDir, deletePending, restorePending, isOpening }: SessionRowProps) {
   const { t } = useTranslation()
   return (
     <Item
-      className={s.isEmpty ? 'border-warning/30 bg-warning/5' : undefined}
       left={(
         <div className="min-w-0 flex flex-col gap-1">
           <div className="flex min-w-0 items-center gap-1.5">
@@ -107,12 +108,26 @@ function SessionRow({ session: s, selected, onToggle, onDelete, onOpenDir, delet
       )}
       right={(
         <>
+          <If cond={s.archivedStatus === 'archived'}>
+            <Button
+              size="sm"
+              variant="tertiary"
+              className="h-6 w-6 shrink-0 rounded-md p-0"
+              onPress={onRestore}
+              isDisabled={restorePending || deletePending || isOpening}
+              aria-label={t('sessions.restore.one')}
+            >
+              <If cond={restorePending} else={<ArrowRotateRight className="size-3.5 scale-x-[-1]" />}>
+                <Spinner size="sm" color="current" />
+              </If>
+            </Button>
+          </If>
           <Button
             size="sm"
             variant="tertiary"
             className="h-6 w-6 shrink-0 rounded-md p-0"
             onPress={onOpenDir}
-            isDisabled={isOpening || deletePending}
+            isDisabled={isOpening || deletePending || restorePending}
             aria-label={t('sessions.open_dir')}
           >
             <If cond={isOpening} else={<FolderOpen className="size-3.5" />}>
@@ -124,7 +139,7 @@ function SessionRow({ session: s, selected, onToggle, onDelete, onOpenDir, delet
             variant="tertiary"
             className="h-6 w-6 shrink-0 rounded-md p-0"
             onPress={onDelete}
-            isDisabled={deletePending || isOpening}
+            isDisabled={deletePending || isOpening || restorePending}
             aria-label={t('sessions.delete.one')}
           >
             <TrashBin className="size-3.5" />
@@ -150,25 +165,39 @@ export function ConfigSessions() {
     return () => clearTimeout(id)
   }, [searchInput])
 
-  // 纯虚拟：后端仍承担 filter/search/sort 下沉，但不分页，一次性返回全部过滤结果（500条虚拟化）
-  const { items, total, counts, isParseFailed, loading, fetching, error, refresh, deleteSessions, openDir, deletePending, openId } = useDshSessionsPaged({
+  // 无限分页：每页 500，虚拟化只渲染可视行，支撑 2000+ 任意总量
+  const { items, total, counts, isParseFailed, loading, fetching, fetchingNextPage, hasNextPage, fetchNextPage, error, refresh, deleteSessions, restoreSessions, openDir, deletePending, restorePending, openId } = useDshSessionsInfinite({
     filter,
     search: debouncedSearch,
     sortKey,
     sortAsc,
-    offset: 0,
-    limit: 2000,
   })
-
-  const areAllFilteredSelected = items.length > 0 && items.every(s => selected.has(s.id))
+  const areAllFilteredSelected = total > 0 && selected.size === total && (hasNextPage ? true : items.length > 0 && items.every(s => selected.has(s.id)))
+  const isIndeterminate = !areAllFilteredSelected && selected.size > 0 && (hasNextPage ? true : items.some(s => selected.has(s.id)))
 
   const parentRef = useRef<HTMLDivElement>(null)
   const rowVirtualizer = useVirtualizer({
-    count: items.length,
+    count: hasNextPage ? items.length + 1 : items.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 88,
-    overscan: 5,
+    overscan: 10,
   })
+
+  // 滚动接近底部自动加载下一页
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  useEffect(() => {
+    const last = virtualItems[virtualItems.length - 1]
+    if (!last) return
+    if (last.index >= items.length - 20 && hasNextPage && !fetchingNextPage) {
+      void fetchNextPage()
+    }
+  }, [virtualItems, items.length, hasNextPage, fetchingNextPage, fetchNextPage])
+
+  // 切换筛选/搜索时清空已选（避免跨筛选残留）
+  useEffect(() => {
+    setSelected(new Set())
+  }, [filter, debouncedSearch, sortKey, sortAsc])
+
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -179,22 +208,31 @@ export function ConfigSessions() {
     })
   }
 
-  function toggleSelectAll() {
+  async function toggleSelectAll() {
     if (areAllFilteredSelected) {
-      setSelected((prev) => {
-        const next = new Set(prev)
-        for (const s of items) next.delete(s.id)
-        return next
-      })
+      setSelected(new Set())
     } else {
-      setSelected((prev) => {
-        const next = new Set(prev)
-        for (const s of items) next.add(s.id)
-        return next
-      })
+      // 未加载完时需先拉全量再全选，否则仅选中已加载的 500/1000 条会导致“删不完”
+      if (hasNextPage) {
+        try {
+          const all = await invoke<{ total: number, items: SessionFileInfo[] }>('get_session_files_paged', {
+            filter,
+            search: debouncedSearch || null,
+            sortKey,
+            sortAsc,
+            offset: 0,
+            limit: total,
+          })
+          setSelected(new Set(all.items.map(s => s.id)))
+        } catch {
+          // 兜底：至少选中已加载的
+          setSelected(new Set(items.map(s => s.id)))
+        }
+      } else {
+        setSelected(new Set(items.map(s => s.id)))
+      }
     }
   }
-
   async function handleDelete(ids: string[]) {
     if (ids.length === 0) return
     function truncatePreview(text: string, max = 24) {
@@ -232,10 +270,42 @@ export function ConfigSessions() {
     }
   }
 
+  async function handleRestore(ids: string[]) {
+    if (ids.length === 0) return
+    function truncatePreview(text: string, max = 24) {
+      const tt = text.trim()
+      return tt.length > max ? `${tt.slice(0, max)}…` : tt
+    }
+    const rawPreview = ids.slice(0, 3).map(id => truncatePreview(items.find(s => s.id === id)?.title || id))
+    const preview = rawPreview.join('、')
+    const more = ids.length > 3 ? t('sessions.delete.batch_more', { count: ids.length - 3 }) : ''
+    const previewText = preview + more
+    const previewCapped = previewText.length > 72 ? `${previewText.slice(0, 72)}…` : previewText
+    const confirmed = await openDialog({
+      status: 'accent',
+      title: t('sessions.restore.confirm_title'),
+      description: ids.length === 1
+        ? t('sessions.restore.confirm_desc_one', { title: previewCapped })
+        : t('sessions.restore.confirm_desc_batch', { count: ids.length, preview: previewCapped }),
+      confirmText: t('buttons.confirm'),
+      cancelText: t('buttons.cancel'),
+    })
+    if (!confirmed) return
+    try {
+      for (let i = 0; i < ids.length; i += 100) {
+        // eslint-disable-next-line no-await-in-loop
+        await restoreSessions(ids.slice(i, i + 100))
+      }
+      setSelected(new Set())
+      toast(t('sessions.restore.success', { count: ids.length }))
+    } catch (e) {
+      toast(String(e), { timeout: 3000 })
+    }
+  }
+
   function sessionsFallbackTitle(id: string) {
     return id
   }
-
   async function handleOpenDir(id: string) {
     try {
       await openDir(id)
@@ -245,7 +315,7 @@ export function ConfigSessions() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-hidden">
       {dialogHolder}
       <PanelHeader
         title={t('config.sessions')}
@@ -325,36 +395,54 @@ export function ConfigSessions() {
         <If cond={selected.size > 0}>
           <div className="flex items-center gap-2 rounded-md border border-line bg-panel2 p-2">
             <span className="text-xs text-muted">{t('sessions.selected', { count: selected.size })}</span>
+            <If cond={Array.from(selected).some(id => items.find(s => s.id === id)?.archivedStatus === 'archived')}>
+              <Button
+                size="sm"
+                variant="primary"
+                className="h-7 rounded-md"
+                onPress={() => {
+                  const archivedIds = Array.from(selected).filter(id => items.find(s => s.id === id)?.archivedStatus === 'archived')
+                  void handleRestore(archivedIds)
+                }}
+                isDisabled={restorePending || deletePending}
+              >
+                <If cond={restorePending} else={<ArrowRotateRight className="mr-1 size-3.5 scale-x-[-1]" />}>
+                  <Spinner size="sm" color="current" />
+                </If>
+                {t('sessions.restore.batch')}
+              </Button>
+            </If>
             <Button
               size="sm"
               variant="danger"
               className="h-7 rounded-md"
               onPress={() => handleDelete(Array.from(selected))}
-              isDisabled={deletePending}
+              isDisabled={deletePending || restorePending}
             >
               <If cond={deletePending} else={<TrashBin className="mr-1 size-3.5" />}>
                 <Spinner size="sm" color="current" />
               </If>
               {t('sessions.delete.batch')}
             </Button>
-            <Button size="sm" variant="tertiary" className="h-7 rounded-md" onPress={() => setSelected(new Set())} isDisabled={deletePending}>
+            <Button size="sm" variant="tertiary" className="h-7 rounded-md" onPress={() => setSelected(new Set())} isDisabled={deletePending || restorePending}>
               {t('buttons.cancel')}
             </Button>
           </div>
         </If>
       </div>
 
-      <PanelState loading={loading} error={error}>
+      <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+        <PanelState loading={loading} error={error}>
         <If
           cond={items.length === 0}
           else={(
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-hidden">
               <div className="flex items-center gap-2 px-1">
                 <Checkbox
                   isSelected={areAllFilteredSelected}
-                  isIndeterminate={!areAllFilteredSelected && items.some(s => selected.has(s.id))}
+                  isIndeterminate={isIndeterminate}
                   onChange={toggleSelectAll}
-                  isDisabled={deletePending}
+                  isDisabled={deletePending || restorePending}
                   aria-label={t('sessions.select_all')}
                   className="shrink-0"
                 >
@@ -373,10 +461,28 @@ export function ConfigSessions() {
                 </span>
               </div>
 
-              <div ref={parentRef} className="max-h-[480px] overflow-auto rounded-md border border-line/30">
+              <div ref={parentRef} className="flex-1 min-h-0 overflow-auto rounded-md border border-line/30">
                 <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}>
                   {rowVirtualizer.getVirtualItems().map(virtualRow => {
-                    const s = items[virtualRow.index]
+                    const isLoader = virtualRow.index >= items.length
+                    if (isLoader) {
+                      return (
+                        <div
+                          key="loader"
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            transform: `translateY(${virtualRow.start}px)`,
+                          }}
+                          className="flex items-center justify-center p-4"
+                        >
+                          <If cond={hasNextPage} then={<Spinner size="sm" color="current" />} else={<span className="text-xs text-muted">{t('sessions.loaded_all', { count: total })}</span>} />
+                        </div>
+                      )
+                    }
+                    const s = items[virtualRow.index]!
                     return (
                       <div
                         key={s.id}
@@ -394,8 +500,10 @@ export function ConfigSessions() {
                           selected={selected.has(s.id)}
                           onToggle={() => toggleSelect(s.id)}
                           onDelete={() => handleDelete([s.id])}
+                          onRestore={() => handleRestore([s.id])}
                           onOpenDir={() => handleOpenDir(s.id)}
                           deletePending={deletePending}
+                          restorePending={restorePending}
                           isOpening={openId === s.id}
                         />
                       </div>
@@ -403,6 +511,15 @@ export function ConfigSessions() {
                   })}
                 </div>
               </div>
+              <If cond={hasNextPage}>
+                <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted">
+                  <span>{t('sessions.loaded_count', { loaded: items.length, total })}</span>
+                  <If cond={fetchingNextPage} then={<Spinner size="sm" color="current" />} />
+                  <Button size="sm" variant="tertiary" className="h-6 rounded-md" onPress={() => void fetchNextPage()} isDisabled={fetchingNextPage}>
+                    {t('sessions.load_more')}
+                  </Button>
+                </div>
+              </If>
             </div>
           )}
         >
@@ -411,6 +528,7 @@ export function ConfigSessions() {
           </Empty>
         </If>
       </PanelState>
+      </div>
     </div>
   )
 }

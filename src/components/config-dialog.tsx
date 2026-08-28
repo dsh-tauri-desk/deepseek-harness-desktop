@@ -13,7 +13,7 @@ import { ConfigPlugin } from './config-plugin'
 import { ConfigProfile } from './config-profile'
 import { ConfigSessions } from './config-sessions'
 
-export interface ConfigDialogProps extends PropsWithOverlays {}
+export interface ConfigDialogProps extends PropsWithOverlays { }
 
 export function ConfigDialog(props: ConfigDialogProps) {
   const disclosure = useDisclosure({ props })
@@ -25,9 +25,9 @@ export function ConfigDialog(props: ConfigDialogProps) {
   const navs = [
     { label: t('config.debug'), value: 'debug', icon: Wrench },
     { label: t('config.profiles'), value: 'profiles', icon: PersonPencil },
+    { label: t('config.sessions'), value: 'sessions', icon: FolderOpen },
     { label: t('config.plugins'), value: 'plugins', icon: Puzzle },
     { label: t('config.harness'), value: 'harness', icon: Cpu },
-    { label: t('config.sessions'), value: 'sessions', icon: FolderOpen },
   ]
 
   const [activeTab, setActiveTab] = useState('debug')
@@ -38,14 +38,14 @@ export function ConfigDialog(props: ConfigDialogProps) {
     <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
       <Modal.Backdrop>
         <Modal.Container size="lg">
-          <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5 h-screen">
+          <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5 max-h-[85vh] h-[85vh] min-h-0 flex flex-col">
             <Modal.CloseTrigger />
             <Modal.Header className="mb-3">
               <Modal.Heading>
                 {t('app.config')}
               </Modal.Heading>
             </Modal.Header>
-            <Modal.Body className="flex gap-6 pr-0 h-screen">
+            <Modal.Body className="flex gap-6 pr-0 flex-1 min-h-0 overflow-hidden">
               <aside className="w-[164px]">
                 <nav className="flex flex-col gap-2 w-full">
                   {navs.map((item) => {
@@ -71,8 +71,8 @@ export function ConfigDialog(props: ConfigDialogProps) {
                   })}
                 </nav>
               </aside>
-              <div className="flex flex-col flex-1 overflow-auto min-h-0 max-h-[628px] pr-2.5">
-                <Switch value={activeTab} as="div">
+              <div className="flex flex-col flex-1 min-h-0 overflow-hidden pr-2.5">
+                <Switch value={activeTab} as="div" className="flex flex-1 min-h-0 flex-col overflow-auto">
                   <Case cond="debug">
                     <ConfigDebug />
                   </Case>

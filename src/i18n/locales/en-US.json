@@ -202,7 +202,12 @@
   "sessions.delete.confirm_desc_batch": "Delete {{count}} selected sessions? Including {{preview}}.",
   "sessions.delete.batch_more": " and {{count}} more",
   "sessions.delete.success": "Deleted {{count}} sessions",
-  "sessions.open_dir": "Open folder",
+  "sessions.restore.one": "Restore",
+  "sessions.restore.batch": "Restore selected",
+  "sessions.restore.confirm_title": "Confirm restore",
+  "sessions.restore.confirm_desc_one": "Restore session \"{{title}}\"? It will be moved back to active.",
+  "sessions.restore.confirm_desc_batch": "Restore {{count}} selected sessions? Including {{preview}}.",
+  "sessions.restore.success": "Restored {{count}} sessions",
   "sessions.open_dir_failed": "Failed to open folder",
   "buttons.cancel": "Cancel",
   "buttons.confirm": "Confirm",
@@ -231,5 +236,8 @@
   "recovery.reason.runtime.title": "A plugin is running abnormally",
   "recovery.reason.runtime.detail": "The plugin reported a runtime error. Removing it and continuing may resolve the issue.",
   "recovery.reason.unknown.title": "A plugin failed during startup",
-  "recovery.reason.unknown.detail": "Harness reported an error while loading a plugin, but the exact cause could not be determined automatically."
+  "recovery.reason.unknown.detail": "Harness reported an error while loading a plugin, but the exact cause could not be determined automatically.",
+  "sessions.loaded_all": "All {{count}} loaded",
+  "sessions.loaded_count": "{{loaded}} / {{total}} loaded",
+  "sessions.load_more": "Load more"
 }

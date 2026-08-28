@@ -14,7 +14,6 @@
 use std::path::{Path, PathBuf};
 
 /// ID 允许的字符集：字母数字、点、短横线、下划线（禁止空格、路径分隔符）。
-///
 /// 注意：`.` 单独出现（`.` / `..`）属于非法，但文件名内的点（如 `dsh-1.2.3`）
 /// 允许。检查顺序：先整体字符集（排除 `/`、`\`、空白），再排除 `.` `..` 与
 /// 以 `..` 开头/结尾的组件形态。
@@ -40,6 +39,30 @@ pub fn validate_id(id: &str) -> Result<(), String> {
     // 顺带拒绝 Windows 保留名与分隔符的隐形变体（统一走字符集已挡掉）
     Ok(())
 }
+/// 会话 ID 的宽松校验：用于兼容用户手工复制产生的 ` - 副本` 后缀。
+///
+/// `validate_id` 白名单 `a-zA-Z0-9._-` 会拒绝 Windows 资源管理器自动追加的
+/// 空格/中文 `副本`/括号/emoji（如 `session-xxx - 副本 (2)`），导致 `list()` 已枚举
+/// 的孤儿目录无法 `delete`。会话删除已通过 `ensure_within(canonicalize)` 二次校验
+/// 归属 `sessions_root`，此处仅需阻断路径穿越字符，不做字符集白名单。
+pub fn validate_session_id(id: &str) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("INVALID_ID: id is empty".to_string());
+    }
+    // 放宽至 255 字节，兼容 `- 副本` 多级后缀
+    if id.len() > 255 {
+        return Err("INVALID_ID: id too long".to_string());
+    }
+    if id.contains('/') || id.contains('\\') || id.contains('\0') || id.contains(':') {
+        return Err(format!("INVALID_ID: id contains forbidden characters: {id}"));
+    }
+    if id == "." || id == ".." || id.starts_with("..") || id.ends_with("..") {
+        return Err(format!("INVALID_ID: path traversal attempt: {id}"));
+    }
+    Ok(())
+}
+
 
 /// 校验 `child` canonicalize 后仍位于 `root` canonicalize 的目录内。
 ///

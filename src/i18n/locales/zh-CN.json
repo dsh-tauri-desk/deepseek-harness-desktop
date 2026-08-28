@@ -202,7 +202,12 @@
   "sessions.delete.confirm_desc_batch": "确定删除选中的 {{count}} 个会话吗？包括 {{preview}}。",
   "sessions.delete.batch_more": "等 {{count}} 个",
   "sessions.delete.success": "已删除 {{count}} 个会话",
-  "sessions.open_dir": "打开所在目录",
+  "sessions.restore.one": "恢复",
+  "sessions.restore.batch": "恢复选中",
+  "sessions.restore.confirm_title": "确认恢复",
+  "sessions.restore.confirm_desc_one": "确定恢复会话“{{title}}”吗？将移回活跃列表。",
+  "sessions.restore.confirm_desc_batch": "确定恢复选中的 {{count}} 个会话吗？包括 {{preview}}。",
+  "sessions.restore.success": "已恢复 {{count}} 个会话",
   "sessions.open_dir_failed": "打开目录失败",
   "buttons.cancel": "取消",
   "buttons.confirm": "确定",
@@ -231,5 +236,8 @@
   "recovery.reason.runtime.title": "插件运行异常",
   "recovery.reason.runtime.detail": "该插件运行期上报了错误。卸载它并继续可能解决问题。",
   "recovery.reason.unknown.title": "插件启动失败",
-  "recovery.reason.unknown.detail": "Harness 在加载插件时发生错误，但暂时无法自动判断更具体的原因。"
+  "recovery.reason.unknown.detail": "Harness 在加载插件时发生错误，但暂时无法自动判断更具体的原因。",
+  "sessions.loaded_all": "已加载全部 {{count}} 条",
+  "sessions.loaded_count": "已加载 {{loaded}} / {{total}} 条",
+  "sessions.load_more": "加载更多"
 }

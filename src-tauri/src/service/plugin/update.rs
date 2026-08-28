@@ -3,8 +3,9 @@
 //! 每个已安装插件按其在 profile `package.json` 中的依赖 spec 判断：
 //! - `link:` / `file:` 本地依赖 → 永不视为有更新；
 //! - git 类型（`github:` / `git+https://github.com/…` / `https://codeload.github.com/…`）
-//!   → 用 pnpm-lock.yaml 里记录的 codeload 提交 SHA 对比 GitHub 仓库 HEAD SHA，
-//!     不相同即视为有更新（与 market 的「按提交比较」一致）；
+//!   → 用 pnpm-lock.yaml 里记录的 codeload 提交 SHA 对比 GitHub 跟踪目标：
+//!     git spec 显式声明 `#ref` 时跟踪该 tag / branch / SHA，未声明时跟踪 HEAD；
+//!     镜像安装写入的 codeload archive URL 记录的是当前安装提交，更新源仍是 HEAD；
 //! - 其余（registry）→ 用 npm registry 的 `latest` dist-tag 与已装版本做语义化比较，
 //!   `latest > installed` 才视为有更新（避免把 `latest` 指向更旧版本误判为可升级）。
 //!
@@ -36,7 +37,7 @@ const UPDATES_TTL: Duration = Duration::from_secs(30 * 60);
 pub struct UpdateInfo {
     /// 是否确有更新（`true` = 有可升级的新版本/新提交）
     pub update_available: bool,
-    /// 语义化判定得到的「最新版本」（npm 分支为 registry latest，git 分支为 HEAD SHA）
+    /// 语义化判定得到的「最新版本」（npm 分支为 registry latest，git 分支为跟踪目标 SHA）
     pub latest: Option<String>,
 }
 
@@ -53,7 +54,7 @@ fn cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
 
 /// 缓存键：spec、版本或该直接依赖的 Git 锁定提交变化后，旧结果自动失效。
 fn cache_key(id: &str, spec: &str, version: &str, locked: &HashMap<String, String>) -> String {
-    let locked_commit = extract_github_repo(spec)
+    let locked_commit = extract_github_target(spec)
         .and_then(|_| locked.get(id))
         .map(String::as_str)
         .unwrap_or_default();
@@ -127,12 +128,12 @@ fn read_locked_commits(profile: &Path, specs: &HashMap<String, String>) -> HashM
             let Some(cap) = re.captures(version) else {
                 continue;
             };
-            let Some(expected_repo) = specs.get(id).and_then(|spec| extract_github_repo(spec))
+            let Some(expected_target) = specs.get(id).and_then(|spec| extract_github_target(spec))
             else {
                 continue;
             };
             let resolved_repo = format!("{}/{}", &cap[1], &cap[2]);
-            if !resolved_repo.eq_ignore_ascii_case(&expected_repo) {
+            if !resolved_repo.eq_ignore_ascii_case(&expected_target.repo) {
                 continue;
             }
             out.insert(id.to_string(), cap[3].to_ascii_lowercase());
@@ -145,25 +146,104 @@ fn read_locked_commits(profile: &Path, specs: &HashMap<String, String>) -> HashM
 // spec 解析
 // ---------------------------------------------------------------------------
 
-/// 从依赖 spec 中提取 GitHub `owner/repo`（用于 git 类依赖的 HEAD 对比）。
-/// 支持 `github:owner/repo`、`git+https://github.com/owner/repo.git`、
-/// `git+ssh://git@github.com/owner/repo.git`、`https://codeload.github.com/owner/repo/…`。
-/// 非 git 形态返回 None。
-fn extract_github_repo(spec: &str) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GitReference {
+    Head,
+    Named(String),
+    /// pnpm `semver:` 范围必须枚举 tag 才能解析；无法可靠解析时禁止猜测 HEAD。
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubTarget {
+    repo: String,
+    reference: GitReference,
+}
+
+/// 从依赖 spec 中提取 GitHub 仓库与显式跟踪目标。
+///
+/// `#ref` 保留 tag、带斜杠的 branch 或 SHA；pnpm 的 `path:` 子目录选择器
+/// 不是 Git ref，单独出现时仍跟踪 HEAD，与真实 ref 组合时只保留真实 ref。
+/// codeload archive URL 中的 SHA 表示当前已安装提交，而不是未来更新目标；这类
+/// spec 仍跟踪仓库 HEAD。非 GitHub git 形态返回 None。
+fn extract_github_target(spec: &str) -> Option<GitHubTarget> {
     if let Some(rest) = spec.strip_prefix("github:") {
-        let path = rest.split('#').next().unwrap_or(rest).trim_end_matches('/');
+        let (path, reference) = split_reference(rest);
+        let path = path.trim_end_matches('/');
         let path = path
             .strip_suffix(".git")
             .unwrap_or(path)
             .trim_end_matches('/');
-        return (is_owner_repo(path)).then(|| path.to_string());
+        return is_owner_repo(path).then(|| GitHubTarget {
+            repo: path.to_string(),
+            reference,
+        });
     }
-    let after = spec.split_once("github.com/").map(|(_, r)| r)?;
-    let path = after
-        .split(['#', '?'])
-        .next()
-        .unwrap_or(after)
-        .trim_end_matches('/');
+
+    // 标准 URL 由 URL parser 校验 host，避免把 notgithub.com 或 path 中出现的
+    // github.com 误当成可信 GitHub 源；同时正确处理 SSH 端口与 host 大小写。
+    if let Ok(url) = reqwest::Url::parse(spec) {
+        match url.host_str() {
+            Some(host)
+                if host.eq_ignore_ascii_case("codeload.github.com")
+                    && url.scheme().eq_ignore_ascii_case("https") =>
+            {
+                return codeload_target_from_path(url.path());
+            }
+            Some(host)
+                if host.eq_ignore_ascii_case("github.com")
+                    && is_supported_git_scheme(url.scheme()) =>
+            {
+                let reference = url
+                    .fragment()
+                    .map(parse_reference)
+                    .unwrap_or(GitReference::Head);
+                return github_target_from_path(url.path(), reference);
+            }
+            _ => {}
+        }
+    }
+
+    // pnpm 还接受 URL parser 无法表示的 colon/scp 形态：
+    // `git+ssh://git@github.com:owner/repo.git`、`:22:owner/repo.git` 与
+    // `git@github.com:owner/repo.git`。只允许锚定前缀，不做任意子串匹配。
+    let after = strip_prefix_ascii_case(spec, "git+ssh://git@github.com:")
+        .or_else(|| strip_prefix_ascii_case(spec, "git@github.com:"))?;
+    let after = strip_optional_ssh_port(after);
+    let (path, reference) = split_reference(after);
+    github_target_from_path(path, reference)
+}
+
+/// 仅接受当前更新探测明确支持的 Git transport；host 已单独精确校验，
+/// 未知 scheme 无法进入可信 GitHub 更新源路径。
+fn is_supported_git_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "git" | "http" | "https" | "git+http" | "git+https" | "git+ssh" | "ssh"
+    )
+}
+
+/// codeload spec 是镜像写入的已安装快照，但更新目标仍应跟踪仓库 HEAD；同时
+/// 要求完整的 `owner/repo/tar.gz/<target>` 形态，避免畸形路径进入更新探测。
+fn codeload_target_from_path(path: &str) -> Option<GitHubTarget> {
+    let mut parts = path.trim_matches('/').split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next()? != "tar.gz" {
+        return None;
+    }
+    let archive_target = parts.collect::<Vec<_>>().join("/");
+    let repo = format!("{owner}/{repo}");
+    (is_owner_repo(&repo) && !archive_target.is_empty()).then_some(GitHubTarget {
+        repo,
+        reference: GitReference::Head,
+    })
+}
+
+/// 只接受精确的 `owner/repo`（可带 `.git`）路径；拒绝 GitHub 网页子路径，
+/// 防止把 `/tree/...`、`/commit/...` 等页面误解释为仓库标识。
+fn github_target_from_path(path: &str, reference: GitReference) -> Option<GitHubTarget> {
+    let path = path.split('?').next().unwrap_or(path).trim_matches('/');
     let path = path
         .strip_suffix(".git")
         .unwrap_or(path)
@@ -171,7 +251,107 @@ fn extract_github_repo(spec: &str) -> Option<String> {
     let mut parts = path.split('/');
     let owner = parts.next()?;
     let repo = parts.next()?;
-    (is_owner_repo(&format!("{owner}/{repo}"))).then(|| format!("{owner}/{repo}"))
+    if parts.next().is_some() {
+        return None;
+    }
+    let repo = format!("{owner}/{repo}");
+    is_owner_repo(&repo).then_some(GitHubTarget { repo, reference })
+}
+
+/// SCP 风格 Git 前缀大小写不敏感，但剩余 selector 必须保持原字节；因此只比较
+/// ASCII 前缀而不规范化或重新分配整个 spec。
+fn strip_prefix_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    let candidate = value.get(..prefix.len())?;
+    candidate
+        .eq_ignore_ascii_case(prefix)
+        .then(|| &value[prefix.len()..])
+}
+
+/// `git@github.com:22:owner/repo` 中只有纯数字首段才是端口；保守判断可避免
+/// 将 owner、路径或带冒号的 selector 误删。
+fn strip_optional_ssh_port(value: &str) -> &str {
+    let Some((candidate, rest)) = value.split_once(':') else {
+        return value;
+    };
+    if !candidate.is_empty() && candidate.bytes().all(|byte| byte.is_ascii_digit()) {
+        rest
+    } else {
+        value
+    }
+}
+
+/// 分离 spec fragment，并过滤 pnpm 非 ref 选择器。
+///
+/// pnpm 允许 `#beta&path:/packages/x` 组合分支与子目录，并按 URI 规则对 fragment
+/// 做一次 percent decode。`path:` 不能发给 GitHub commit API；`semver:` 需要枚举
+/// tag 才能正确解析，当前选择无法判定而不是误报 HEAD 更新。
+fn split_reference(value: &str) -> (&str, GitReference) {
+    match value.split_once('#') {
+        Some((path, selectors)) => (path, parse_reference(selectors)),
+        None => (value, GitReference::Head),
+    }
+}
+
+/// 解析 pnpm Git fragment。普通 ref 多次出现时与 pnpm 一样取最后一个；任何
+/// `semver:` 组合均保持 Unsupported，避免把范围错误映射到普通 ref 或 HEAD。
+fn parse_reference(selectors: &str) -> GitReference {
+    let Some(decoded) = percent_decode_once(selectors) else {
+        return GitReference::Unsupported;
+    };
+    if decoded.is_empty() {
+        return GitReference::Head;
+    }
+    let mut named = None;
+    let mut has_semver = false;
+    for selector in decoded.split('&') {
+        if selector.is_empty() {
+            return GitReference::Unsupported;
+        }
+        if selector.starts_with("path:") {
+            continue;
+        }
+        if selector.starts_with("semver:") {
+            has_semver = true;
+            continue;
+        }
+        named = Some(selector.to_string());
+    }
+    match named {
+        _ if has_semver => GitReference::Unsupported,
+        Some(reference) => GitReference::Named(reference),
+        None => GitReference::Head,
+    }
+}
+
+/// 与 `decodeURIComponent` 一致地只解码一次 fragment；畸形转义或非法 UTF-8
+/// 直接返回 None，让更新判定 fail closed。
+fn percent_decode_once(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let high = *bytes.get(index + 1)?;
+        let low = *bytes.get(index + 2)?;
+        decoded.push((hex_value(high)? << 4) | hex_value(low)?);
+        index += 3;
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// percent decode 只接受十六进制字节；非法 nibble 返回 None，使 selector
+/// 解析 fail closed 而不是生成被截断的 ref。
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// `owner/repo` 形态校验（owner/repo 各仅允许字母数字 `._-`，避免误吞 URL 首位）。
@@ -221,10 +401,38 @@ async fn fetch_json(client: &reqwest::Client, url: &str) -> Option<Value> {
     res.json::<Value>().await.ok()
 }
 
-/// GitHub 仓库 HEAD 提交 SHA（API 限流/429/网络错误均返回 None，视为无法判定）。
-async fn fetch_head_sha(client: &reqwest::Client, repo: &str) -> Option<String> {
-    let url = format!("https://api.github.com/repos/{repo}/commits/HEAD");
-    let v = fetch_json(client, &url).await?;
+/// 构造 GitHub commit API URL；ref 作为单个 path segment 编码，保留带斜杠分支名语义。
+fn github_commit_url(target: &GitHubTarget) -> Option<reqwest::Url> {
+    let (owner, repo) = target.repo.split_once('/')?;
+    let reference = match &target.reference {
+        GitReference::Head => "HEAD",
+        GitReference::Named(reference) => reference,
+        GitReference::Unsupported => return None,
+    };
+    let mut url = reqwest::Url::parse("https://api.github.com").ok()?;
+    {
+        let mut segments = url.path_segments_mut().ok()?;
+        segments.extend(["repos", owner, repo, "commits"]);
+        segments.push(reference);
+    }
+    Some(url)
+}
+
+/// 完整 40 位 commit SHA 是不变目标，无需网络解析。
+fn immutable_commit(reference: &str) -> Option<String> {
+    (reference.len() == 40 && reference.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| reference.to_ascii_lowercase())
+}
+
+/// GitHub 跟踪目标的提交 SHA（API 限流/429/网络错误均返回 None）。
+async fn fetch_target_sha(client: &reqwest::Client, target: &GitHubTarget) -> Option<String> {
+    if let GitReference::Named(reference) = &target.reference {
+        if let Some(commit) = immutable_commit(reference) {
+            return Some(commit);
+        }
+    }
+    let url = github_commit_url(target)?;
+    let v = fetch_json(client, url.as_str()).await?;
     v.get("sha")?.as_str().map(String::from)
 }
 
@@ -253,9 +461,9 @@ async fn compute_update(
         };
     }
 
-    if let Some(repo) = extract_github_repo(spec) {
-        let current = locked.get(id).cloned();
-        let latest = fetch_head_sha(client, &repo).await;
+    if let Some(target) = extract_github_target(spec) {
+        let current = locked.get(id).map(|commit| commit.to_ascii_lowercase());
+        let latest = fetch_target_sha(client, &target).await;
         return UpdateInfo {
             update_available: current.is_some() && latest.is_some() && current != latest,
             latest,
@@ -381,6 +589,22 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
 mod tests {
     use super::*;
 
+    fn target(repo: &str, reference: Option<&str>) -> Option<GitHubTarget> {
+        Some(GitHubTarget {
+            repo: repo.to_string(),
+            reference: reference
+                .map(|reference| GitReference::Named(reference.to_string()))
+                .unwrap_or(GitReference::Head),
+        })
+    }
+
+    fn unsupported_target(repo: &str) -> Option<GitHubTarget> {
+        Some(GitHubTarget {
+            repo: repo.to_string(),
+            reference: GitReference::Unsupported,
+        })
+    }
+
     #[test]
     fn upgrade_requires_strictly_newer() {
         assert!(is_upgrade("1.0.0", "1.0.1"));
@@ -402,39 +626,201 @@ mod tests {
     }
 
     #[test]
-    fn extract_repo_from_github_shorthand() {
+    fn extract_target_from_github_shorthand() {
         assert_eq!(
-            extract_github_repo("github:omdsh-dev/DSH-better-sidebar"),
-            Some("omdsh-dev/DSH-better-sidebar".into())
+            extract_github_target("github:omdsh-dev/DSH-better-sidebar"),
+            target("omdsh-dev/DSH-better-sidebar", None)
         );
         assert_eq!(
-            extract_github_repo("github:baihejiangnan/dsh-session-context-menu#next"),
-            Some("baihejiangnan/dsh-session-context-menu".into())
+            extract_github_target("github:baihejiangnan/dsh-session-context-menu#release/next"),
+            target(
+                "baihejiangnan/dsh-session-context-menu",
+                Some("release/next")
+            )
+        );
+        assert_eq!(
+            extract_github_target("github:Small-tailqwq/dsh-deep-whale#path:/maid-atelier"),
+            target("Small-tailqwq/dsh-deep-whale", None)
+        );
+        assert_eq!(
+            extract_github_target(
+                "github:RexSkz/test-git-subdir-fetch#beta&path:/packages/simple-react-app"
+            ),
+            target("RexSkz/test-git-subdir-fetch", Some("beta"))
+        );
+        assert_eq!(
+            extract_github_target(
+                "github:RexSkz/test-git-subdir-fetch#semver:^2.0.0&path:/packages/app"
+            ),
+            unsupported_target("RexSkz/test-git-subdir-fetch")
         );
     }
 
     #[test]
-    fn extract_repo_from_git_https_and_codeload() {
+    fn extract_target_from_git_urls_and_codeload() {
         assert_eq!(
-            extract_github_repo("git+https://github.com/omdsh-dev/DSH-better-sidebar.git"),
-            Some("omdsh-dev/DSH-better-sidebar".into())
+            extract_github_target(
+                "git+https://github.com/omdsh-dev/DSH-better-sidebar.git#v0.16.1"
+            ),
+            target("omdsh-dev/DSH-better-sidebar", Some("v0.16.1"))
         );
         assert_eq!(
-            extract_github_repo("git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git"),
-            Some("omdsh-dev/DSH-better-sidebar".into())
+            extract_github_target("git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#next"),
+            target("omdsh-dev/DSH-better-sidebar", Some("next"))
         );
         assert_eq!(
-            extract_github_repo("https://codeload.github.com/omdsh-dev/DSH-better-sidebar/tar.gz/7dbd9b75e2fd65758d4e55f750319399b91255a2"),
-            Some("omdsh-dev/DSH-better-sidebar".into())
+            extract_github_target("git+ssh://git@github.com:owner/repo.git#v1.2.3"),
+            target("owner/repo", Some("v1.2.3"))
+        );
+        assert_eq!(
+            extract_github_target("git+ssh://git@github.com:22/owner/repo.git#next"),
+            target("owner/repo", Some("next"))
+        );
+        assert_eq!(
+            extract_github_target("git+ssh://git@github.com:22:owner/repo.git#next"),
+            target("owner/repo", Some("next"))
+        );
+        assert_eq!(
+            extract_github_target("git@github.com:owner/repo.git#release/next"),
+            target("owner/repo", Some("release/next"))
+        );
+        assert_eq!(
+            extract_github_target("git+ssh://git@GITHUB.COM/Owner/Repo.git#next"),
+            target("Owner/Repo", Some("next"))
+        );
+        assert_eq!(
+            extract_github_target("https://codeload.github.com/omdsh-dev/DSH-better-sidebar/tar.gz/7dbd9b75e2fd65758d4e55f750319399b91255a2"),
+            target("omdsh-dev/DSH-better-sidebar", None)
         );
     }
 
     #[test]
-    fn extract_repo_for_plain_npm_is_none() {
-        assert_eq!(extract_github_repo("dshmarket"), None);
-        assert_eq!(extract_github_repo("link:../plugin"), None);
-        assert_eq!(extract_github_repo("file:./local"), None);
-        assert_eq!(extract_github_repo("npm:dshmarket@^1.0"), None);
+    fn encoded_fragment_is_decoded_once_before_selector_parsing() {
+        assert_eq!(
+            extract_github_target("github:owner/repo#release%2Fnext"),
+            target("owner/repo", Some("release/next"))
+        );
+        assert_eq!(
+            extract_github_target("github:owner/repo#path%3A%2Fpackages%2Fplugin"),
+            target("owner/repo", None)
+        );
+        assert_eq!(
+            extract_github_target("github:owner/repo#beta%26path%3A%2Fpackages%2Fplugin"),
+            target("owner/repo", Some("beta"))
+        );
+        assert_eq!(
+            extract_github_target("github:owner/repo#release%252Fnext"),
+            target("owner/repo", Some("release%2Fnext"))
+        );
+        assert_eq!(
+            extract_github_target("git+https://github.com/owner/repo.git#release%2Fnext"),
+            target("owner/repo", Some("release/next"))
+        );
+        assert_eq!(
+            extract_github_target("git+https://github.com/owner/repo.git#release%252Fnext"),
+            target("owner/repo", Some("release%2Fnext"))
+        );
+    }
+
+    #[test]
+    fn unsupported_selector_fails_closed_without_a_commit_url() {
+        let semver = extract_github_target("github:owner/repo#semver:%5E2.0.0").unwrap();
+        let mixed = extract_github_target("github:owner/repo#next&semver:%5E2.0.0").unwrap();
+        let malformed = extract_github_target("github:owner/repo#release%ZZnext").unwrap();
+        let empty_selector = extract_github_target("github:owner/repo#next&").unwrap();
+        assert_eq!(semver.reference, GitReference::Unsupported);
+        assert_eq!(mixed.reference, GitReference::Unsupported);
+        assert_eq!(malformed.reference, GitReference::Unsupported);
+        assert_eq!(empty_selector.reference, GitReference::Unsupported);
+        assert_eq!(github_commit_url(&semver), None);
+        assert_eq!(github_commit_url(&mixed), None);
+        assert_eq!(github_commit_url(&malformed), None);
+        assert_eq!(github_commit_url(&empty_selector), None);
+    }
+
+    #[test]
+    fn last_plain_reference_selector_wins() {
+        assert_eq!(
+            extract_github_target("github:owner/repo#old&path:/plugin&new"),
+            target("owner/repo", Some("new"))
+        );
+    }
+
+    #[test]
+    fn codeload_archive_commit_is_current_state_not_update_target() {
+        assert_eq!(
+            extract_github_target("https://codeload.github.com/owner/repo/tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            target("owner/repo", None)
+        );
+        assert_eq!(
+            github_commit_url(&target("owner/repo", None).unwrap()).map(|url| url.to_string()),
+            Some("https://api.github.com/repos/owner/repo/commits/HEAD".into())
+        );
+    }
+
+    #[test]
+    fn extract_target_for_plain_npm_or_incomplete_codeload_is_none() {
+        assert_eq!(extract_github_target("dshmarket"), None);
+        assert_eq!(extract_github_target("link:../plugin"), None);
+        assert_eq!(extract_github_target("file:./local"), None);
+        assert_eq!(extract_github_target("npm:dshmarket@^1.0"), None);
+        assert_eq!(
+            extract_github_target("https://codeload.github.com/owner/repo/tar.gz/"),
+            None
+        );
+        assert_eq!(
+            extract_github_target("https://notgithub.com/github.com/owner/repo.git#next"),
+            None
+        );
+        assert_eq!(
+            extract_github_target("https://example.com/path/github.com/owner/repo.git#next"),
+            None
+        );
+        assert_eq!(
+            extract_github_target(
+                "https://evil.example/codeload.github.com/owner/repo/tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_github_target(
+                "https://codeload.github.com.evil.example/owner/repo/tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_github_target(
+                "ftp://codeload.github.com/owner/repo/tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_github_target("ftp://github.com/owner/repo.git#next"),
+            None
+        );
+    }
+
+    #[test]
+    fn commit_url_encodes_branch_slash_as_one_reference() {
+        let target = GitHubTarget {
+            repo: "owner/repo".into(),
+            reference: GitReference::Named("release/next".into()),
+        };
+        assert_eq!(
+            github_commit_url(&target).map(|url| url.to_string()),
+            Some("https://api.github.com/repos/owner/repo/commits/release%2Fnext".into())
+        );
+    }
+
+    #[test]
+    fn exact_commit_is_immutable_without_network_resolution() {
+        let sha = "7DBD9B75E2FD65758D4E55F750319399B91255A2";
+        assert_eq!(
+            immutable_commit(sha),
+            Some("7dbd9b75e2fd65758d4e55f750319399b91255a2".into())
+        );
+        assert_eq!(immutable_commit("7dbd9b7"), None);
+        assert_eq!(immutable_commit("not-a-commit"), None);
     }
 
     #[test]

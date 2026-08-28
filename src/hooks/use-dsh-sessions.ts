@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -24,6 +25,9 @@ export interface UseDshSessionsResult {
   openDir: (id: string) => Promise<void>
   busy: boolean
   busyId: string | null
+  deletePending: boolean
+  openPending: boolean
+  openId: string | null
 }
 
 /**
@@ -33,6 +37,7 @@ export interface UseDshSessionsResult {
  */
 export function useDshSessions(): UseDshSessionsResult {
   const queryClient = useQueryClient()
+  const [openId, setOpenId] = useState<string | null>(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dsh-sessions'],
@@ -49,7 +54,14 @@ export function useDshSessions(): UseDshSessionsResult {
   })
 
   const open = useMutation({
-    mutationFn: (id: string) => invoke<void>('open_session_dir', { id }),
+    mutationFn: async (id: string) => {
+      setOpenId(id)
+      try {
+        return await invoke<void>('open_session_dir', { id })
+      } finally {
+        setOpenId(null)
+      }
+    },
   })
 
   return {
@@ -60,6 +72,9 @@ export function useDshSessions(): UseDshSessionsResult {
     deleteSessions: (ids: string[]) => del.mutateAsync(ids),
     openDir: (id: string) => open.mutateAsync(id),
     busy: del.isPending || open.isPending,
-    busyId: null,
+    busyId: openId,
+    deletePending: del.isPending,
+    openPending: open.isPending,
+    openId,
   }
 }

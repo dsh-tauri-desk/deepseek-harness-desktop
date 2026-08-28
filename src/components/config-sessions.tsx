@@ -1,5 +1,5 @@
 import { ArrowRotateRight, FolderOpen, TrashBin } from '@gravity-ui/icons'
-import { Button, Checkbox, Chip, Input, Spinner } from '@heroui/react'
+import { Button, Checkbox, Chip, Input, Label, Spinner } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -9,6 +9,7 @@ import type { SessionFileInfo } from '@/hooks/use-dsh-sessions'
 import { toast } from '@/utils/toast'
 import { Ellipsis } from './ellipsis'
 import { Empty } from './empty'
+import { Item } from './item'
 import { Modal } from './modal'
 import { PanelHeader } from './panel-header'
 import { PanelState } from './panel-state'
@@ -25,15 +26,112 @@ function formatSize(bytes: number) {
 
 function formatTime(ts: number) {
   if (!ts) return '-'
-  // 兼容 1787... 未来时间与正常时间戳
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return '-'
   return d.toLocaleString()
 }
 
+function statusChipColor(status: SessionFileInfo['archivedStatus']) {
+  if (status === 'active') return 'success' as const
+  if (status === 'archived') return 'warning' as const
+  return 'default' as const
+}
+
+interface SessionRowProps {
+  session: SessionFileInfo
+  selected: boolean
+  onToggle: () => void
+  onDelete: () => void
+  onOpenDir: () => void
+  deletePending: boolean
+  isOpening: boolean
+}
+
+function SessionRow({ session: s, selected, onToggle, onDelete, onOpenDir, deletePending, isOpening }: SessionRowProps) {
+  const { t } = useTranslation()
+  return (
+    <Item
+      className={s.isEmpty ? 'border-warning/30 bg-warning/5' : undefined}
+      left={(
+        <div className="min-w-0 flex flex-col gap-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Checkbox
+              isSelected={selected}
+              onChange={onToggle}
+              isDisabled={deletePending}
+              aria-label={s.id}
+              className="shrink-0"
+            >
+              <Checkbox.Content>
+                <Checkbox.Control>
+                  <Checkbox.Indicator />
+                </Checkbox.Control>
+              </Checkbox.Content>
+            </Checkbox>
+            <Label className="min-w-0 truncate text-sm font-medium text-ink">
+              {s.title || t('sessions.untitled')}
+            </Label>
+            <Chip size="sm" variant="soft" color={statusChipColor(s.archivedStatus)} className="shrink-0 rounded-md font-medium">
+              {t(`sessions.status.${s.archivedStatus}`)}
+            </Chip>
+            <If cond={s.isEmpty}>
+              <Chip size="sm" variant="soft" color="warning" className="shrink-0 rounded-md font-medium">
+                {t('sessions.empty')}
+              </Chip>
+            </If>
+          </div>
+          <div className="ml-7 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+            <span>{formatSize(s.size)}</span>
+            <span>
+              turns
+              {' '}
+              {s.turns}
+            </span>
+            <span>
+              steps
+              {' '}
+              {s.steps}
+            </span>
+            <span>{formatTime(s.createdAt)}</span>
+          </div>
+          <Ellipsis className="ml-7 text-xs text-muted">
+            {s.cwd || s.id}
+          </Ellipsis>
+        </div>
+      )}
+      right={(
+        <>
+          <Button
+            size="sm"
+            variant="tertiary"
+            className="h-6 w-6 shrink-0 rounded-md p-0"
+            onPress={onOpenDir}
+            isDisabled={isOpening || deletePending}
+            aria-label={t('sessions.open_dir')}
+          >
+            <If cond={isOpening} else={<FolderOpen className="size-3.5" />}>
+              <Spinner size="sm" color="current" />
+            </If>
+          </Button>
+          <Button
+            size="sm"
+            variant="tertiary"
+            className="h-6 w-6 shrink-0 rounded-md p-0"
+            onPress={onDelete}
+            isDisabled={deletePending || isOpening}
+            aria-label={t('sessions.delete.one')}
+          >
+            <TrashBin className="size-3.5" />
+          </Button>
+        </>
+      )}
+    />
+  )
+}
+
 export function ConfigSessions() {
   const { t } = useTranslation()
-  const { sessions, loading, error, refresh, deleteSessions, openDir, busy } = useDshSessions()
+  const { sessions, loading, error, refresh, deleteSessions, openDir, deletePending, openId } = useDshSessions()
 
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
   const [filter, setFilter] = useState<FilterType>('all')
@@ -47,7 +145,8 @@ export function ConfigSessions() {
     if (search) {
       const q = search.toLowerCase()
       const title = (s.title ?? '').toLowerCase()
-      if (!title.includes(q) && !s.id.toLowerCase().includes(q)) return false
+      const cwd = (s.cwd ?? '').toLowerCase()
+      if (!title.includes(q) && !s.id.toLowerCase().includes(q) && !cwd.includes(q)) return false
     }
     return true
   })
@@ -67,8 +166,10 @@ export function ConfigSessions() {
     orphan: sessions.filter(s => s.archivedStatus === 'orphan').length,
   }
 
+  const areAllFilteredSelected = filtered.length > 0 && filtered.every(s => selected.has(s.id))
+
   function toggleSelect(id: string) {
-    setSelected(prev => {
+    setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -77,10 +178,18 @@ export function ConfigSessions() {
   }
 
   function toggleSelectAll() {
-    if (selected.size === filtered.length && filtered.length > 0) {
-      setSelected(new Set())
+    if (areAllFilteredSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (const s of filtered) next.delete(s.id)
+        return next
+      })
     } else {
-      setSelected(new Set(filtered.map(s => s.id)))
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (const s of filtered) next.add(s.id)
+        return next
+      })
     }
   }
 
@@ -100,7 +209,11 @@ export function ConfigSessions() {
     if (!confirmed) return
     try {
       await deleteSessions(ids)
-      setSelected(new Set())
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (const id of ids) next.delete(id)
+        return next
+      })
       toast(t('sessions.delete.success', { count: ids.length }))
     } catch (e) {
       toast(String(e), { timeout: 3000 })
@@ -111,7 +224,7 @@ export function ConfigSessions() {
     try {
       await openDir(id)
     } catch (e) {
-      toast(t('sessions.open_dir_failed') + ': ' + String(e), { timeout: 3000 })
+      toast(`${t('sessions.open_dir_failed')}: ${String(e)}`, { timeout: 3000 })
     }
   }
 
@@ -126,14 +239,22 @@ export function ConfigSessions() {
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <Input
+            variant="secondary"
+            className="h-8 flex-1 rounded-md"
             placeholder={t('sessions.search.placeholder')}
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="flex-1"
           />
-          <Button variant="tertiary" onPress={() => refresh()} isDisabled={loading} aria-label={t('sessions.refresh')}>
-            <If cond={loading} else={<><ArrowRotateRight className="size-4" />{t('sessions.refresh')}</>}>
-              <Spinner size="sm" />
+          <Button
+            size="sm"
+            variant="tertiary"
+            className="h-8 rounded-md"
+            onPress={() => refresh()}
+            isDisabled={loading}
+            aria-label={t('sessions.refresh')}
+          >
+            <If cond={loading} else={<><ArrowRotateRight className="size-3.5" />{t('sessions.refresh')}</>}>
+              <Spinner size="sm" color="current" />
             </If>
           </Button>
         </div>
@@ -142,10 +263,11 @@ export function ConfigSessions() {
           {(['all', 'active', 'archived', 'orphan'] as FilterType[]).map(k => (
             <Chip
               key={k}
+              size="sm"
               variant={filter === k ? 'primary' : 'soft'}
               color={filter === k ? 'accent' : 'default'}
+              className="shrink-0 cursor-pointer rounded-md font-medium"
               onClick={() => setFilter(k)}
-              className="cursor-pointer"
             >
               {t(`sessions.filter.${k}`)}
               {' '}
@@ -154,15 +276,15 @@ export function ConfigSessions() {
           ))}
           <div className="ml-auto flex items-center gap-1">
             <span className="text-xs text-muted">{t('sessions.sort.label')}</span>
-            <Button size="sm" variant={sortKey === 'createdAt' ? 'primary' : 'tertiary'} onPress={() => { setSortKey('createdAt'); setSortAsc(v => sortKey === 'createdAt' ? !v : false) }}>
+            <Button size="sm" variant={sortKey === 'createdAt' ? 'primary' : 'tertiary'} className="h-7 rounded-md text-xs" onPress={() => { setSortKey('createdAt'); setSortAsc(v => sortKey === 'createdAt' ? !v : false) }}>
               {t('sessions.sort.created_at')}
               {sortKey === 'createdAt' ? (sortAsc ? ' ↑' : ' ↓') : ''}
             </Button>
-            <Button size="sm" variant={sortKey === 'size' ? 'primary' : 'tertiary'} onPress={() => { setSortKey('size'); setSortAsc(v => sortKey === 'size' ? !v : false) }}>
+            <Button size="sm" variant={sortKey === 'size' ? 'primary' : 'tertiary'} className="h-7 rounded-md text-xs" onPress={() => { setSortKey('size'); setSortAsc(v => sortKey === 'size' ? !v : false) }}>
               {t('sessions.sort.size')}
               {sortKey === 'size' ? (sortAsc ? ' ↑' : ' ↓') : ''}
             </Button>
-            <Button size="sm" variant={sortKey === 'turns' ? 'primary' : 'tertiary'} onPress={() => { setSortKey('turns'); setSortAsc(v => sortKey === 'turns' ? !v : false) }}>
+            <Button size="sm" variant={sortKey === 'turns' ? 'primary' : 'tertiary'} className="h-7 rounded-md text-xs" onPress={() => { setSortKey('turns'); setSortAsc(v => sortKey === 'turns' ? !v : false) }}>
               {t('sessions.sort.turns')}
               {sortKey === 'turns' ? (sortAsc ? ' ↑' : ' ↓') : ''}
             </Button>
@@ -171,12 +293,20 @@ export function ConfigSessions() {
 
         <If cond={selected.size > 0}>
           <div className="flex items-center gap-2 rounded-md border border-line bg-panel2 p-2">
-            <span className="text-xs">{t('sessions.selected', { count: selected.size })}</span>
-            <Button size="sm" variant="danger" onPress={() => handleDelete(Array.from(selected))} isDisabled={busy}>
-              <TrashBin className="mr-1 size-4" />
+            <span className="text-xs text-muted">{t('sessions.selected', { count: selected.size })}</span>
+            <Button
+              size="sm"
+              variant="danger"
+              className="h-7 rounded-md"
+              onPress={() => handleDelete(Array.from(selected))}
+              isDisabled={deletePending}
+            >
+              <If cond={deletePending} else={<TrashBin className="mr-1 size-3.5" />}>
+                <Spinner size="sm" color="current" />
+              </If>
               {t('sessions.delete.batch')}
             </Button>
-            <Button size="sm" variant="tertiary" onPress={() => setSelected(new Set())}>
+            <Button size="sm" variant="tertiary" className="h-7 rounded-md" onPress={() => setSelected(new Set())} isDisabled={deletePending}>
               {t('buttons.cancel')}
             </Button>
           </div>
@@ -184,58 +314,48 @@ export function ConfigSessions() {
       </div>
 
       <PanelState loading={loading} error={error}>
-        <If cond={filtered.length === 0} else={
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 px-1">
-              <Checkbox isSelected={selected.size === filtered.length && filtered.length > 0} onChange={toggleSelectAll} />
-              <span className="text-xs text-muted">{t('sessions.select_all')}</span>
-              <span className="ml-auto text-xs text-muted">{t('sessions.total', { count: filtered.length })}</span>
-            </div>
-            {filtered.map((s: SessionFileInfo) => (
-              <div
-                key={s.id}
-                className={`rounded-md border p-3 ${s.isEmpty ? 'border-warning/30 bg-warning/5' : 'border-line bg-panel2'}`}
-              >
-                <div className="flex items-start gap-2">
-                  <Checkbox isSelected={selected.has(s.id)} onChange={() => toggleSelect(s.id)} className="mt-1" />
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Ellipsis className="flex-1 text-sm font-medium">
-                        {s.title || t('sessions.untitled')}
-                      </Ellipsis>
-                      <Chip
-                        size="sm"
-                        variant="soft"
-                        color={s.archivedStatus === 'active' ? 'success' : s.archivedStatus === 'archived' ? 'warning' : 'default'}
-                      >
-                        {t(`sessions.status.${s.archivedStatus}`)}
-                      </Chip>
-                      <If cond={s.isEmpty}>
-                        <Chip size="sm" variant="soft" color="warning">{t('sessions.empty')}</Chip>
-                      </If>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-                      <span>{formatSize(s.size)}</span>
-                      <span>turns {s.turns}</span>
-                      <span>steps {s.steps}</span>
-                      <span>{formatTime(s.createdAt)}</span>
-                    </div>
-                    <Ellipsis className="text-xs text-muted">{s.cwd || s.id}</Ellipsis>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button size="sm" variant="tertiary" onPress={() => handleOpenDir(s.id)} aria-label={t('sessions.open_dir')}>
-                      <FolderOpen className="size-4" />
-                    </Button>
-                    <Button size="sm" variant="tertiary" onPress={() => handleDelete([s.id])} isDisabled={busy} aria-label={t('sessions.delete.one')}>
-                      <TrashBin className="size-4" />
-                    </Button>
-                  </div>
-                </div>
+        <If
+          cond={filtered.length === 0}
+          else={(
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-2 px-1">
+                <Checkbox
+                  isSelected={areAllFilteredSelected}
+                  isIndeterminate={!areAllFilteredSelected && filtered.some(s => selected.has(s.id))}
+                  onChange={toggleSelectAll}
+                  isDisabled={deletePending}
+                  aria-label={t('sessions.select_all')}
+                  className="shrink-0"
+                >
+                  <Checkbox.Content>
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                  </Checkbox.Content>
+                </Checkbox>
+                <span className="text-xs text-muted">{t('sessions.select_all')}</span>
+                <span className="ml-auto text-xs text-muted">{t('sessions.total', { count: filtered.length })}</span>
               </div>
-            ))}
-          </div>
-        }>
-          <Empty>{t('sessions.empty_hint')}</Empty>
+              <div className="flex flex-col gap-4">
+                {filtered.map(s => (
+                  <SessionRow
+                    key={s.id}
+                    session={s}
+                    selected={selected.has(s.id)}
+                    onToggle={() => toggleSelect(s.id)}
+                    onDelete={() => handleDelete([s.id])}
+                    onOpenDir={() => handleOpenDir(s.id)}
+                    deletePending={deletePending}
+                    isOpening={openId === s.id}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        >
+          <Empty>
+            {sessions.length === 0 ? t('sessions.empty_hint') : t('sessions.search.empty')}
+          </Empty>
         </If>
       </PanelState>
     </div>

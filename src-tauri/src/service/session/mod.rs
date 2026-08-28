@@ -126,6 +126,11 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
+/// 判定是否为 Windows 副本损坏名（含 `副本` / ` - ` / 空格/括号）
+fn is_corrupt_session_name(id: &str) -> bool {
+    id.contains("副本") || id.contains(" - ") || (id.contains('(') && id.contains(')')) || id.contains(' ') || id.trim() != id
+}
+
 /// 解析 workspace.json 得到两集合及解析失败标记
 fn load_workspace_sets<R: tauri::Runtime>(
     app_handle: &AppHandle<R>,
@@ -134,7 +139,6 @@ fn load_workspace_sets<R: tauri::Runtime>(
     let data = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            // 文件缺失视为非失败（全新环境），仅读取错误视为失败需警告
             if e.kind() == std::io::ErrorKind::NotFound {
                 return (HashSet::new(), HashSet::new(), false);
             }
@@ -540,6 +544,9 @@ pub fn restore<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) -
     }
     for id in &ids {
         crate::service::fs_guard::validate_session_id(id)?;
+        if is_corrupt_session_name(id) {
+            return Err(format!("INVALID_ID: corrupt copy id '{id}' (contains '副本'/space/brackets) — header id mismatch will crash Harness, please delete it via Session Manager instead of restore"));
+        }
     }
     let workspace_path = storages_dir(app_handle).join("workspace.json");
     if !workspace_path.exists() {
@@ -558,7 +565,6 @@ pub fn restore<R: tauri::Runtime>(app_handle: &AppHandle<R>, ids: Vec<String>) -
             expanded.insert(format!("session-{}", id));
         }
     }
-    // 1) 从 archived 移除
     let mut removed_archived = 0usize;
     if let Some(global) = value.get_mut("global") {
         if let Some(arr) = global.get_mut("archivedSessionIds").and_then(|v| v.as_array_mut()) {
@@ -664,6 +670,144 @@ pub fn reveal_path<R: tauri::Runtime>(app_handle: &AppHandle<R>, id: String) -> 
     let canonical = crate::service::fs_guard::ensure_within(&target, &root)
         .map_err(|e| format!("SESSION_REVEAL_FAILED: {e}"))?;
     Ok(canonical)
+}
+
+/// 启动前隔离损坏的会话副本（Windows 资源管理器 ` - 副本` / 含空格/括号的非法 id）
+///
+/// 这类文件夹由用户手工复制产生，`session.jsonl.zstd` 内 header.id 仍为原值，
+/// 上游 `dsh` 的 `assertStoredIdentity` 会抛 `corrupt session log` 并导致整个
+/// Harness 无法启动（见 `12:22:23` 日志）。桌面端 `validate_session_id` 已放行
+/// 以便可删，但 Harness 仍严格校验，故需在 `launch` 前主动隔离。
+pub fn quarantine_corrupt_sessions<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<String>, String> {
+    let root = sessions_root(app_handle);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut quarantined = Vec::new();
+    let trash_root = crate::config::get_dsh_data_path(app_handle)
+        .join(".trash")
+        .join("sessions");
+    let workspaces = fs::read_dir(&root).map_err(|e| format!("SESSION_QUARANTINE_FAILED: read sessions root failed: {e}"))?;
+    for ws in workspaces.flatten() {
+        let ws_path = ws.path();
+        if !ws_path.is_dir() {
+            continue;
+        }
+        let ws_name = ws_path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        let sessions = match fs::read_dir(&ws_path) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for sess in sessions.flatten() {
+            let sess_path = sess.path();
+            if !sess_path.is_dir() {
+                continue;
+            }
+            let id = match sess_path.file_name().and_then(|n| n.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            if !is_corrupt_session_name(&id) {
+                continue;
+            }
+            if !sess_path.join("session.jsonl.zstd").exists() {
+                continue;
+            }
+            // 目标：$DSH_HOME/.trash/sessions/<workspace>/<id>__<ts>
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let trash_ws = trash_root.join(&ws_name);
+            if let Err(e) = fs::create_dir_all(&trash_ws) {
+                log::warn!("quarantine create trash ws failed {}: {e}", trash_ws.display());
+                continue;
+            }
+            let dest = trash_ws.join(format!("{id}__{ts}"));
+            // ensure_within 校验源仍在 root 内
+            let canonical_src = match crate::service::fs_guard::ensure_within(&sess_path, &root) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("quarantine ensure_within failed for {}: {e}", sess_path.display());
+                    continue;
+                }
+            };
+            match fs::rename(&canonical_src, &dest) {
+                Ok(_) => {
+                    log::warn!("quarantined corrupt session {} -> {}", sess_path.display(), dest.display());
+                    quarantined.push(id);
+                }
+                Err(e) => {
+                    log::warn!("quarantine rename failed {} -> {}: {e}", sess_path.display(), dest.display());
+                }
+            }
+        }
+    }
+    if !quarantined.is_empty() {
+        // 清理索引中对副本的引用（否则 Harness 仍会尝试按 id 加载已隔离的目录）
+        let workspace_path = storages_dir(app_handle).join("workspace.json");
+        if workspace_path.exists() {
+            if let Ok(data) = fs::read_to_string(&workspace_path) {
+                if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&data) {
+                    let mut expanded = HashSet::new();
+                    for id in &quarantined {
+                        expanded.insert(id.clone());
+                        if id.starts_with("session-") {
+                            expanded.insert(id["session-".len()..].to_string());
+                        } else {
+                            expanded.insert(format!("session-{}", id));
+                        }
+                    }
+                    let mut dirty = false;
+                    if let Some(global) = value.get_mut("global") {
+                        if let Some(arr) = global.get_mut("archivedSessionIds").and_then(|v| v.as_array_mut()) {
+                            let before = arr.len();
+                            arr.retain(|v| v.as_str().map(|s| !expanded.contains(s)).unwrap_or(true));
+                            if arr.len() != before { dirty = true; }
+                        }
+                    }
+                    if let Some(tables) = value.get_mut("tables") {
+                        if let Some(workspaces) = tables.get_mut("workspaces").and_then(|v| v.as_object_mut()) {
+                            for ws in workspaces.values_mut() {
+                                if let Some(arr) = ws.get_mut("sessionIds").and_then(|v| v.as_array_mut()) {
+                                    let before = arr.len();
+                                    arr.retain(|v| v.as_str().map(|s| !expanded.contains(s)).unwrap_or(true));
+                                    if arr.len() != before { dirty = true; }
+                                }
+                            }
+                        }
+                    }
+                    if dirty {
+                        let _ = atomic_write_json(&workspace_path, &value);
+                        log::warn!("quarantine cleaned {} ids from workspace.json", quarantined.len());
+                    }
+                }
+            }
+        }
+        let projcache_path = storages_dir(app_handle).join("session_projcache.json");
+        if projcache_path.exists() {
+            if let Ok(data) = fs::read_to_string(&projcache_path) {
+                if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&data) {
+                    if let Some(tables) = value.get_mut("tables") {
+                        if let Some(sessions) = tables.get_mut("sessions").and_then(|v| v.as_object_mut()) {
+                            let mut removed = 0;
+                            for id in &quarantined {
+                                if sessions.remove(id).is_some() { removed += 1; }
+                                if id.starts_with("session-") {
+                                    if sessions.remove(&id["session-".len()..]).is_some() { removed += 1; }
+                                } else if sessions.remove(&format!("session-{}", id)).is_some() { removed += 1; }
+                            }
+                            if removed > 0 {
+                                let _ = atomic_write_json(&projcache_path, &value);
+                                log::warn!("quarantine cleaned {} entries from projcache", removed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(quarantined)
 }
 
 #[cfg(test)]

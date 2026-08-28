@@ -722,6 +722,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Err("HARNESS_NOT_FOUND: Harness not installed".to_string());
     }
 
+    // 启动前隔离 Windows 副本损坏会话（` - 副本`），否则 dsh 会 `corrupt session log` 直接退出（12:22:23 日志）
+    match crate::service::session::quarantine_corrupt_sessions(&app_handle) {
+        Ok(list) if !list.is_empty() => log::warn!("quarantined {} corrupt session copies before launch: {:?}", list.len(), list),
+        Ok(_) => {}
+        Err(e) => log::warn!("quarantine check failed (non-fatal): {e}"),
+    }
+
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
     if has_owned_process() {
         log::info!("Owned Harness process is already running, skipping launch");

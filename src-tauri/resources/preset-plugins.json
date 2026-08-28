@@ -45,4 +45,12 @@
     "recommended": false,
     "defaultChecked": true
   }
+,{
+    "id": "dsh-whale-musume",
+    "spec": "github:Sutera-Diffusus/dsh-whale-musume",
+    "name": "Whale Musume",
+    "description": "A whale-girl desktop pet for the DSH web UI: pat-to-raise growth, work-state poses, 494 dialogue lines, 30 achievements, drag physics, theme sync and a built-in settings panel. Local-first, zero telemetry.",
+    "repoUrl": "https://github.com/Sutera-Diffusus/dsh-whale-musume",
+    "recommended": false
+  }
 ]

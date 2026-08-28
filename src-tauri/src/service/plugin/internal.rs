@@ -11,6 +11,7 @@
 //! 要求——用户怎么卸载、何时卸载都不影响下次启动自动恢复，无需任何用户操作。
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 #[cfg(windows)]
 use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
@@ -44,8 +45,20 @@ const ENSURE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 struct EnsureFlight {
     id: u64,
     owner: super::process::ProcessOwner,
+    state: EnsureFlightState,
     result: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
     cancel: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnsureFlightState {
+    Running,
+    Cancelling,
+}
+
+enum EnsureSubscription {
+    Running(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
+    Cancelling(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
 }
 
 #[derive(Default)]
@@ -55,8 +68,11 @@ struct EnsureCoordinator {
 }
 
 impl EnsureCoordinator {
-    fn subscribe(&self) -> Option<tokio::sync::watch::Receiver<Option<Result<(), String>>>> {
-        self.active.as_ref().map(|flight| flight.result.clone())
+    fn subscribe(&self) -> Option<EnsureSubscription> {
+        self.active.as_ref().map(|flight| match flight.state {
+            EnsureFlightState::Running => EnsureSubscription::Running(flight.result.clone()),
+            EnsureFlightState::Cancelling => EnsureSubscription::Cancelling(flight.result.clone()),
+        })
     }
 
     fn start(
@@ -77,6 +93,7 @@ impl EnsureCoordinator {
         self.active = Some(EnsureFlight {
             id,
             owner,
+            state: EnsureFlightState::Running,
             result: result_rx.clone(),
             cancel: cancel_tx.clone(),
         });
@@ -87,6 +104,13 @@ impl EnsureCoordinator {
         if self.active.as_ref().is_some_and(|flight| flight.id == id) {
             self.active = None;
         }
+    }
+
+    fn begin_cancel(&mut self) -> Option<tokio::sync::watch::Receiver<Option<Result<(), String>>>> {
+        let active = self.active.as_mut()?;
+        active.state = EnsureFlightState::Cancelling;
+        let _ = active.cancel.send(true);
+        Some(active.result.clone())
     }
 }
 
@@ -104,15 +128,20 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let total = internal.len();
-    let mut result = {
-        let mut coordinator = ensure_lock().lock().await;
-        if let Some(result) = coordinator.subscribe() {
-            emit_phase(app_handle, "loading", "waiting", 0, total);
-            result
-        } else {
+    receive_current_or_next_flight(|| subscribe_or_start(app_handle, &internal)).await
+}
+
+async fn subscribe_or_start(
+    app_handle: &AppHandle,
+    internal: &[PreinstallPluginInfo],
+) -> EnsureSubscription {
+    let mut coordinator = ensure_lock().lock().await;
+    match coordinator.subscribe() {
+        Some(subscription) => subscription,
+        None => {
             let (id, owner, result_tx, result_rx, cancel_tx, cancel_rx) = coordinator.start();
             let app_handle = app_handle.clone();
+            let internal = internal.to_vec();
             tauri::async_runtime::spawn(async move {
                 let outcome =
                     run_ensure_operation(&app_handle, &internal, owner, cancel_tx, cancel_rx).await;
@@ -124,13 +153,37 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
                 ensure_lock().lock().await.finish(id);
                 let _ = result_tx.send(Some(outcome));
             });
-            result_rx
+            EnsureSubscription::Running(result_rx)
         }
-    };
+    }
+}
 
+async fn receive_current_or_next_flight<F, Fut>(mut acquire: F) -> Result<(), String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = EnsureSubscription>,
+{
+    loop {
+        let subscription = acquire().await;
+        match subscription {
+            EnsureSubscription::Running(mut result) => {
+                return receive_flight_result(&mut result).await?;
+            }
+            EnsureSubscription::Cancelling(mut result) => {
+                // Retry 不继承已取消 flight 的结果；等它完成清理并从 coordinator
+                // 移除后回到循环，创建且只创建一个全新的 flight。
+                let _ = receive_flight_result(&mut result).await?;
+            }
+        }
+    }
+}
+
+async fn receive_flight_result(
+    result: &mut tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+) -> Result<Result<(), String>, String> {
     loop {
         if let Some(outcome) = result.borrow().clone() {
-            return outcome;
+            return Ok(outcome);
         }
         result.changed().await.map_err(|_| {
             "INTERNAL_PLUGIN_ENSURE_DROPPED: install task ended without result".to_string()
@@ -141,7 +194,7 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
 /// 取消共享的内置插件安装并等待拥有者完成清理，确保 Retry 不会叠加新进程。
 pub(crate) async fn cancel() -> Result<(), String> {
     let mut result = {
-        let coordinator = ensure_lock().lock().await;
+        let mut coordinator = ensure_lock().lock().await;
         let Some(active) = &coordinator.active else {
             return Ok(());
         };
@@ -149,17 +202,12 @@ pub(crate) async fn cancel() -> Result<(), String> {
             "cancelling internal plugin ensure flight owned by {:?}",
             active.owner
         );
-        let _ = active.cancel.send(true);
-        active.result.clone()
+        coordinator
+            .begin_cancel()
+            .expect("active flight must remain present while coordinator lock is held")
     };
-    loop {
-        if result.borrow().is_some() {
-            return Ok(());
-        }
-        result.changed().await.map_err(|_| {
-            "INTERNAL_PLUGIN_CANCEL_DROPPED: install task ended without result".to_string()
-        })?;
-    }
+    let _ = receive_flight_result(&mut result).await?;
+    Ok(())
 }
 
 async fn run_ensure_operation(
@@ -491,7 +539,9 @@ mod tests {
     async fn coordinator_coalesces_waiters_and_releases_for_retry() {
         let mut coordinator = EnsureCoordinator::default();
         let (first_id, first_owner, result_tx, first, _, _) = coordinator.start();
-        let duplicate = coordinator.subscribe().unwrap();
+        let EnsureSubscription::Running(duplicate) = coordinator.subscribe().unwrap() else {
+            panic!("running flight must coalesce running waiters");
+        };
         assert_eq!(coordinator.active.as_ref().unwrap().owner, first_owner);
         coordinator.finish(first_id);
         assert!(coordinator.subscribe().is_none());
@@ -501,6 +551,108 @@ mod tests {
 
         let (retry_id, _, _, _, _, _) = coordinator.start();
         assert_ne!(retry_id, first_id);
+    }
+
+    #[tokio::test]
+    async fn cancel_then_immediate_retry_starts_one_fresh_flight() {
+        type FlightResultSender = tokio::sync::watch::Sender<Option<Result<(), String>>>;
+
+        let coordinator =
+            std::sync::Arc::new(tokio::sync::Mutex::new(EnsureCoordinator::default()));
+        let fresh_flight = std::sync::Arc::new(tokio::sync::Mutex::new(
+            None::<(u64, super::super::process::ProcessOwner, FlightResultSender)>,
+        ));
+        let fresh_started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancelling_subscribers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancelling_subscribed = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let (cancelled_id, cancelled_owner, cancelled_tx) = {
+            let mut coordinator = coordinator.lock().await;
+            let (id, owner, result_tx, _, _, mut cancel_signal) = coordinator.start();
+            coordinator.begin_cancel().unwrap();
+            assert!(*cancel_signal.borrow_and_update());
+            (id, owner, result_tx)
+        };
+
+        async fn retry(
+            coordinator: std::sync::Arc<tokio::sync::Mutex<EnsureCoordinator>>,
+            fresh_flight: std::sync::Arc<
+                tokio::sync::Mutex<
+                    Option<(u64, super::super::process::ProcessOwner, FlightResultSender)>,
+                >,
+            >,
+            fresh_started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            cancelling_subscribers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            cancelling_subscribed: std::sync::Arc<tokio::sync::Notify>,
+        ) -> Result<(), String> {
+            receive_current_or_next_flight(|| {
+                let coordinator = coordinator.clone();
+                let fresh_flight = fresh_flight.clone();
+                let fresh_started = fresh_started.clone();
+                let cancelling_subscribers = cancelling_subscribers.clone();
+                let cancelling_subscribed = cancelling_subscribed.clone();
+                async move {
+                    let mut coordinator = coordinator.lock().await;
+                    if let Some(subscription) = coordinator.subscribe() {
+                        if matches!(&subscription, EnsureSubscription::Cancelling(_)) {
+                            cancelling_subscribers
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            cancelling_subscribed.notify_one();
+                        }
+                        return subscription;
+                    }
+                    let (id, owner, result_tx, result_rx, _, _) = coordinator.start();
+                    fresh_started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    *fresh_flight.lock().await = Some((id, owner, result_tx));
+                    EnsureSubscription::Running(result_rx)
+                }
+            })
+            .await
+        }
+
+        let first_retry = tokio::spawn(retry(
+            coordinator.clone(),
+            fresh_flight.clone(),
+            fresh_started.clone(),
+            cancelling_subscribers.clone(),
+            cancelling_subscribed.clone(),
+        ));
+        let second_retry = tokio::spawn(retry(
+            coordinator.clone(),
+            fresh_flight.clone(),
+            fresh_started.clone(),
+            cancelling_subscribers.clone(),
+            cancelling_subscribed.clone(),
+        ));
+
+        while cancelling_subscribers.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            cancelling_subscribed.notified().await;
+        }
+        {
+            let mut coordinator = coordinator.lock().await;
+            coordinator.finish(cancelled_id);
+        }
+        cancelled_tx
+            .send(Some(Err(
+                "INTERNAL_PLUGIN_INSTALL_CANCELLED: plugin install was cancelled".to_string(),
+            )))
+            .unwrap();
+
+        let (retry_id, retry_owner, retry_tx) = loop {
+            if let Some(flight) = fresh_flight.lock().await.take() {
+                break flight;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_ne!(retry_owner, cancelled_owner);
+        assert_eq!(fresh_started.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        coordinator.lock().await.finish(retry_id);
+        retry_tx.send(Some(Ok(()))).unwrap();
+        assert!(first_retry.await.unwrap().is_ok());
+        assert!(second_retry.await.unwrap().is_ok());
+        assert_eq!(fresh_started.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(coordinator.lock().await.subscribe().is_none());
     }
 
     #[test]

@@ -580,9 +580,15 @@ export const harness = defineStore({
             return
           }
           if (result.timeout) {
-            void invoke('cancel_internal_plugins').catch((cancelError) => {
+            try {
+              // 后端只在所属进程树已退出、共享 flight 已释放后返回；在此之前不
+              // 进入失败态，避免用户立即 Retry 订阅到上一轮 cancelled 结果。
+              await invoke('cancel_internal_plugins')
+            }
+            catch (cancelError) {
               console.error('[Harness] failed to cancel timed-out internal plugin install:', cancelError)
-            })
+              throw startupError('plugin-install', String(cancelError), 'failed')
+            }
             throw startupError('plugin-install', result.reason, result.timeout)
           }
         }

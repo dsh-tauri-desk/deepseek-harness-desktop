@@ -44,7 +44,7 @@
     "repoUrl": "https://github.com/baihejiangnan/dsh-session-context-menu",
     "recommended": false,
     "defaultChecked": true
-  }
+  },
   {
     "id": "dsh-temp-session",
     "spec": "github:DahliaVoid/dsh-temp-session",

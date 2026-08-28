@@ -9,7 +9,8 @@
 //!   `latest > installed` 才视为有更新（避免把 `latest` 指向更旧版本误判为可升级）。
 //!
 //! 与 market 相同的兜底：任何一次判定失败都报告「无更新」，绝不因一次网络抖动或
-//! 404 让整个插件管理器不可用；结果按 (id, spec, 版本) 缓存 30 分钟（TTL），期间
+//! 404 让整个插件管理器不可用；结果按 (id, spec, 版本, Git 锁定提交) 缓存 30 分钟
+//! （TTL），期间
 //! 重复调用直接命中缓存、不重复打网络。缓存缺失/未判定时 `update_available=false`，
 //! 前端由 `refresh_plugin_updates` 在挂载后补齐，因此首次展示短暂无按钮、随后自动
 //! 出现——这正好保证「不是常驻按钮」，只有确有更新（或异常修复）时才展示升级入口。
@@ -20,6 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use semver::Version as Semver;
+use serde::Deserialize;
 use serde_json::Value;
 use tauri::AppHandle;
 
@@ -49,9 +51,13 @@ fn cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 缓存键：同一插件换了 spec 或升级了版本后，旧的判定结果自动失效（key 变化即 miss）。
-fn cache_key(id: &str, spec: &str, version: &str) -> String {
-    format!("{id}\u{0}{spec}\u{0}{version}")
+/// 缓存键：spec、版本或该直接依赖的 Git 锁定提交变化后，旧结果自动失效。
+fn cache_key(id: &str, spec: &str, version: &str, locked: &HashMap<String, String>) -> String {
+    let locked_commit = extract_github_repo(spec)
+        .and_then(|_| locked.get(id))
+        .map(String::as_str)
+        .unwrap_or_default();
+    format!("{id}\u{0}{spec}\u{0}{version}\u{0}{locked_commit}")
 }
 
 // ---------------------------------------------------------------------------
@@ -78,10 +84,11 @@ fn read_specs(app_handle: &AppHandle) -> HashMap<String, String> {
     out
 }
 
-/// 从 pnpm-lock.yaml 的 codeload tarball URL 中提取「owner/repo → 提交 SHA」映射
-/// （与 dsh-market `readLockCommits` 的取法一致：pnpm 把 git 依赖的锁采用
-/// `https://codeload.github.com/<owner>/<repo>/tar.gz/<sha>` 形式记录）。
-fn read_locked_commits(profile: &Path) -> HashMap<String, String> {
+/// 从 pnpm-lock.yaml 的当前 importer 中提取「直接依赖 id → 提交 SHA」映射。
+///
+/// 必须经 importer 归属，不能全局扫描 codeload URL：同一 GitHub 仓库可被
+/// 多个直接/传递依赖锁到不同提交，全局「后写覆盖」会把缓存绑到错误提交。
+fn read_locked_commits(profile: &Path, specs: &HashMap<String, String>) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Ok(text) = std::fs::read_to_string(profile.join("pnpm-lock.yaml")) else {
         return out;
@@ -89,9 +96,47 @@ fn read_locked_commits(profile: &Path) -> HashMap<String, String> {
     let re =
         regex::Regex::new(r"codeload\.github\.com/([^/\s]+)/([^/\s]+)/tar\.gz/([0-9a-fA-F]{7,40})")
             .expect("static codeload regex");
-    for cap in re.captures_iter(&text) {
-        let repo = format!("{}/{}", &cap[1], &cap[2]).to_lowercase();
-        out.insert(repo, cap[3].to_string());
+    let mut has_project_dependencies = false;
+    for document in serde_yaml::Deserializer::from_str(&text) {
+        let Ok(lockfile) = serde_yaml::Value::deserialize(document) else {
+            return HashMap::new();
+        };
+        let Some(current_importer) = lockfile.get("importers").and_then(|value| value.get("."))
+        else {
+            continue;
+        };
+        let Some(dependencies) = current_importer
+            .get("dependencies")
+            .and_then(serde_yaml::Value::as_mapping)
+        else {
+            continue;
+        };
+        if std::mem::replace(&mut has_project_dependencies, true) {
+            return HashMap::new();
+        }
+        for (id, dependency) in dependencies {
+            let Some(id) = id.as_str() else {
+                continue;
+            };
+            let Some(version) = dependency
+                .get("version")
+                .and_then(serde_yaml::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(cap) = re.captures(version) else {
+                continue;
+            };
+            let Some(expected_repo) = specs.get(id).and_then(|spec| extract_github_repo(spec))
+            else {
+                continue;
+            };
+            let resolved_repo = format!("{}/{}", &cap[1], &cap[2]);
+            if !resolved_repo.eq_ignore_ascii_case(&expected_repo) {
+                continue;
+            }
+            out.insert(id.to_string(), cap[3].to_ascii_lowercase());
+        }
     }
     out
 }
@@ -209,7 +254,7 @@ async fn compute_update(
     }
 
     if let Some(repo) = extract_github_repo(spec) {
-        let current = locked.get(&repo.to_lowercase()).cloned();
+        let current = locked.get(id).cloned();
         let latest = fetch_head_sha(client, &repo).await;
         return UpdateInfo {
             update_available: current.is_some() && latest.is_some() && current != latest,
@@ -236,11 +281,12 @@ async fn compute_update(
 /// `update_available=false`（未判定，由前端随后 `refresh_plugin_updates` 补齐）。
 pub fn apply_cache(app_handle: &AppHandle, plugins: &mut [DshPlugin]) {
     let specs = read_specs(app_handle);
+    let locked = read_locked_commits(&profile_dir(app_handle), &specs);
     let cache = cache().lock().unwrap();
     let now = Instant::now();
     for p in plugins.iter_mut() {
         let spec = specs.get(&p.id).cloned().unwrap_or_default();
-        let key = cache_key(&p.id, &spec, &p.version);
+        let key = cache_key(&p.id, &spec, &p.version, &locked);
         if let Some(entry) = cache.get(&key) {
             if now.duration_since(entry.at) < UPDATES_TTL {
                 p.update_available = entry.info.update_available;
@@ -257,7 +303,7 @@ pub fn apply_cache(app_handle: &AppHandle, plugins: &mut [DshPlugin]) {
 pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
     let mut plugins = super::watch::list(app_handle);
     let specs = read_specs(app_handle);
-    let locked = read_locked_commits(&profile_dir(app_handle));
+    let locked = read_locked_commits(&profile_dir(app_handle), &specs);
     let client = reqwest::Client::builder()
         .user_agent("deepseek-harness-desktop")
         .timeout(Duration::from_secs(10))
@@ -278,7 +324,7 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
         let cache = cache().lock().unwrap();
         for (idx, p) in plugins.iter_mut().enumerate() {
             let spec = specs.get(&p.id).cloned().unwrap_or_default();
-            let key = cache_key(&p.id, &spec, &p.version);
+            let key = cache_key(&p.id, &spec, &p.version, &locked);
             if let Some(entry) = cache.get(&key) {
                 if now.duration_since(entry.at) < UPDATES_TTL {
                     p.update_available = entry.info.update_available;
@@ -394,26 +440,168 @@ mod tests {
     #[test]
     fn lock_commits_parsed_from_codeload_urls() {
         let lock = "\
-importers:\n  .:\n    dependencies:\n      dsh-better-sidebar:\n        specifier: https://codeload.github.com/omdsh-dev/DSH-better-sidebar/tar.gz/7dbd9b75e2fd65758d4e55f750319399b91255a2\n";
+importers:\n  .:\n    dependencies:\n      dsh-better-sidebar:\n        specifier: github:omdsh-dev/DSH-better-sidebar\n        version: https://codeload.github.com/omdsh-dev/DSH-better-sidebar/tar.gz/7DBD9B75E2FD65758D4E55F750319399B91255A2\n";
         let dir = std::env::temp_dir().join(format!("dsh-updates-lock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
-        let commits = read_locked_commits(&dir);
+        let specs = HashMap::from([(
+            "dsh-better-sidebar".into(),
+            "github:omdsh-dev/DSH-better-sidebar".into(),
+        )]);
+        let commits = read_locked_commits(&dir, &specs);
         assert_eq!(
-            commits.get("omdsh-dev/dsh-better-sidebar"),
+            commits.get("dsh-better-sidebar"),
             Some(&"7dbd9b75e2fd65758d4e55f750319399b91255a2".to_string())
         );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
+    fn lock_commits_keep_distinct_direct_dependencies_from_same_repo() {
+        let lock = "\
+importers:\n  .:\n    dependencies:\n      stable-plugin:\n        specifier: github:owner/repo#stable\n        version: https://codeload.github.com/owner/repo/tar.gz/1111111\n      canary-plugin:\n        specifier: github:owner/repo#canary\n        version: https://codeload.github.com/owner/repo/tar.gz/2222222\npackages:\n  transitive@https://codeload.github.com/owner/repo/tar.gz/3333333:\n    resolution: {tarball: https://codeload.github.com/owner/repo/tar.gz/3333333}\n";
+        let dir =
+            std::env::temp_dir().join(format!("dsh-updates-lock-duplicate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
+        let specs = HashMap::from([
+            ("stable-plugin".into(), "github:owner/repo#stable".into()),
+            ("canary-plugin".into(), "github:owner/repo#canary".into()),
+        ]);
+
+        let commits = read_locked_commits(&dir, &specs);
+
+        assert_eq!(commits.get("stable-plugin"), Some(&"1111111".to_string()));
+        assert_eq!(commits.get("canary-plugin"), Some(&"2222222".to_string()));
+        assert_eq!(commits.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_key_changes_when_direct_lockfile_commit_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-updates-lock-transition-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pnpm-lock.yaml");
+        let prefix = "importers:\n  .:\n    configDependencies: {}\n    packageManagerDependencies:\n      pnpm:\n        specifier: 12.0.0\n        version: 12.0.0\n---\nimporters:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:owner/repo\n        version: https://codeload.github.com/owner/repo/tar.gz/";
+        let specs = HashMap::from([("plugin".into(), "github:owner/repo".into())]);
+
+        std::fs::write(&path, format!("{prefix}1111111\n")).unwrap();
+        let before = read_locked_commits(&dir, &specs);
+        let before_key = cache_key("plugin", "github:owner/repo", "1.0.0", &before);
+
+        std::fs::write(&path, format!("{prefix}2222222\n")).unwrap();
+        let after = read_locked_commits(&dir, &specs);
+        let after_key = cache_key("plugin", "github:owner/repo", "1.0.0", &after);
+
+        assert_eq!(before.get("plugin"), Some(&"1111111".to_string()));
+        assert_eq!(after.get("plugin"), Some(&"2222222".to_string()));
+        assert_ne!(before_key, after_key);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_multidocument_lockfile_fails_closed() {
+        let lock = "\
+importers:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:owner/repo\n        version: https://codeload.github.com/owner/repo/tar.gz/1111111\n---\nmalformed: [\n";
+        let dir =
+            std::env::temp_dir().join(format!("dsh-updates-lock-malformed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
+        let specs = HashMap::from([("plugin".into(), "github:owner/repo".into())]);
+
+        assert!(read_locked_commits(&dir, &specs).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn duplicate_current_importer_documents_fail_closed() {
+        let lock = "\
+importers:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:owner/repo\n        version: https://codeload.github.com/owner/repo/tar.gz/1111111\n---\nimporters:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:owner/repo\n        version: https://codeload.github.com/owner/repo/tar.gz/2222222\n";
+        let dir =
+            std::env::temp_dir().join(format!("dsh-updates-lock-ambiguous-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
+        let specs = HashMap::from([("plugin".into(), "github:owner/repo".into())]);
+
+        assert!(read_locked_commits(&dir, &specs).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn duplicate_current_importer_with_repo_mismatch_fails_closed() {
+        let lock = "\
+importers:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:owner/repo\n        version: https://codeload.github.com/owner/repo/tar.gz/1111111\n---\nimporters:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:other/repo\n        version: https://codeload.github.com/other/repo/tar.gz/2222222\n";
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-updates-lock-ambiguous-mismatch-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
+        let specs = HashMap::from([("plugin".into(), "github:owner/repo".into())]);
+
+        assert!(read_locked_commits(&dir, &specs).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lock_commit_repo_must_match_direct_spec() {
+        let lock = "\
+importers:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:owner/repo\n        version: https://codeload.github.com/other/repo/tar.gz/1111111\n";
+        let dir =
+            std::env::temp_dir().join(format!("dsh-updates-lock-mismatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
+        let specs = HashMap::from([("plugin".into(), "github:owner/repo".into())]);
+
+        assert!(read_locked_commits(&dir, &specs).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn cache_key_changes_with_version() {
-        let a = cache_key("p", "spec", "1.0.0");
-        let b = cache_key("p", "spec", "1.0.1");
+        let locked = HashMap::new();
+        let a = cache_key("p", "spec", "1.0.0", &locked);
+        let b = cache_key("p", "spec", "1.0.1", &locked);
         assert_ne!(a, b);
-        let c = cache_key("p", "spec2", "1.0.0");
+        let c = cache_key("p", "spec2", "1.0.0", &locked);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn cache_key_changes_with_locked_git_commit() {
+        let missing = HashMap::new();
+        let missing_key = cache_key("p", "github:Owner/Repo", "1.0.0", &missing);
+        let mut locked = HashMap::from([("p".into(), "aaaaaaa".into())]);
+        let a = cache_key("p", "github:Owner/Repo", "1.0.0", &locked);
+        let cache = HashMap::from([(a.clone(), true)]);
+
+        locked.insert("p".into(), "bbbbbbb".into());
+        let b = cache_key("p", "github:Owner/Repo", "1.0.0", &locked);
+
+        assert_ne!(missing_key, a);
+        assert_ne!(a, b);
+        assert!(!cache.contains_key(&b));
+    }
+
+    #[test]
+    fn registry_cache_key_ignores_unrelated_git_commits() {
+        let mut locked = HashMap::from([("other-plugin".into(), "aaaaaaa".into())]);
+        let a = cache_key("p", "^1.0.0", "1.0.0", &locked);
+
+        locked.insert("other-plugin".into(), "bbbbbbb".into());
+        let b = cache_key("p", "^1.0.0", "1.0.0", &locked);
+
+        assert_eq!(a, b);
     }
 
     #[test]

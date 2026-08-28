@@ -23,9 +23,12 @@ export interface PreinstallLogPayload {
   line: string
 }
 
-/** Rust 侧 internal-plugins-phase 事件载荷（内置插件核对阶段：loading / done） */
+/** Rust 侧 internal-plugins-phase 事件载荷（内置插件核对/安装进度与 heartbeat） */
 export interface InternalPluginsPhasePayload {
-  phase: 'loading' | 'done'
+  phase: 'loading' | 'progress' | 'done'
+  detail: 'waiting' | 'checking' | 'installing' | 'heartbeat' | 'done'
+  completed: number
+  total: number
 }
 
 /** 安装器展示状态 */

@@ -1478,6 +1478,10 @@ fn not_owned_probe_signal(launch_in_progress: bool) -> &'static str {
     }
 }
 
+fn all_client_modules_ready(ready: usize, total: usize) -> bool {
+    total > 0 && ready == total
+}
+
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 pub async fn proxy_health_check(port: u16) -> Result<String, String> {
     let Some(owned_pid) = owned_pid_for_port(port) else {
@@ -1496,18 +1500,19 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
     }
     let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
         .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
-    let mut failures = Vec::with_capacity(2);
+    let endpoints = utils::health_probe_plugin_urls(port);
+    let total = endpoints.len();
+    let mut ready = 0usize;
+    let mut failures = Vec::with_capacity(total);
 
-    for endpoint in utils::health_probe_plugin_urls(port) {
+    for endpoint in endpoints {
         match client.get(&endpoint).send().await {
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
                 if utils::looks_like_plugin_bundle(status.is_success(), &body) {
-                    return Ok(format!(
-                        "healthy - {status} - {}",
-                        body.chars().take(80).collect::<String>()
-                    ));
+                    ready += 1;
+                    continue;
                 }
                 let failure = format!("{endpoint} returned {status} (not a plugin bundle)");
                 log::debug!("Health check failed: {failure}");
@@ -1519,8 +1524,11 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
             }
         }
     }
+    if all_client_modules_ready(ready, total) {
+        return Ok(format!("healthy - {ready}/{total} client modules ready"));
+    }
     Err(format!(
-        "HARNESS_NOT_READY: Harness client plugins are not ready ({})",
+        "HARNESS_NOT_READY: Harness client modules are not ready ({ready}/{total} ready; {})",
         failures.join("; ")
     ))
 }
@@ -1558,6 +1566,13 @@ mod tests {
         assert!(not_owned_probe_signal(true).starts_with("HARNESS_NOT_READY"));
         // 启动已结束（守卫释放）却仍无持有进程：进程已退出/从未拉起 → 快速失败
         assert!(not_owned_probe_signal(false).starts_with("HARNESS_NOT_OWNED"));
+    }
+
+    #[test]
+    fn readiness_requires_every_client_module() {
+        assert!(!all_client_modules_ready(1, 2));
+        assert!(all_client_modules_ready(2, 2));
+        assert!(!all_client_modules_ready(0, 0));
     }
 
     /// 模拟“上个会话残留进程刚被杀、端口仍在释放”的场景：先占用端口，随后在

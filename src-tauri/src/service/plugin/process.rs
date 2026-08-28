@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, WebviewWindow};
@@ -37,31 +38,68 @@ pub struct PreinstallLogPayload {
 /// `cancel`（跨平台）用它结束安装进程树；安装结束/失败后必须复位，
 /// 防止把「下一个安装」或无关进程误杀。
 ///
-/// 仅在 Unix 被 `cancel` 使用（Windows 取消安装走 taskkill 按命令行匹配），
-/// 故 Windows 下按项目约定允许 dead_code。
-static ACTIVE_PLUGIN_PID: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ProcessOwner(u64);
 
-fn active_pid_lock() -> &'static Mutex<Option<u32>> {
-    ACTIVE_PLUGIN_PID.get_or_init(|| Mutex::new(None))
+static NEXT_PROCESS_OWNER: AtomicU64 = AtomicU64::new(1);
+static ACTIVE_PLUGIN_PIDS: OnceLock<Mutex<HashMap<ProcessOwner, u32>>> = OnceLock::new();
+static PLUGIN_PROCESS_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+
+fn active_pid_lock() -> &'static Mutex<HashMap<ProcessOwner, u32>> {
+    ACTIVE_PLUGIN_PIDS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 当前进行中安装的根进程 PID（取消安装用）。
-pub(crate) fn active_plugin_pid() -> Option<u32> {
-    *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner())
+pub(crate) fn new_process_owner() -> ProcessOwner {
+    ProcessOwner(NEXT_PROCESS_OWNER.fetch_add(1, Ordering::Relaxed))
+}
+
+pub(crate) fn active_plugin_pid(owner: ProcessOwner) -> Option<u32> {
+    active_pid_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&owner)
+        .copied()
+}
+
+pub(crate) fn active_plugin_processes() -> Vec<(ProcessOwner, u32)> {
+    active_pid_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(owner, pid)| (*owner, *pid))
+        .collect()
+}
+
+pub(crate) async fn acquire_process_lock() -> tokio::sync::OwnedMutexGuard<()> {
+    PLUGIN_PROCESS_LOCK
+        .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await
 }
 
 /// 记录/清除当前安装进程 PID（guard-drop 模式，作用域结束自动复位）。
-struct PidGuard;
+pub(crate) struct PidGuard {
+    owner: ProcessOwner,
+    pid: u32,
+}
 
 impl PidGuard {
-    fn set(pid: u32) {
-        *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
+    pub(crate) fn set(owner: ProcessOwner, pid: u32) -> Self {
+        active_pid_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(owner, pid);
+        Self { owner, pid }
     }
 }
 
 impl Drop for PidGuard {
     fn drop(&mut self) {
-        *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut active = active_pid_lock().lock().unwrap_or_else(|e| e.into_inner());
+        if active.get(&self.owner) == Some(&self.pid) {
+            active.remove(&self.owner);
+        }
     }
 }
 
@@ -86,15 +124,18 @@ pub(crate) async fn run_plugin_process(
     cwd: &Path,
     envs: &HashMap<String, String>,
     window: &WebviewWindow,
+    owner: ProcessOwner,
 ) -> Result<(i32, String), String> {
     let captured = output::new_capture();
     let log_limiter = Arc::new(Mutex::new(LogEventLimiter::new()));
 
     #[cfg(windows)]
     {
-        let (stdout, stderr, handle) =
-            workflow::win_spawn::spawn_with_hidden_console_tracked(node, args, Some(cwd), envs)
+        let (stdout, stderr, pid, handle) =
+            workflow::win_spawn::spawn_with_hidden_console_owned(node, args, Some(cwd), envs)
                 .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
+        let pid_guard = PidGuard::set(owner, pid);
+        log::info!("dsh plugin install started, pid {pid}");
 
         spawn_line_emitter(
             stdout,
@@ -105,47 +146,18 @@ pub(crate) async fn run_plugin_process(
         spawn_line_emitter(stderr, window.clone(), captured.clone(), log_limiter);
 
         let handle = WaitableHandle(handle);
-        let pid = unsafe { windows_sys::Win32::System::Threading::GetProcessId(handle.0) };
-        if pid == 0 {
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle.0) };
-            return Err("PREINSTALL_WAIT: unable to identify plugin process".to_string());
-        }
-        PidGuard::set(pid);
-        let _pid_guard = PidGuard;
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
-            use windows_sys::Win32::Foundation::{
-                CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+            let _pid_guard = pid_guard;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{
+                GetExitCodeProcess, WaitForSingleObject, INFINITE,
             };
-            use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
             let handle = handle;
             unsafe {
-                let wait = WaitForSingleObject(
-                    handle.0,
-                    PLUGIN_PROCESS_TIMEOUT.as_millis().min(u32::MAX as u128) as u32,
-                );
-                if wait == WAIT_TIMEOUT {
-                    workflow::kill_pid_tree(pid);
-                    let terminated = WaitForSingleObject(handle.0, 5_000);
-                    CloseHandle(handle.0);
-                    if terminated == WAIT_TIMEOUT {
-                        return Err(
-                            "PREINSTALL_TIMEOUT: plugin process did not exit after termination"
-                                .to_string(),
-                        );
-                    }
-                    return Err(format!(
-                        "PREINSTALL_TIMEOUT: plugin process exceeded {} seconds",
-                        PLUGIN_PROCESS_TIMEOUT.as_secs()
-                    ));
-                }
-                if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
-                    CloseHandle(handle.0);
-                    return Err("PREINSTALL_WAIT: WaitForSingleObject failed".to_string());
-                }
+                let wait = WaitForSingleObject(handle.0, INFINITE);
                 let mut code: u32 = 0;
                 if GetExitCodeProcess(handle.0, &mut code) == 0 {
-                    CloseHandle(handle.0);
-                    return Err("PREINSTALL_WAIT: GetExitCodeProcess failed".to_string());
+                    code = wait;
                 }
                 CloseHandle(handle.0);
                 Ok(code as i32)
@@ -175,11 +187,10 @@ pub(crate) async fn run_plugin_process(
             .map_err(|e| format!("PREINSTALL_SPAWN: {e}"))?;
 
         let pid = child.id();
-        PidGuard::set(pid);
+        let pid_guard = PidGuard::set(owner, pid);
         // 绑定守卫实例：本 cfg 块作用域结束时自动把共享 PID 槽复位为 None，
         // 避免把「这一次安装」的 PID 泄漏给之后的取消/下一次安装（误杀无关进程）。
         // 若 spawn_blocking 因错误提前 `?` 返回，守卫同样会 Drop 复位。
-        let _pid_guard = PidGuard;
         log::info!("dsh plugin install started, pid {pid}");
 
         if let Some(stdout) = child.stdout.take() {
@@ -195,25 +206,8 @@ pub(crate) async fn run_plugin_process(
         }
 
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
-            let deadline = Instant::now() + PLUGIN_PROCESS_TIMEOUT;
-            loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => break Ok(status.code().unwrap_or(1)),
-                    Ok(None) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Ok(None) => {
-                        workflow::kill_pid_tree(pid);
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break Err(format!(
-                            "PREINSTALL_TIMEOUT: plugin process exceeded {} seconds",
-                            PLUGIN_PROCESS_TIMEOUT.as_secs()
-                        ));
-                    }
-                    Err(error) => break Err(format!("PREINSTALL_WAIT: {error}")),
-                }
-            }
+            let _pid_guard = pid_guard;
+            child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
         })
         .await
         .map_err(|e| format!("PREINSTALL_WAIT: {e}"))??;
@@ -266,4 +260,22 @@ fn spawn_line_emitter<R: std::io::Read + Send + 'static>(
             let _ = window.emit(PREINSTALL_LOG_EVENT, PreinstallLogPayload { line });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_guard_cannot_clear_a_new_process_for_the_same_owner() {
+        let owner = new_process_owner();
+        let stale = PidGuard::set(owner, 100);
+        let current = PidGuard::set(owner, 200);
+
+        drop(stale);
+        assert_eq!(active_plugin_pid(owner), Some(200));
+
+        drop(current);
+        assert_eq!(active_plugin_pid(owner), None);
+    }
 }

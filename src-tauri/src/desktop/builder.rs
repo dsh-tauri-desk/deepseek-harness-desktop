@@ -471,6 +471,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cancel_preinstall_plugins,
         crate::bridge::skip_preinstall_plugins,
         crate::bridge::ensure_internal_plugins,
+        crate::bridge::cancel_internal_plugins,
         crate::bridge::open_preinstall_repo,
         crate::bridge::get_dsh_plugins,
         crate::bridge::refresh_plugin_updates,

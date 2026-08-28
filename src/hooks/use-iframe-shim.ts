@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect } from 'react'
 import { useEvent, useInterval, useMountedState } from 'react-use'
 import { queryClient } from '@/config/client'
+import { store } from '@/store'
 import { getIframeOrigin } from '@/utils/iframe'
 
 interface NativeNotificationMessage {
@@ -63,6 +64,11 @@ function isValidNotificationTag(value: string): boolean {
   const sessionAndSequence = rest.startsWith('pending-') ? rest.slice('pending-'.length) : rest
   const sequenceSeparator = sessionAndSequence.lastIndexOf('-')
   return isValidNotificationSession(sessionAndSequence.slice(0, sequenceSeparator))
+}
+
+interface PluginBootMessage {
+  source?: 'dsh-plugin-boot-bridge'
+  type?: 'dsh://plugin-boot:stalled' | 'dsh://plugin-boot:ready'
 }
 
 export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
@@ -153,8 +159,66 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
       .catch(error => console.error('[plugin-error] report_plugin_error failed:', error))
   }
 
+  // 接收 iframe 的「剪贴板图片回退」请求：读取系统剪贴板图片并把 PNG data URL 回传，
+  // 使 Linux/WebKitGTK 下 dsh iframe 的贴图（paste 事件拿不到图片）能走原生剪贴板通路。
+  function handleClipboardImage(event: MessageEvent<ClipboardImageRequest>) {
+    const data = event.data
+    if (!data || typeof data !== 'object' || data.source !== 'dsh-clipboard-image-bridge') {
+      return
+    }
+    // 只接受 DSH 直接 iframe 发来的消息；不兼容多层嵌套 iframe。
+    if (event.source !== iframeRef.current?.contentWindow) {
+      return
+    }
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin) {
+      return
+    }
+    if (data.type !== 'dsh://clipboard-image:read' || !data.id) {
+      return
+    }
+    // 在闭包外把收窄后的值固定到局部常量，避免 TS 在闭包内丢失控制流收窄
+    const reqId = data.id
+    const origin = iframeOrigin
+    function reply(dataUrl: string | null) {
+      iframeRef.current?.contentWindow?.postMessage(
+        { source: 'dsh-desktop-clipboard', id: reqId, data_url: dataUrl },
+        origin,
+      )
+    }
+    void invoke<{ data_url?: string } | null>('read_clipboard_image')
+      .then(result => reply(result?.data_url ?? null))
+      .catch((error) => {
+        console.error('[clipboard-image] read_clipboard_image failed:', error)
+        reply(null)
+      })
+  }
+
+  function handlePluginBoot(event: MessageEvent<PluginBootMessage>) {
+    const data = event.data
+    if (!data || typeof data !== 'object' || data.source !== 'dsh-plugin-boot-bridge') {
+      return
+    }
+    if (event.source !== iframeRef.current?.contentWindow) {
+      return
+    }
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin) {
+      return
+    }
+    if (data.type === 'dsh://plugin-boot:ready') {
+      store.harness.markIframeBootReady()
+      return
+    }
+    if (data.type === 'dsh://plugin-boot:stalled') {
+      void store.harness.recoverIframeBoot()
+    }
+  }
+
   useEvent('message', handleMessage)
   useEvent('message', handlePluginError)
+  useEvent('message', handleClipboardImage)
+  useEvent('message', handlePluginBoot)
 
   // 系统通知点击 → 通知 iframe 聚焦对应会话
   useEffect(() => {

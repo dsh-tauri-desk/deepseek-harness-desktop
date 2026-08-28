@@ -11,6 +11,7 @@
 //! 要求——用户怎么卸载、何时卸载都不影响下次启动自动恢复，无需任何用户操作。
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 #[cfg(windows)]
 use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
@@ -23,48 +24,270 @@ use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, Preinsta
 ///
 /// 最佳努力：任何失败只记告警（调用方不阻断启动）；捆绑目录缺失（开发环境未跑
 /// prebuild）时跳过，交由常规引导流程处理；批量待装列表为空则不触发任何安装。
-/// 内置插件阶段事件载荷：「loading」= 核对/安装进行中（前端加载屏显示
-/// `status.loading_internal`），「done」= 结束（回到常规 `status.loading`）。
+/// 内置插件阶段事件载荷：除开始/结束外定期发送 heartbeat，令前端只在安装确实
+/// 无进展时触发 inactivity deadline，同时仍受绝对上限约束。
 #[derive(serde::Serialize, Clone)]
 struct InternalPluginsPhase {
     phase: &'static str,
+    detail: &'static str,
+    completed: usize,
+    total: usize,
 }
 
 /// 串行化内置插件核对/安装：auto_start（Rust 侧 start→launch）与前端 boot 流程
 /// （新增的 boot 期 ensure 命令）可能并发触发，而安装会启动 `dsh plugin add`
 /// 子进程——两个 pnpm 抢同一档案目录会互相打断。若另一路正在执行，这里等它
 /// 完成后再核对（幂等：上次已装好则本轮全部 no-op）。
-static ENSURE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+const ENSURE_ABSOLUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const ENSURE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[derive(Clone)]
+struct EnsureFlight {
+    id: u64,
+    owner: super::process::ProcessOwner,
+    state: EnsureFlightState,
+    result: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnsureFlightState {
+    Running,
+    Cancelling,
+}
+
+enum EnsureSubscription {
+    Running(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
+    Cancelling(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
+}
+
+#[derive(Default)]
+struct EnsureCoordinator {
+    next_id: u64,
+    active: Option<EnsureFlight>,
+}
+
+impl EnsureCoordinator {
+    fn subscribe(&self) -> Option<EnsureSubscription> {
+        self.active.as_ref().map(|flight| match flight.state {
+            EnsureFlightState::Running => EnsureSubscription::Running(flight.result.clone()),
+            EnsureFlightState::Cancelling => EnsureSubscription::Cancelling(flight.result.clone()),
+        })
+    }
+
+    fn start(
+        &mut self,
+    ) -> (
+        u64,
+        super::process::ProcessOwner,
+        tokio::sync::watch::Sender<Option<Result<(), String>>>,
+        tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+    ) {
+        self.next_id = self.next_id.wrapping_add(1);
+        let id = self.next_id;
+        let owner = super::process::new_process_owner();
+        let (result_tx, result_rx) = tokio::sync::watch::channel(None);
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        self.active = Some(EnsureFlight {
+            id,
+            owner,
+            state: EnsureFlightState::Running,
+            result: result_rx.clone(),
+            cancel: cancel_tx.clone(),
+        });
+        (id, owner, result_tx, result_rx, cancel_tx, cancel_rx)
+    }
+
+    fn finish(&mut self, id: u64) {
+        if self.active.as_ref().is_some_and(|flight| flight.id == id) {
+            self.active = None;
+        }
+    }
+
+    fn begin_cancel(&mut self) -> Option<tokio::sync::watch::Receiver<Option<Result<(), String>>>> {
+        let active = self.active.as_mut()?;
+        active.state = EnsureFlightState::Cancelling;
+        let _ = active.cancel.send(true);
+        Some(active.result.clone())
+    }
+}
+
+static ENSURE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<EnsureCoordinator>> =
+    std::sync::OnceLock::new();
+
+fn ensure_lock() -> &'static tokio::sync::Mutex<EnsureCoordinator> {
+    ENSURE_LOCK.get_or_init(|| tokio::sync::Mutex::new(EnsureCoordinator::default()))
+}
 
 pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
     let presets = load_presets(app_handle);
-    let internal: Vec<_> = presets.iter().filter(|p| p.internal).collect();
+    let internal: Vec<_> = presets.into_iter().filter(|p| p.internal).collect();
     if internal.is_empty() {
         return Ok(());
     }
 
-    let _guard = ENSURE_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-    // 前端据此在「Loading internal plugins…」与「Loading plugins…」间切换；
-    // 事件在服务进程启动前发出，于健康轮询期间到达，先于 dsh 自家的 boot 输出。
+    receive_current_or_next_flight(|| subscribe_or_start(app_handle, &internal)).await
+}
+
+async fn subscribe_or_start(
+    app_handle: &AppHandle,
+    internal: &[PreinstallPluginInfo],
+) -> EnsureSubscription {
+    let mut coordinator = ensure_lock().lock().await;
+    match coordinator.subscribe() {
+        Some(subscription) => subscription,
+        None => {
+            let (id, owner, result_tx, result_rx, cancel_tx, cancel_rx) = coordinator.start();
+            let app_handle = app_handle.clone();
+            let internal = internal.to_vec();
+            tauri::async_runtime::spawn(async move {
+                let outcome =
+                    run_ensure_operation(&app_handle, &internal, owner, cancel_tx, cancel_rx).await;
+                // 强杀返回不等于持有句柄的 wait 已完成；必须等精确 owner 的 PID
+                // 守卫随 wait 退出，才能发布结果并允许 Retry 创建下一次 flight。
+                while super::process::active_plugin_pid(owner).is_some() {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                ensure_lock().lock().await.finish(id);
+                let _ = result_tx.send(Some(outcome));
+            });
+            EnsureSubscription::Running(result_rx)
+        }
+    }
+}
+
+async fn receive_current_or_next_flight<F, Fut>(mut acquire: F) -> Result<(), String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = EnsureSubscription>,
+{
+    loop {
+        let subscription = acquire().await;
+        match subscription {
+            EnsureSubscription::Running(mut result) => {
+                return receive_flight_result(&mut result).await?;
+            }
+            EnsureSubscription::Cancelling(mut result) => {
+                // Retry 不继承已取消 flight 的结果；等它完成清理并从 coordinator
+                // 移除后回到循环，创建且只创建一个全新的 flight。
+                let _ = receive_flight_result(&mut result).await?;
+            }
+        }
+    }
+}
+
+async fn receive_flight_result(
+    result: &mut tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+) -> Result<Result<(), String>, String> {
+    loop {
+        if let Some(outcome) = result.borrow().clone() {
+            return Ok(outcome);
+        }
+        result.changed().await.map_err(|_| {
+            "INTERNAL_PLUGIN_ENSURE_DROPPED: install task ended without result".to_string()
+        })?;
+    }
+}
+
+/// 取消共享的内置插件安装并等待拥有者完成清理，确保 Retry 不会叠加新进程。
+pub(crate) async fn cancel() -> Result<(), String> {
+    let mut result = {
+        let mut coordinator = ensure_lock().lock().await;
+        let Some(active) = &coordinator.active else {
+            return Ok(());
+        };
+        log::info!(
+            "cancelling internal plugin ensure flight owned by {:?}",
+            active.owner
+        );
+        coordinator
+            .begin_cancel()
+            .expect("active flight must remain present while coordinator lock is held")
+    };
+    let _ = receive_flight_result(&mut result).await?;
+    Ok(())
+}
+
+async fn run_ensure_operation(
+    app_handle: &AppHandle,
+    internal: &[PreinstallPluginInfo],
+    owner: super::process::ProcessOwner,
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), String> {
+    let total = internal.len();
+    emit_phase(app_handle, "loading", "waiting", 0, total);
+    emit_phase(app_handle, "progress", "checking", 0, total);
+    let refs: Vec<_> = internal.iter().collect();
+    let operation = ensure_inner(app_handle, &refs, cancel.clone(), owner);
+    tokio::pin!(operation);
+    let deadline = tokio::time::sleep(ENSURE_ABSOLUTE_TIMEOUT);
+    tokio::pin!(deadline);
+    let period = std::time::Duration::from_secs(5);
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            outcome = &mut operation => {
+                emit_phase(app_handle, "done", "done", total, total);
+                return outcome;
+            }
+            _ = &mut deadline => {
+                let reason = "INTERNAL_PLUGIN_INSTALL_TIMEOUT: plugin install exceeded 600 seconds";
+                log::error!("{reason}");
+                let _ = cancel_tx.send(true);
+                super::cancel::terminate_owned_install(owner).await;
+                if tokio::time::timeout(ENSURE_CLEANUP_TIMEOUT, &mut operation).await.is_err() {
+                    log::error!("INTERNAL_PLUGIN_CLEANUP_TIMEOUT: plugin process did not exit after forced termination");
+                }
+                emit_phase(app_handle, "done", "timeout", 0, total);
+                return Err(reason.to_string());
+            }
+            changed = cancel.changed() => {
+                if changed.is_err() || *cancel.borrow() {
+                    let reason = "INTERNAL_PLUGIN_INSTALL_CANCELLED: plugin install was cancelled";
+                    log::warn!("{reason}");
+                    super::cancel::terminate_owned_install(owner).await;
+                    if tokio::time::timeout(ENSURE_CLEANUP_TIMEOUT, &mut operation).await.is_err() {
+                        log::error!("INTERNAL_PLUGIN_CLEANUP_TIMEOUT: plugin process did not exit after forced termination");
+                    }
+                    emit_phase(app_handle, "done", "cancelled", 0, total);
+                    return Err(reason.to_string());
+                }
+            }
+            _ = heartbeat.tick() => {
+                emit_phase(app_handle, "progress", "heartbeat", 0, total);
+            }
+        }
+    }
+}
+
+fn emit_phase(
+    app_handle: &AppHandle,
+    phase: &'static str,
+    detail: &'static str,
+    completed: usize,
+    total: usize,
+) {
     let _ = app_handle.emit(
         "internal-plugins-phase",
-        InternalPluginsPhase { phase: "loading" },
+        InternalPluginsPhase {
+            phase,
+            detail,
+            completed,
+            total,
+        },
     );
-    let outcome = ensure_inner(app_handle, &internal).await;
-    let _ = app_handle.emit(
-        "internal-plugins-phase",
-        InternalPluginsPhase { phase: "done" },
-    );
-    outcome
 }
 
 /// 实际的核对与安装：遍历 internal 预设，未安装 / 路径不对 / 被卸载 → 批量重装。
 async fn ensure_inner(
     app_handle: &AppHandle,
     internal: &[&PreinstallPluginInfo],
+    cancel: tokio::sync::watch::Receiver<bool>,
+    owner: super::process::ProcessOwner,
 ) -> Result<(), String> {
     log::info!(
         "checking {} internal preset plugins for install state",
@@ -131,6 +354,7 @@ async fn ensure_inner(
 
     let ids: Vec<String> = need.iter().map(|(id, _, _)| id.clone()).collect();
     log::info!("Reinstalling internal preset plugins: {ids:?}");
+    emit_phase(app_handle, "progress", "installing", 0, ids.len());
 
     // pnpm add 会先解析清单里的所有既有依赖。0.9.0 将随包目录从
     // `preset-plugins` 迁至 `internal-plugins` 后，旧 file:/link: 路径已不存在，pnpm
@@ -158,7 +382,7 @@ async fn ensure_inner(
     }
     // 复用常规安装编排（环境准备/补齐 pnpm/`dsh plugin add file:<dir>`）；
     // 启动阶段无持有进程，install 内部不会停服务。失败同样交给调用方告警。
-    if let Err(e) = super::install::install(app_handle, &ids).await {
+    if let Err(e) = super::install::install_internal(app_handle, &ids, cancel, owner).await {
         return Err(format!("INTERNAL_PLUGIN_INSTALL_FAILED: {e}"));
     }
     Ok(())
@@ -310,6 +534,126 @@ fn dep_matches_spec(actual: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn coordinator_coalesces_waiters_and_releases_for_retry() {
+        let mut coordinator = EnsureCoordinator::default();
+        let (first_id, first_owner, result_tx, first, _, _) = coordinator.start();
+        let EnsureSubscription::Running(duplicate) = coordinator.subscribe().unwrap() else {
+            panic!("running flight must coalesce running waiters");
+        };
+        assert_eq!(coordinator.active.as_ref().unwrap().owner, first_owner);
+        coordinator.finish(first_id);
+        assert!(coordinator.subscribe().is_none());
+        result_tx.send(Some(Ok(()))).unwrap();
+        assert_eq!(first.borrow().as_ref(), Some(&Ok(())));
+        assert_eq!(duplicate.borrow().as_ref(), Some(&Ok(())));
+
+        let (retry_id, _, _, _, _, _) = coordinator.start();
+        assert_ne!(retry_id, first_id);
+    }
+
+    #[tokio::test]
+    async fn cancel_then_immediate_retry_starts_one_fresh_flight() {
+        type FlightResultSender = tokio::sync::watch::Sender<Option<Result<(), String>>>;
+
+        let coordinator =
+            std::sync::Arc::new(tokio::sync::Mutex::new(EnsureCoordinator::default()));
+        let fresh_flight = std::sync::Arc::new(tokio::sync::Mutex::new(
+            None::<(u64, super::super::process::ProcessOwner, FlightResultSender)>,
+        ));
+        let fresh_started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancelling_subscribers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancelling_subscribed = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let (cancelled_id, cancelled_owner, cancelled_tx) = {
+            let mut coordinator = coordinator.lock().await;
+            let (id, owner, result_tx, _, _, mut cancel_signal) = coordinator.start();
+            coordinator.begin_cancel().unwrap();
+            assert!(*cancel_signal.borrow_and_update());
+            (id, owner, result_tx)
+        };
+
+        async fn retry(
+            coordinator: std::sync::Arc<tokio::sync::Mutex<EnsureCoordinator>>,
+            fresh_flight: std::sync::Arc<
+                tokio::sync::Mutex<
+                    Option<(u64, super::super::process::ProcessOwner, FlightResultSender)>,
+                >,
+            >,
+            fresh_started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            cancelling_subscribers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            cancelling_subscribed: std::sync::Arc<tokio::sync::Notify>,
+        ) -> Result<(), String> {
+            receive_current_or_next_flight(|| {
+                let coordinator = coordinator.clone();
+                let fresh_flight = fresh_flight.clone();
+                let fresh_started = fresh_started.clone();
+                let cancelling_subscribers = cancelling_subscribers.clone();
+                let cancelling_subscribed = cancelling_subscribed.clone();
+                async move {
+                    let mut coordinator = coordinator.lock().await;
+                    if let Some(subscription) = coordinator.subscribe() {
+                        if matches!(&subscription, EnsureSubscription::Cancelling(_)) {
+                            cancelling_subscribers
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            cancelling_subscribed.notify_one();
+                        }
+                        return subscription;
+                    }
+                    let (id, owner, result_tx, result_rx, _, _) = coordinator.start();
+                    fresh_started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    *fresh_flight.lock().await = Some((id, owner, result_tx));
+                    EnsureSubscription::Running(result_rx)
+                }
+            })
+            .await
+        }
+
+        let first_retry = tokio::spawn(retry(
+            coordinator.clone(),
+            fresh_flight.clone(),
+            fresh_started.clone(),
+            cancelling_subscribers.clone(),
+            cancelling_subscribed.clone(),
+        ));
+        let second_retry = tokio::spawn(retry(
+            coordinator.clone(),
+            fresh_flight.clone(),
+            fresh_started.clone(),
+            cancelling_subscribers.clone(),
+            cancelling_subscribed.clone(),
+        ));
+
+        while cancelling_subscribers.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            cancelling_subscribed.notified().await;
+        }
+        {
+            let mut coordinator = coordinator.lock().await;
+            coordinator.finish(cancelled_id);
+        }
+        cancelled_tx
+            .send(Some(Err(
+                "INTERNAL_PLUGIN_INSTALL_CANCELLED: plugin install was cancelled".to_string(),
+            )))
+            .unwrap();
+
+        let (retry_id, retry_owner, retry_tx) = loop {
+            if let Some(flight) = fresh_flight.lock().await.take() {
+                break flight;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_ne!(retry_owner, cancelled_owner);
+        assert_eq!(fresh_started.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        coordinator.lock().await.finish(retry_id);
+        retry_tx.send(Some(Ok(()))).unwrap();
+        assert!(first_retry.await.unwrap().is_ok());
+        assert!(second_retry.await.unwrap().is_ok());
+        assert_eq!(fresh_started.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(coordinator.lock().await.subscribe().is_none());
+    }
 
     #[test]
     fn internal_plugin_entry_requires_readable_manifest_object() {

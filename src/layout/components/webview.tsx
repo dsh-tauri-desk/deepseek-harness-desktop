@@ -13,6 +13,12 @@ import { Navbar } from './navbar'
 import { PreinstallSetup } from './preinstall-setup'
 import { Setup } from './setup'
 
+const STARTUP_STATUS_KEYS = {
+  'plugin-install': 'status.loading_internal',
+  'process-boot': 'status.loading_process',
+  'client-modules': 'status.loading_client_modules',
+} as const
+
 /**
  * 主区域视图：壳层导航栏（Navbar）常驻顶部，
  * 安装/错误态渲染 Setup，就绪态渲染 iframe
@@ -24,7 +30,7 @@ export function Webview() {
   const {
     status,
     serviceHealthy,
-    internalLoading,
+    startupPhase,
     iframeError,
     iframeKey,
     iframeSrc,
@@ -82,7 +88,7 @@ export function Webview() {
       <div className="relative min-h-0 flex-1">
         <If
           cond={serviceHealthy}
-          else={<Loadable subtitle={internalLoading ? t('status.loading_internal') : t('status.loading')} />}
+          else={<Loadable subtitle={t(STARTUP_STATUS_KEYS[startupPhase])} />}
         >
           <iframe
             key={iframeKey}

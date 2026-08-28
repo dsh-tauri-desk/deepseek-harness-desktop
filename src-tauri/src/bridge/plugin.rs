@@ -63,6 +63,12 @@ pub async fn ensure_internal_plugins(app_handle: AppHandle) -> Result<(), String
     plugin::ensure_internal_plugins(&app_handle).await
 }
 
+/// 取消共享的内置插件自愈并等待子进程树退出，供启动阶段超时后清理。
+#[tauri::command]
+pub async fn cancel_internal_plugins() -> Result<(), String> {
+    plugin::cancel_internal_plugins().await
+}
+
 /// 是否有新的预装插件需要引导：预设清单内容与上次记录不一致（或老用户无基线）。
 /// 资源文件每次安装都被强制覆盖不可比对，只能比对 app-data 里记录的内容指纹。
 #[tauri::command]

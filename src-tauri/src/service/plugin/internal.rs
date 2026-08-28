@@ -37,39 +37,183 @@ struct InternalPluginsPhase {
 /// （新增的 boot 期 ensure 命令）可能并发触发，而安装会启动 `dsh plugin add`
 /// 子进程——两个 pnpm 抢同一档案目录会互相打断。若另一路正在执行，这里等它
 /// 完成后再核对（幂等：上次已装好则本轮全部 no-op）。
-static ENSURE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+const ENSURE_ABSOLUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const ENSURE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[derive(Clone)]
+struct EnsureFlight {
+    id: u64,
+    owner: super::process::ProcessOwner,
+    result: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Default)]
+struct EnsureCoordinator {
+    next_id: u64,
+    active: Option<EnsureFlight>,
+}
+
+impl EnsureCoordinator {
+    fn subscribe(&self) -> Option<tokio::sync::watch::Receiver<Option<Result<(), String>>>> {
+        self.active.as_ref().map(|flight| flight.result.clone())
+    }
+
+    fn start(
+        &mut self,
+    ) -> (
+        u64,
+        super::process::ProcessOwner,
+        tokio::sync::watch::Sender<Option<Result<(), String>>>,
+        tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+    ) {
+        self.next_id = self.next_id.wrapping_add(1);
+        let id = self.next_id;
+        let owner = super::process::new_process_owner();
+        let (result_tx, result_rx) = tokio::sync::watch::channel(None);
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        self.active = Some(EnsureFlight {
+            id,
+            owner,
+            result: result_rx.clone(),
+            cancel: cancel_tx.clone(),
+        });
+        (id, owner, result_tx, result_rx, cancel_tx, cancel_rx)
+    }
+
+    fn finish(&mut self, id: u64) {
+        if self.active.as_ref().is_some_and(|flight| flight.id == id) {
+            self.active = None;
+        }
+    }
+}
+
+static ENSURE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<EnsureCoordinator>> =
+    std::sync::OnceLock::new();
+
+fn ensure_lock() -> &'static tokio::sync::Mutex<EnsureCoordinator> {
+    ENSURE_LOCK.get_or_init(|| tokio::sync::Mutex::new(EnsureCoordinator::default()))
+}
 
 pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
     let presets = load_presets(app_handle);
-    let internal: Vec<_> = presets.iter().filter(|p| p.internal).collect();
+    let internal: Vec<_> = presets.into_iter().filter(|p| p.internal).collect();
     if internal.is_empty() {
         return Ok(());
     }
 
     let total = internal.len();
-    emit_phase(app_handle, "loading", "waiting", 0, total);
-    let operation = async {
-        let _guard = ENSURE_LOCK
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
-        emit_phase(app_handle, "progress", "checking", 0, total);
-        ensure_inner(app_handle, &internal).await
+    let mut result = {
+        let mut coordinator = ensure_lock().lock().await;
+        if let Some(result) = coordinator.subscribe() {
+            emit_phase(app_handle, "loading", "waiting", 0, total);
+            result
+        } else {
+            let (id, owner, result_tx, result_rx, cancel_tx, cancel_rx) = coordinator.start();
+            let app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let outcome =
+                    run_ensure_operation(&app_handle, &internal, owner, cancel_tx, cancel_rx).await;
+                // 强杀返回不等于持有句柄的 wait 已完成；必须等精确 owner 的 PID
+                // 守卫随 wait 退出，才能发布结果并允许 Retry 创建下一次 flight。
+                while super::process::active_plugin_pid(owner).is_some() {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                ensure_lock().lock().await.finish(id);
+                let _ = result_tx.send(Some(outcome));
+            });
+            result_rx
+        }
     };
+
+    loop {
+        if let Some(outcome) = result.borrow().clone() {
+            return outcome;
+        }
+        result.changed().await.map_err(|_| {
+            "INTERNAL_PLUGIN_ENSURE_DROPPED: install task ended without result".to_string()
+        })?;
+    }
+}
+
+/// 取消共享的内置插件安装并等待拥有者完成清理，确保 Retry 不会叠加新进程。
+pub(crate) async fn cancel() -> Result<(), String> {
+    let mut result = {
+        let coordinator = ensure_lock().lock().await;
+        let Some(active) = &coordinator.active else {
+            return Ok(());
+        };
+        log::info!(
+            "cancelling internal plugin ensure flight owned by {:?}",
+            active.owner
+        );
+        let _ = active.cancel.send(true);
+        active.result.clone()
+    };
+    loop {
+        if result.borrow().is_some() {
+            return Ok(());
+        }
+        result.changed().await.map_err(|_| {
+            "INTERNAL_PLUGIN_CANCEL_DROPPED: install task ended without result".to_string()
+        })?;
+    }
+}
+
+async fn run_ensure_operation(
+    app_handle: &AppHandle,
+    internal: &[PreinstallPluginInfo],
+    owner: super::process::ProcessOwner,
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), String> {
+    let total = internal.len();
+    emit_phase(app_handle, "loading", "waiting", 0, total);
+    emit_phase(app_handle, "progress", "checking", 0, total);
+    let refs: Vec<_> = internal.iter().collect();
+    let operation = ensure_inner(app_handle, &refs, cancel.clone(), owner);
     tokio::pin!(operation);
+    let deadline = tokio::time::sleep(ENSURE_ABSOLUTE_TIMEOUT);
+    tokio::pin!(deadline);
     let period = std::time::Duration::from_secs(5);
     let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let outcome = loop {
+    loop {
         tokio::select! {
-            outcome = &mut operation => break outcome,
+            outcome = &mut operation => {
+                emit_phase(app_handle, "done", "done", total, total);
+                return outcome;
+            }
+            _ = &mut deadline => {
+                let reason = "INTERNAL_PLUGIN_INSTALL_TIMEOUT: plugin install exceeded 600 seconds";
+                log::error!("{reason}");
+                let _ = cancel_tx.send(true);
+                super::cancel::terminate_owned_install(owner).await;
+                if tokio::time::timeout(ENSURE_CLEANUP_TIMEOUT, &mut operation).await.is_err() {
+                    log::error!("INTERNAL_PLUGIN_CLEANUP_TIMEOUT: plugin process did not exit after forced termination");
+                }
+                emit_phase(app_handle, "done", "timeout", 0, total);
+                return Err(reason.to_string());
+            }
+            changed = cancel.changed() => {
+                if changed.is_err() || *cancel.borrow() {
+                    let reason = "INTERNAL_PLUGIN_INSTALL_CANCELLED: plugin install was cancelled";
+                    log::warn!("{reason}");
+                    super::cancel::terminate_owned_install(owner).await;
+                    if tokio::time::timeout(ENSURE_CLEANUP_TIMEOUT, &mut operation).await.is_err() {
+                        log::error!("INTERNAL_PLUGIN_CLEANUP_TIMEOUT: plugin process did not exit after forced termination");
+                    }
+                    emit_phase(app_handle, "done", "cancelled", 0, total);
+                    return Err(reason.to_string());
+                }
+            }
             _ = heartbeat.tick() => {
                 emit_phase(app_handle, "progress", "heartbeat", 0, total);
             }
         }
-    };
-    emit_phase(app_handle, "done", "done", total, total);
-    outcome
+    }
 }
 
 fn emit_phase(
@@ -94,6 +238,8 @@ fn emit_phase(
 async fn ensure_inner(
     app_handle: &AppHandle,
     internal: &[&PreinstallPluginInfo],
+    cancel: tokio::sync::watch::Receiver<bool>,
+    owner: super::process::ProcessOwner,
 ) -> Result<(), String> {
     log::info!(
         "checking {} internal preset plugins for install state",
@@ -188,7 +334,7 @@ async fn ensure_inner(
     }
     // 复用常规安装编排（环境准备/补齐 pnpm/`dsh plugin add file:<dir>`）；
     // 启动阶段无持有进程，install 内部不会停服务。失败同样交给调用方告警。
-    if let Err(e) = super::install::install(app_handle, &ids).await {
+    if let Err(e) = super::install::install_internal(app_handle, &ids, cancel, owner).await {
         return Err(format!("INTERNAL_PLUGIN_INSTALL_FAILED: {e}"));
     }
     Ok(())
@@ -340,6 +486,22 @@ fn dep_matches_spec(actual: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn coordinator_coalesces_waiters_and_releases_for_retry() {
+        let mut coordinator = EnsureCoordinator::default();
+        let (first_id, first_owner, result_tx, first, _, _) = coordinator.start();
+        let duplicate = coordinator.subscribe().unwrap();
+        assert_eq!(coordinator.active.as_ref().unwrap().owner, first_owner);
+        coordinator.finish(first_id);
+        assert!(coordinator.subscribe().is_none());
+        result_tx.send(Some(Ok(()))).unwrap();
+        assert_eq!(first.borrow().as_ref(), Some(&Ok(())));
+        assert_eq!(duplicate.borrow().as_ref(), Some(&Ok(())));
+
+        let (retry_id, _, _, _, _, _) = coordinator.start();
+        assert_ne!(retry_id, first_id);
+    }
 
     #[test]
     fn internal_plugin_entry_requires_readable_manifest_object() {

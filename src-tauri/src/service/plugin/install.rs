@@ -35,7 +35,10 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use super::errors;
 use super::installed::{installed_name, is_installed, profile_dir};
 use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
-use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
+use super::process::{
+    acquire_process_lock, new_process_owner, run_plugin_process, PidGuard, PreinstallLogPayload,
+    ProcessOwner, PREINSTALL_LOG_EVENT,
+};
 use super::recovery::is_actionable_plugin_ref;
 use super::uninstall_recovery;
 
@@ -50,9 +53,31 @@ const MAX_ALLOW_LIST_RETRIES: usize = 8;
 /// 是 8/9 行为）。低于此版本时插件安装必须改用捆绑版 pnpm，否则会出现
 /// 自动合成 peer 后 `No matching version found for @deepseek-ai/...` 的假失败。
 const MIN_TRUSTED_PNPM_MAJOR: u32 = 10;
+const PNPM_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const PNPM_PROBE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// 校验并安装选中的预装插件：`dsh plugin --profile <当前档案> add <ids...>`
 pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), String> {
+    install_with_cancel(app_handle, ids, None, new_process_owner()).await
+}
+
+/// 内置插件启动自愈专用入口：取消信号会阻止被结束的 pnpm/dsh 进程再次进入
+/// allowBuilds 重试，确保硬上限之后不会悄悄拉起下一棵进程树。
+pub(crate) async fn install_internal(
+    app_handle: &AppHandle,
+    ids: &[String],
+    cancel: tokio::sync::watch::Receiver<bool>,
+    owner: ProcessOwner,
+) -> Result<(), String> {
+    install_with_cancel(app_handle, ids, Some(cancel), owner).await
+}
+
+async fn install_with_cancel(
+    app_handle: &AppHandle,
+    ids: &[String],
+    cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    owner: ProcessOwner,
+) -> Result<(), String> {
     if ids.is_empty() {
         return Err("PREINSTALL_EMPTY: no plugins selected".to_string());
     }
@@ -110,7 +135,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         .ok_or("WINDOW_NOT_FOUND: main window missing")?;
 
     // 选定/补齐安装用的 pnpm：返回是否应强制使用捆绑版（版本感知，见 ensure_pnpm）
-    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
+    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window, owner).await?;
     // 首次安装可能早于服务启动；提前写入非交互清理配置，避免 pnpm 在无 TTY
     // 环境以 ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY 中止（issue #130）。
     super::ensure_profile_npmrc(app_handle)?;
@@ -152,7 +177,15 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     // 后重试，直至成功或再无键可加（升级路径同样依赖该重试，见
     // [`run_plugin_with_allow_build_retry`]）。
     let (exit_code, last_output) = run_plugin_with_allow_build_retry(
-        app_handle, &node, &args, &cwd, &envs, &window, "install",
+        app_handle,
+        &node,
+        &args,
+        &cwd,
+        &envs,
+        &window,
+        "install",
+        cancel.as_ref(),
+        owner,
     )
     .await?;
 
@@ -428,11 +461,20 @@ async fn run_plugin_with_allow_build_retry(
     envs: &HashMap<String, String>,
     window: &WebviewWindow,
     action: &str,
+    cancel: Option<&tokio::sync::watch::Receiver<bool>>,
+    owner: ProcessOwner,
 ) -> Result<(i32, String), String> {
+    let _process_guard = acquire_process_lock().await;
     let mut retries = 0usize;
     let mut all_output = String::new();
     let exit_code = loop {
-        let (code, captured) = run_plugin_process(node, args, cwd, envs, window).await?;
+        if cancel.is_some_and(|signal| *signal.borrow()) {
+            return Err("PLUGIN_OPERATION_CANCELLED: plugin operation was cancelled".to_string());
+        }
+        let (code, captured) = run_plugin_process(node, args, cwd, envs, window, owner).await?;
+        if cancel.is_some_and(|signal| *signal.borrow()) {
+            return Err("PLUGIN_OPERATION_CANCELLED: plugin operation was cancelled".to_string());
+        }
         append_command_output(&mut all_output, &captured);
         let new_keys = parse_allowlist_keys(&captured);
         // 有可补充的 allowBuilds 键且未达上限 → 写入并重试（无论本次退出码是否为 0，
@@ -553,7 +595,8 @@ async fn run_single_plugin_command(
         return Err("HARNESS_NOT_FOUND: dsh CLI missing".to_string());
     }
 
-    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
+    let owner = new_process_owner();
+    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window, owner).await?;
     // `.npmrc` 可能在服务启动后被删除；升级/卸载同样可能触发 pnpm 非交互清理。
     super::ensure_profile_npmrc(app_handle)?;
 
@@ -583,9 +626,10 @@ async fn run_single_plugin_command(
 
     let cwd = config::get_dsh_install_path(app_handle);
     log::info!("Running dsh plugin {action} for {id}");
-    let (exit_code, output) =
-        run_plugin_with_allow_build_retry(app_handle, &node, &args, &cwd, &envs, &window, action)
-            .await?;
+    let (exit_code, output) = run_plugin_with_allow_build_retry(
+        app_handle, &node, &args, &cwd, &envs, &window, action, None, owner,
+    )
+    .await?;
 
     if exit_code != 0 {
         log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
@@ -703,10 +747,14 @@ fn strip_ansi(s: &str) -> String {
 /// 用户 pnpm 过旧（8/9：不读 pnpm-workspace.yaml 的 autoInstallPeers、有
 /// workspace-root gate；corepack shim 在 Node 24 上还会 ERR_INVALID_THIS 崩溃）
 /// 或版本不可探测 → 走捆绑版。
-async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<bool, String> {
+async fn ensure_pnpm(
+    app_handle: &AppHandle,
+    window: &WebviewWindow,
+    owner: ProcessOwner,
+) -> Result<bool, String> {
     // 档案的 node_modules 由哪个 pnpm 主版本创建（.modules.yaml 的 storeDir 段）
     let store_major = profile_store_major(app_handle);
-    let user_major = user_pnpm_major_version(app_handle);
+    let user_major = user_pnpm_major_version_bounded(app_handle, owner).await?;
 
     // 1) store 主版本已知 → 优先选与 store 一致的 pnpm（用户版或捆绑版）
     if let Some(store) = store_major {
@@ -776,6 +824,76 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
     Ok(true)
 }
 
+async fn user_pnpm_major_version_bounded(
+    app_handle: &AppHandle,
+    owner: ProcessOwner,
+) -> Result<Option<u32>, String> {
+    let Some(pnpm) = cli::find_user_pnpm(app_handle) else {
+        return Ok(None);
+    };
+    let node = config::get_node_binary_path(app_handle);
+    let mut command = std::process::Command::new(&pnpm);
+    command.arg("--version");
+    if let Some(path) = pnpm_probe_path(&pnpm, Some(&node)) {
+        command.env("PATH", path);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let child = match command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            log::warn!(
+                "pnpm version probe failed to spawn {}: {error}",
+                pnpm.display()
+            );
+            return Ok(None);
+        }
+    };
+    let pid = child.id();
+    let pid_guard = PidGuard::set(owner, pid);
+    let mut waiter = tauri::async_runtime::spawn_blocking(move || {
+        let _pid_guard = pid_guard;
+        child.wait_with_output()
+    });
+
+    let output = match tokio::time::timeout(PNPM_PROBE_TIMEOUT, &mut waiter).await {
+        Ok(joined) => joined
+            .map_err(|e| format!("PNPM_PROBE_WAIT_FAILED: {e}"))?
+            .map_err(|e| format!("PNPM_PROBE_OUTPUT_FAILED: {e}"))?,
+        Err(_) => {
+            log::warn!(
+                "PNPM_PROBE_TIMEOUT: pnpm version probe exceeded {} seconds",
+                PNPM_PROBE_TIMEOUT.as_secs()
+            );
+            super::cancel::terminate_owned_install(owner).await;
+            let joined = tokio::time::timeout(PNPM_PROBE_CLEANUP_TIMEOUT, &mut waiter)
+                .await
+                .map_err(|_| {
+                    "PNPM_PROBE_CLEANUP_TIMEOUT: pnpm version probe did not exit after forced termination"
+                        .to_string()
+                })?;
+            joined
+                .map_err(|e| format!("PNPM_PROBE_WAIT_FAILED: {e}"))?
+                .map_err(|e| format!("PNPM_PROBE_OUTPUT_FAILED: {e}"))?;
+            return Ok(None);
+        }
+    };
+    Ok(parse_pnpm_major_output(&pnpm, &output))
+}
+
 /// 用户 pnpm 主版本号（解析 `pnpm --version` 首个点分字段）；不存在或不可运行
 /// （corepack shim 在 Node 24 上 ERR_INVALID_THIS 崩溃等）返回 None。
 ///
@@ -816,6 +934,10 @@ fn pnpm_major_version_at_with_node(pnpm: &Path, node: Option<&Path>) -> Option<u
             return None;
         }
     };
+    parse_pnpm_major_output(pnpm, &output)
+}
+
+fn parse_pnpm_major_output(pnpm: &Path, output: &std::process::Output) -> Option<u32> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         log::warn!(

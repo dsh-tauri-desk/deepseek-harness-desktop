@@ -580,6 +580,9 @@ export const harness = defineStore({
             return
           }
           if (result.timeout) {
+            void invoke('cancel_internal_plugins').catch((cancelError) => {
+              console.error('[Harness] failed to cancel timed-out internal plugin install:', cancelError)
+            })
             throw startupError('plugin-install', result.reason, result.timeout)
           }
         }

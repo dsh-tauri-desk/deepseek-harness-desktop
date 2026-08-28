@@ -193,6 +193,8 @@
   "sessions.status.active": "活跃",
   "sessions.status.archived": "已归档",
   "sessions.status.orphan": "孤儿",
+  "sessions.parse_failed": "解析失败",
+  "sessions.parse_failed_warning": "工作区索引解析失败，已降级为孤儿展示",
   "sessions.delete.one": "删除",
   "sessions.delete.batch": "删除选中",
   "sessions.delete.confirm_title": "确认删除",

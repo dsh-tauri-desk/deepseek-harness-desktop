@@ -1,7 +1,7 @@
 import { ArrowRotateRight, FolderOpen, TrashBin } from '@gravity-ui/icons'
 import { Button, Checkbox, Chip, Input, Label, Spinner } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useDshSessions } from '@/hooks/use-dsh-sessions'
@@ -79,6 +79,11 @@ function SessionRow({ session: s, selected, onToggle, onDelete, onOpenDir, delet
                 {t('sessions.empty')}
               </Chip>
             </If>
+            <If cond={!!s.isParseFailed}>
+              <Chip size="sm" variant="soft" color="danger" className="shrink-0 rounded-md font-medium">
+                {t('sessions.parse_failed')}
+              </Chip>
+            </If>
           </div>
           <div className="ml-7 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
             <span>{formatSize(s.size)}</span>
@@ -140,7 +145,9 @@ export function ConfigSessions() {
   const [sortAsc, setSortAsc] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
-  const filtered = sessions.filter((s) => {
+  const hasParseFailed = useMemo(() => sessions.some(s => s.isParseFailed), [sessions])
+
+  const filtered = useMemo(() => sessions.filter((s) => {
     if (filter !== 'all' && s.archivedStatus !== filter) return false
     if (search) {
       const q = search.toLowerCase()
@@ -149,24 +156,28 @@ export function ConfigSessions() {
       if (!title.includes(q) && !s.id.toLowerCase().includes(q) && !cwd.includes(q)) return false
     }
     return true
-  })
+  }), [sessions, filter, search])
 
-  filtered.sort((a, b) => {
-    let cmp = 0
-    if (sortKey === 'size') cmp = a.size - b.size
-    else if (sortKey === 'turns') cmp = a.turns - b.turns
-    else cmp = a.createdAt - b.createdAt
-    return sortAsc ? cmp : -cmp
-  })
+  const sorted = useMemo(() => {
+    const copy = [...filtered]
+    copy.sort((a, b) => {
+      let cmp = 0
+      if (sortKey === 'size') cmp = a.size - b.size
+      else if (sortKey === 'turns') cmp = a.turns - b.turns
+      else cmp = a.createdAt - b.createdAt
+      return sortAsc ? cmp : -cmp
+    })
+    return copy
+  }, [filtered, sortKey, sortAsc])
 
-  const counts = {
+  const counts = useMemo(() => ({
     all: sessions.length,
     active: sessions.filter(s => s.archivedStatus === 'active').length,
     archived: sessions.filter(s => s.archivedStatus === 'archived').length,
     orphan: sessions.filter(s => s.archivedStatus === 'orphan').length,
-  }
+  }), [sessions])
 
-  const areAllFilteredSelected = filtered.length > 0 && filtered.every(s => selected.has(s.id))
+  const areAllFilteredSelected = sorted.length > 0 && sorted.every(s => selected.has(s.id))
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -181,13 +192,13 @@ export function ConfigSessions() {
     if (areAllFilteredSelected) {
       setSelected((prev) => {
         const next = new Set(prev)
-        for (const s of filtered) next.delete(s.id)
+        for (const s of sorted) next.delete(s.id)
         return next
       })
     } else {
       setSelected((prev) => {
         const next = new Set(prev)
-        for (const s of filtered) next.add(s.id)
+        for (const s of sorted) next.add(s.id)
         return next
       })
     }
@@ -195,20 +206,33 @@ export function ConfigSessions() {
 
   async function handleDelete(ids: string[]) {
     if (ids.length === 0) return
-    const preview = ids.slice(0, 3).map(id => sessions.find(s => s.id === id)?.title || id).join('、')
+    // 中概率：长标题/路径撑破 AlertDialog 400px，需单项截断+总长截断
+    function truncatePreview(text: string, max = 24) {
+      const t = text.trim()
+      return t.length > max ? `${t.slice(0, max)}…` : t
+    }
+    const rawPreview = ids.slice(0, 3).map(id => truncatePreview(sessions.find(s => s.id === id)?.title || id))
+    const preview = rawPreview.join('、')
     const more = ids.length > 3 ? t('sessions.delete.batch_more', { count: ids.length - 3 }) : ''
+    const previewText = preview + more
+    // 兜底：总长>72截断，避免 3*24+后缀仍溢出
+    const previewCapped = previewText.length > 72 ? `${previewText.slice(0, 72)}…` : previewText
     const confirmed = await openDialog({
       status: 'danger',
       title: t('sessions.delete.confirm_title'),
       description: ids.length === 1
-        ? t('sessions.delete.confirm_desc_one', { title: preview })
-        : t('sessions.delete.confirm_desc_batch', { count: ids.length, preview: preview + more }),
+        ? t('sessions.delete.confirm_desc_one', { title: previewCapped })
+        : t('sessions.delete.confirm_desc_batch', { count: ids.length, preview: previewCapped }),
       confirmText: t('buttons.confirm'),
       cancelText: t('buttons.cancel'),
     })
     if (!confirmed) return
     try {
-      await deleteSessions(ids)
+      // 超100自动分批
+      for (let i = 0; i < ids.length; i += 100) {
+        // eslint-disable-next-line no-await-in-loop
+        await deleteSessions(ids.slice(i, i + 100))
+      }
       setSelected((prev) => {
         const next = new Set(prev)
         for (const id of ids) next.delete(id)
@@ -235,6 +259,12 @@ export function ConfigSessions() {
         title={t('config.sessions')}
         description={t('sessions.description')}
       />
+
+      <If cond={hasParseFailed}>
+        <div className="rounded-md border border-warning/30 bg-warning/5 p-2 text-xs text-warning">
+          {t('sessions.parse_failed_warning')}
+        </div>
+      </If>
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
@@ -267,7 +297,16 @@ export function ConfigSessions() {
               variant={filter === k ? 'primary' : 'soft'}
               color={filter === k ? 'accent' : 'default'}
               className="shrink-0 cursor-pointer rounded-md font-medium"
+              role="button"
+              tabIndex={0}
+              aria-pressed={filter === k}
               onClick={() => setFilter(k)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setFilter(k)
+                }
+              }}
             >
               {t(`sessions.filter.${k}`)}
               {' '}
@@ -315,13 +354,13 @@ export function ConfigSessions() {
 
       <PanelState loading={loading} error={error}>
         <If
-          cond={filtered.length === 0}
+          cond={sorted.length === 0}
           else={(
             <div className="flex flex-col gap-4">
               <div className="flex items-center gap-2 px-1">
                 <Checkbox
                   isSelected={areAllFilteredSelected}
-                  isIndeterminate={!areAllFilteredSelected && filtered.some(s => selected.has(s.id))}
+                  isIndeterminate={!areAllFilteredSelected && sorted.some(s => selected.has(s.id))}
                   onChange={toggleSelectAll}
                   isDisabled={deletePending}
                   aria-label={t('sessions.select_all')}
@@ -334,10 +373,10 @@ export function ConfigSessions() {
                   </Checkbox.Content>
                 </Checkbox>
                 <span className="text-xs text-muted">{t('sessions.select_all')}</span>
-                <span className="ml-auto text-xs text-muted">{t('sessions.total', { count: filtered.length })}</span>
+                <span className="ml-auto text-xs text-muted">{t('sessions.total', { count: sorted.length })}</span>
               </div>
               <div className="flex flex-col gap-4">
-                {filtered.map(s => (
+                {sorted.map(s => (
                   <SessionRow
                     key={s.id}
                     session={s}

@@ -193,6 +193,8 @@
   "sessions.status.active": "Active",
   "sessions.status.archived": "Archived",
   "sessions.status.orphan": "Orphan",
+  "sessions.parse_failed": "Parse failed",
+  "sessions.parse_failed_warning": "Workspace index parse failed — showing as orphan",
   "sessions.delete.one": "Delete",
   "sessions.delete.batch": "Delete selected",
   "sessions.delete.confirm_title": "Confirm deletion",

@@ -14,6 +14,7 @@ export interface SessionFileInfo {
   archivedStatus: 'active' | 'archived' | 'orphan'
   isEmpty: boolean
   path: string
+  isParseFailed?: boolean
 }
 
 export interface UseDshSessionsResult {
@@ -42,6 +43,8 @@ export function useDshSessions(): UseDshSessionsResult {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dsh-sessions'],
     queryFn: () => invoke<SessionFileInfo[]>('get_session_files'),
+    staleTime: 30_000,
+    gcTime: 300_000,
   })
 
   const invalidate = () => {
@@ -54,14 +57,9 @@ export function useDshSessions(): UseDshSessionsResult {
   })
 
   const open = useMutation({
-    mutationFn: async (id: string) => {
-      setOpenId(id)
-      try {
-        return await invoke<void>('open_session_dir', { id })
-      } finally {
-        setOpenId(null)
-      }
-    },
+    mutationFn: (id: string) => invoke<void>('open_session_dir', { id }),
+    onMutate: (id) => setOpenId(id),
+    onSettled: () => setOpenId(null),
   })
 
   return {

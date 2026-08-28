@@ -35,6 +35,8 @@ pub struct SessionFileInfo {
     pub is_empty: bool,
     /// 绝对路径
     pub path: String,
+    /// workspace.json 是否解析失败（降级为可删孤儿）
+    pub is_parse_failed: bool,
 }
 
 /// `storages/workspace.json` 的最小子集
@@ -124,18 +126,24 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
-/// 解析 workspace.json 得到两集合
+/// 解析 workspace.json 得到两集合及解析失败标记
 fn load_workspace_sets<R: tauri::Runtime>(
     app_handle: &AppHandle<R>,
-) -> (HashSet<String>, HashSet<String>) {
+) -> (HashSet<String>, HashSet<String>, bool) {
     let path = storages_dir(app_handle).join("workspace.json");
     let data = match fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(_) => return (HashSet::new(), HashSet::new()),
+        Err(e) => {
+            // 文件缺失视为非失败（全新环境），仅读取错误视为失败需警告
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return (HashSet::new(), HashSet::new(), false);
+            }
+            return (HashSet::new(), HashSet::new(), true);
+        }
     };
     let file: WorkspaceFile = match serde_json::from_str(&data) {
         Ok(v) => v,
-        Err(_) => return (HashSet::new(), HashSet::new()),
+        Err(_) => return (HashSet::new(), HashSet::new(), true),
     };
     let archived: HashSet<String> = file.global.archived_session_ids.into_iter().collect();
     let mut active = HashSet::new();
@@ -144,7 +152,7 @@ fn load_workspace_sets<R: tauri::Runtime>(
             active.insert(sid.clone());
         }
     }
-    (archived, active)
+    (archived, active, false)
 }
 
 /// 从 projcache 取会话元数据
@@ -251,7 +259,7 @@ pub fn list<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<SessionF
     if !root.exists() {
         return Ok(Vec::new());
     }
-    let (archived_set, active_set) = load_workspace_sets(app_handle);
+    let (archived_set, active_set, is_parse_failed) = load_workspace_sets(app_handle);
     let proj_map = load_projcache_map(app_handle);
     let mut out = Vec::new();
     let workspaces = fs::read_dir(&root).map_err(|e| format!("SESSION_SCAN_FAILED: read sessions root failed: {e}"))?;
@@ -273,8 +281,8 @@ pub fn list<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<SessionF
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            let has_data = sess_path.join("session.jsonl.zstd").exists()
-                || fs::read_dir(&sess_path).map(|mut rd| rd.next().is_some()).unwrap_or(false);
+            // 严格：仅 session.jsonl.zstd 存在才算有效会话
+            let has_data = sess_path.join("session.jsonl.zstd").exists();
             if !has_data {
                 continue;
             }
@@ -308,6 +316,7 @@ pub fn list<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<SessionF
                 archived_status,
                 is_empty,
                 path: sess_path.to_string_lossy().to_string(),
+                is_parse_failed,
             });
         }
     }
@@ -317,7 +326,9 @@ pub fn list<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<SessionF
 
 /// 原子写入 JSON 文件（tmp + rename）
 fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
+    // 避免 workspace.json -> workspace.tmp 歧义，改为 workspace.json.tmp
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp");
+    let tmp = path.with_file_name(format!("{file_name}.tmp"));
     let data = serde_json::to_string_pretty(value)
         .map_err(|e| format!("SESSION_WRITE_FAILED: serialize failed: {e}"))?;
     fs::write(&tmp, data).map_err(|e| format!("SESSION_WRITE_FAILED: write tmp failed: {e}"))?;

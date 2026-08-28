@@ -29,14 +29,14 @@ pub fn app_name() -> &'static str {
 }
 
 #[cfg(windows)]
-fn windows_run_entry_exists() -> Result<bool, String> {
+fn windows_run_entry_exists(name: &str) -> Result<bool, String> {
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let run_key = match current_user.open_subkey_with_flags(RUN_REGISTRY_KEY, KEY_READ) {
         Ok(key) => key,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("AUTOSTART_REGISTRY_FAILED: {error}")),
     };
-    match run_key.get_raw_value(app_name()) {
+    match run_key.get_raw_value(name) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
         Err(error) => Err(format!("AUTOSTART_REGISTRY_FAILED: {error}")),
@@ -52,7 +52,7 @@ fn ensure_windows_run_key() -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn remove_windows_startup_approval() -> Result<(), String> {
+fn remove_windows_startup_approval(name: &str) -> Result<(), String> {
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let key =
         match current_user.open_subkey_with_flags(STARTUP_APPROVED_REGISTRY_KEY, KEY_SET_VALUE) {
@@ -60,7 +60,7 @@ fn remove_windows_startup_approval() -> Result<(), String> {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(format!("AUTOSTART_REGISTRY_FAILED: {error}")),
         };
-    match key.delete_value(app_name()) {
+    match key.delete_value(name) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("AUTOSTART_REGISTRY_FAILED: {error}")),
@@ -70,7 +70,7 @@ fn remove_windows_startup_approval() -> Result<(), String> {
 /// 从系统读取当前登录启动状态，允许用户在系统设置中直接修改它。
 pub fn is_enabled<R: Runtime>(app_handle: &AppHandle<R>) -> Result<bool, String> {
     #[cfg(windows)]
-    if !windows_run_entry_exists()? {
+    if !windows_run_entry_exists(app_name())? {
         return Ok(false);
     }
 
@@ -92,12 +92,12 @@ pub fn set_enabled<R: Runtime>(app_handle: &AppHandle<R>, enabled: bool) -> Resu
     } else {
         #[cfg(windows)]
         {
-            if windows_run_entry_exists()? {
+            if windows_run_entry_exists(app_name())? {
                 manager
                     .disable()
                     .map_err(|error| format!("AUTOSTART_DISABLE_FAILED: {error}"))?;
             }
-            remove_windows_startup_approval()?;
+            remove_windows_startup_approval(app_name())?;
         }
         #[cfg(not(windows))]
         manager
@@ -114,54 +114,153 @@ pub fn set_enabled<R: Runtime>(app_handle: &AppHandle<R>, enabled: bool) -> Resu
     Ok(actual)
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
+    use auto_launch::{AutoLaunch, AutoLaunchBuilder};
+    use std::path::PathBuf;
+
+    #[cfg(windows)]
     use super::{
-        app_name, ensure_windows_run_key, remove_windows_startup_approval, windows_run_entry_exists,
+        ensure_windows_run_key, remove_windows_startup_approval, windows_run_entry_exists,
+        RUN_REGISTRY_KEY,
     };
-    use auto_launch::AutoLaunch;
+    #[cfg(windows)]
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    #[cfg(windows)]
+    use winreg::RegKey;
 
-    /// 真实读写当前用户启动项；默认忽略，需在 Windows 上显式运行。
-    #[test]
-    #[ignore = "mutates and restores the current user's Windows autostart entry"]
-    fn windows_autostart_registration_round_trip() {
-        ensure_windows_run_key().expect("Windows Run key should be available");
-        let executable = std::env::current_exe().expect("test executable path should be available");
-        let executable = executable.to_string_lossy();
-        let args: [&str; 0] = [];
-        let manager = AutoLaunch::new(app_name(), executable.as_ref(), &args);
-        let initially_enabled = manager
-            .is_enabled()
-            .expect("initial autostart state should be readable");
+    const TEST_APP_NAME: &str = "Deepseek Harness Desktop Autostart Test";
 
-        let result = (|| -> Result<(), String> {
-            manager.enable().map_err(|error| error.to_string())?;
-            if !manager.is_enabled().map_err(|error| error.to_string())? {
-                return Err("autostart should be enabled after registration".to_string());
-            }
+    struct AutostartCleanup {
+        manager: AutoLaunch,
+    }
 
-            manager.disable().map_err(|error| error.to_string())?;
-            remove_windows_startup_approval()?;
-            if windows_run_entry_exists()? {
-                return Err("autostart entry should be removed after disabling".to_string());
-            }
-            Ok(())
-        })();
-
-        // 无论断言结果如何，都恢复测试前状态，避免污染开发机。
-        if initially_enabled {
-            manager
-                .enable()
-                .expect("initial autostart state should restore");
-        } else {
-            if windows_run_entry_exists().unwrap_or(false) {
-                manager
-                    .disable()
-                    .expect("temporary autostart entry should be removed");
-            }
-            remove_windows_startup_approval()
-                .expect("temporary task manager state should be removed");
+    impl Drop for AutostartCleanup {
+        fn drop(&mut self) {
+            let _ = clear_test_entry(&self.manager);
         }
-        result.expect("Windows autostart registration should round-trip");
+    }
+
+    fn test_manager() -> (AutoLaunch, PathBuf) {
+        let executable = std::env::current_exe().expect("test executable path should be available");
+        let manager = AutoLaunchBuilder::new()
+            .set_app_name(TEST_APP_NAME)
+            .set_app_path(executable.to_string_lossy().as_ref())
+            .set_use_launch_agent(true)
+            .build()
+            .expect("test autostart manager should build");
+        (manager, executable)
+    }
+
+    #[cfg(windows)]
+    fn clear_test_entry(manager: &AutoLaunch) -> Result<(), String> {
+        ensure_windows_run_key()?;
+        if windows_run_entry_exists(TEST_APP_NAME)? {
+            manager
+                .disable()
+                .map_err(|error| format!("AUTOSTART_TEST_CLEANUP_FAILED: {error}"))?;
+        }
+        remove_windows_startup_approval(TEST_APP_NAME)
+    }
+
+    #[cfg(not(windows))]
+    fn clear_test_entry(manager: &AutoLaunch) -> Result<(), String> {
+        manager
+            .disable()
+            .map_err(|error| format!("AUTOSTART_TEST_CLEANUP_FAILED: {error}"))
+    }
+
+    fn round_trip() -> (AutostartCleanup, PathBuf) {
+        let (manager, executable) = test_manager();
+        clear_test_entry(&manager).expect("stale test autostart entry should be removed");
+        let cleanup = AutostartCleanup { manager };
+
+        assert!(
+            !cleanup
+                .manager
+                .is_enabled()
+                .expect("disabled state should be readable"),
+            "test autostart entry should start disabled"
+        );
+        cleanup
+            .manager
+            .enable()
+            .expect("test autostart entry should enable");
+        assert!(
+            cleanup
+                .manager
+                .is_enabled()
+                .expect("enabled state should be readable"),
+            "test autostart entry should be enabled"
+        );
+
+        (cleanup, executable)
+    }
+
+    fn finish_round_trip(cleanup: &AutostartCleanup) {
+        clear_test_entry(&cleanup.manager).expect("test autostart entry should disable");
+        assert!(
+            !cleanup
+                .manager
+                .is_enabled()
+                .expect("disabled state should be readable"),
+            "test autostart entry should be disabled"
+        );
+        clear_test_entry(&cleanup.manager).expect("repeated disable should be idempotent");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_autostart_registration_round_trip() {
+        let (cleanup, executable) = round_trip();
+        let value: String = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(RUN_REGISTRY_KEY, KEY_READ)
+            .expect("Windows Run key should be readable")
+            .get_value(TEST_APP_NAME)
+            .expect("test Run value should exist");
+        assert!(
+            value.contains(executable.to_string_lossy().as_ref()),
+            "Run value should contain the current test executable"
+        );
+        finish_round_trip(&cleanup);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_autostart_registration_round_trip() {
+        let (cleanup, executable) = round_trip();
+        let plist = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("HOME should be available")
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{TEST_APP_NAME}.plist"));
+        let content =
+            std::fs::read_to_string(&plist).expect("LaunchAgent plist should be readable");
+        assert!(content.contains(&format!("<string>{TEST_APP_NAME}</string>")));
+        assert!(content.contains(&format!("<string>{}</string>", executable.display())));
+        let status = std::process::Command::new("plutil")
+            .args(["-lint", plist.to_string_lossy().as_ref()])
+            .status()
+            .expect("plutil should run");
+        assert!(status.success(), "LaunchAgent plist should be valid");
+        finish_round_trip(&cleanup);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_autostart_registration_round_trip() {
+        let (cleanup, executable) = round_trip();
+        let desktop_entry = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("HOME should be available")
+            .join(".config")
+            .join("autostart")
+            .join(format!("{TEST_APP_NAME}.desktop"));
+        let content =
+            std::fs::read_to_string(desktop_entry).expect("desktop entry should be readable");
+        assert!(content.contains(&format!("Name={TEST_APP_NAME}")));
+        assert!(content.contains(&format!("Exec={}", executable.display())));
+        finish_round_trip(&cleanup);
     }
 }

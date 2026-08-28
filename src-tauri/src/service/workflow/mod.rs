@@ -1032,23 +1032,23 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
             .map(|(_, value)| std::ffi::OsString::from(value))
             .unwrap_or_default();
-            let git_dirs = win_inspector::git_bash_bin_dirs();
-            // 只打印注入的前缀目录，完整 PATH 太长会刷屏
-            for dir in &git_dirs {
-                log::debug!("harness service PATH prepend: {}", dir.to_string_lossy());
-            }
-            let mut paths = vec![crate::service::cli::get_bin_dir(&app_handle)];
-            paths.push(node_dir.to_path_buf());
-            if let Some(git_dir) = config::get_git_cmd_dir(&app_handle) {
-                log::debug!(
-                    "harness service Git PATH prepend: {}",
-                    git_dir.to_string_lossy()
-                );
-                paths.push(git_dir);
-            }
-            paths.extend(git_dirs);
-            paths.extend(std::env::split_paths(&existing_path));
-            if let Ok(new_path) = std::env::join_paths(paths) {
+        let git_dirs = win_inspector::git_bash_bin_dirs();
+        // 只打印注入的前缀目录，完整 PATH 太长会刷屏
+        for dir in &git_dirs {
+            log::debug!("harness service PATH prepend: {}", dir.to_string_lossy());
+        }
+        let mut paths = vec![crate::service::cli::get_bin_dir(&app_handle)];
+        paths.push(node_dir.to_path_buf());
+        if let Some(git_dir) = config::get_git_cmd_dir(&app_handle) {
+            log::debug!(
+                "harness service Git PATH prepend: {}",
+                git_dir.to_string_lossy()
+            );
+            paths.push(git_dir);
+        }
+        paths.extend(git_dirs);
+        paths.extend(std::env::split_paths(&existing_path));
+        if let Ok(new_path) = std::env::join_paths(paths) {
             explicit.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
         }
     }

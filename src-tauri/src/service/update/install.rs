@@ -308,10 +308,10 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
     // 完整性校验：摘要由元数据阶段强制取得，校验失败即拒绝，
     // 不保留为可安装文件，也不能被 open_installer 打开。流式校验避免整块读入内存。
     if let Err(e) = verify_installer_sha256(&tmp, &release.digest) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("UPDATE_DOWNLOAD: {e}"));
-        }
-        log::info!("Installer SHA-256 verified for {}", release.asset_name);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("UPDATE_DOWNLOAD: {e}"));
+    }
+    log::info!("Installer SHA-256 verified for {}", release.asset_name);
 
     std::fs::rename(&tmp, &path).map_err(|e| format!("UPDATE_FILE: {e}"))?;
 

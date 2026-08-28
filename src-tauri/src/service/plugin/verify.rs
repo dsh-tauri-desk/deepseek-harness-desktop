@@ -326,7 +326,7 @@ async fn spawn_and_wait(
                     Ok(Some(status)) => break Ok(status.code().unwrap_or(1)),
                     Ok(None) if Instant::now() < deadline => {
                         std::thread::sleep(Duration::from_millis(50));
-    }
+                    }
                     Ok(None) => {
                         crate::service::workflow::kill_pid_tree(pid);
                         let _ = child.kill();
@@ -335,10 +335,10 @@ async fn spawn_and_wait(
                             "PNPM_REPAIR_TIMEOUT: repair process exceeded {} seconds",
                             PLUGIN_PROCESS_TIMEOUT.as_secs()
                         ));
-}
+                    }
                     Err(error) => break Err(format!("PNPM_REPAIR_WAIT: {error}")),
-        }
-}
+                }
+            }
         })
         .await
         .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))??;

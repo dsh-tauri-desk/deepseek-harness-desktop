@@ -222,7 +222,7 @@ export function validateManifest(): InternalPlugin[] {
         die(`${id}: Git 来源必须提供完整 40 位 commit SHA`)
       }
       return { id, spec, commit: record.commit.toLowerCase() }
-}
+    }
 
     if (typeof record.integrity !== 'string' || !NPM_INTEGRITY_RE.test(record.integrity)) {
       die(`${id}: npm 来源必须提供 sha512 integrity`)
@@ -410,5 +410,5 @@ function main(): void {
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(SCRIPT_PATH)) {
-main()
+  main()
 }

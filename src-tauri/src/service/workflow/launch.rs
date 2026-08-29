@@ -294,7 +294,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_profile_npmrc(&app_handle) {
         log::warn!("ensure profile .npmrc failed: {e}");
     }
-    // 弃用插件自动卸载：预设清单里带 `deprecated` 标记的社区插件若已安装，启动时
+    // 弃用插件自动卸载：`deprecated-plugins.json` 登记的社区插件若已安装，启动时
     // 自动移除（避免残留插件继续在 profile 里加载、甚至导致启动失败）。最佳努力：
     // 失败只告警，不阻断启动。
     if let Err(e) = crate::service::plugin::uninstall_deprecated_plugins(&app_handle).await {

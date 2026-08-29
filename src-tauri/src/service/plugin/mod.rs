@@ -21,7 +21,7 @@
 //! - [`verify`]：预装插件完整性自检（清单引用但 node_modules 产物缺失时 `pnpm install` 修复）
 //! - [`install`]：对外安装/升级/卸载编排（目录模块 `install/`：编排入口、spec 准备、
 //!   子进程环境、pnpm 选版、allowBuilds 白名单、错误诊断与产物核验），
-//!   以及启动时对清单中带 `deprecated` 标记的社区插件自动卸载
+//!   以及启动时对 `resources/deprecated-plugins.json` 登记的社区插件自动卸载
 //! - [`errors`]：插件错误记录（安装/升级/卸载失败 + 页面运行期上报，持久化）
 //! - [`process`]：dsh 子进程启动与输出流逐行转发
 //! - [`cancel`]：Windows 下取消正在进行的安装

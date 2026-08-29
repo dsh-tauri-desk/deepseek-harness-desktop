@@ -3,6 +3,7 @@
 //! 卸载后核验 profile 清单，插件仍被引用时走离线卸载兜底（受保护包除外）。
 //! 另含启动期弃用插件自动卸载（`uninstall_deprecated_plugins`）。
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -19,6 +20,7 @@ use super::errors;
 use super::installed_name;
 use super::is_actionable_plugin_ref;
 use super::is_installed;
+use super::load_deprecated_ids;
 use super::load_presets;
 use super::new_process_owner;
 use super::pnpm::ensure_pnpm;
@@ -78,35 +80,40 @@ pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
 
 /// 计算需要自动卸载的弃用插件已安装包名（纯函数，便于单测）。
 ///
-/// 命中条件：清单中带 `deprecated` 标记、非内部插件（内部插件由启动自愈强制
-/// 安装，不适用弃用语义），且当前已安装（以实际 npm 包名 `installed_name` 为准）。
-/// 返回实际安装包名——离线卸载（`uninstall_recovery`）以它为键从 profile 清单与
-/// `node_modules` 精准移除（scoped 包名与预设 id 不一致时也能正确卸载）。
+/// 命中条件：id 登记在弃用清单（`resources/deprecated-plugins.json`，见
+/// [`super::super::preset::load_deprecated_ids`]）、非内部插件（内部插件由启动
+/// 自愈强制安装，不适用弃用语义），且当前已安装（以实际 npm 包名 `installed_name`
+/// 为准）。返回实际安装包名——离线卸载（`uninstall_recovery`）以它为键从 profile
+/// 清单与 `node_modules` 精准移除（scoped 包名与预设 id 不一致时也能正确卸载）。
 fn deprecated_installed_names(
     presets: &[PreinstallPluginInfo],
+    deprecated_ids: &HashSet<String>,
     installed: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     presets
         .iter()
-        .filter(|p| p.deprecated && !p.internal)
+        .filter(|p| deprecated_ids.contains(&p.id) && !p.internal)
         .filter(|p| installed(installed_name(p)))
         .map(|p| installed_name(p).to_string())
         .collect()
 }
 
-/// 启动时自动卸载清单中带 `deprecated` 标记的插件。
+/// 启动时自动卸载弃用清单（`resources/deprecated-plugins.json`）登记的插件。
 ///
-/// 弃用是发布侧决策：某个社区插件下架/被替换后，在 `preset-plugins.json` 里给它
-/// 打上 `deprecated` 标记，桌面端每次启动核对「已安装 → 自动卸载」，无需用户手动
-/// 处理，也避免残留插件继续在 profile 里加载破坏启动。仅处理社区预设；未被引用
-/// 的条目跳过。已卸载/未安装的插件跳过，绝不误伤其它插件。
+/// 弃用是发布侧决策：某个社区插件下架/被替换后，把它的 id 追加进弃用清单，桌面端
+/// 每次启动核对「已安装 → 自动卸载」，无需用户手动处理，也避免残留插件继续在
+/// profile 里加载破坏启动。仅处理社区预设；未被引用的条目跳过。已卸载/未安装的
+/// 插件跳过，绝不误伤其它插件。
 ///
 /// 启动阶段走离线精准卸载（`uninstall_recovery`）：不依赖 node/pnpm/窗口，即使
 /// 插件产物已损坏也能移除，也不会触发服务停止或 pnpm 下载。最佳努力：任何失败
 /// 只记告警，不阻断启动（调用方仅打日志）。
 pub(crate) async fn uninstall_deprecated_plugins(app_handle: &AppHandle) -> Result<(), String> {
     let presets = load_presets(app_handle);
-    let names = deprecated_installed_names(&presets, |name| is_installed(app_handle, name));
+    let deprecated_ids = load_deprecated_ids(app_handle);
+    let names = deprecated_installed_names(&presets, &deprecated_ids, |name| {
+        is_installed(app_handle, name)
+    });
     if names.is_empty() {
         return Ok(());
     }
@@ -257,46 +264,45 @@ mod tests {
             default_checked: false,
             win_only: false,
             internal,
-            deprecated: false,
         }
     }
 
     #[test]
     fn deprecated_installed_only_picks_marked_and_installed() {
-        // 只把 `dsh-ok` 视为已安装，其余一律未安装（便于区分「标记但未安装」）。
+        // 弃用清单只登记 dsh-ok / dsh-scoped / dsh-not-installed 三个 id；
+        // 只把 `dsh-ok` 视为已安装，其余一律未安装（便于区分「登记但未安装」）。
+        let deprecated: HashSet<String> = ["dsh-ok", "dsh-scoped", "dsh-not-installed"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let installed = |name: &str| matches!(name, "dsh-ok" | "@scope/deprecated");
 
-        // 命中：deprecated 且已安装 → 返回实际安装包名（dsh-ok 未声明 package，回落 id）
-        let mut deprecated = preset("dsh-ok", "dshmarket", false);
-        deprecated.deprecated = true;
+        // 命中：登记且已安装 → 返回实际安装包名（dsh-ok 未声明 package，回落 id）
         assert_eq!(
-            deprecated_installed_names(&[deprecated], installed),
+            deprecated_installed_names(&[preset("dsh-ok", "dshmarket", false)], &deprecated, installed),
             vec!["dsh-ok".to_string()]
         );
 
         // scoped 包：返回真实安装包名（与预设 id 不一致）
         let mut scoped = preset("dsh-scoped", "github:x/y", false);
-        scoped.deprecated = true;
         scoped.package = Some("@scope/deprecated".into());
         assert_eq!(
-            deprecated_installed_names(&[scoped], installed),
+            deprecated_installed_names(&[scoped], &deprecated, installed),
             vec!["@scope/deprecated".to_string()]
         );
 
-        // 未标记 deprecated：即使已安装也不命中
+        // 未登记弃用：即使已安装也不命中
         let plain = preset("dsh-plain", "dsh-plain", false);
-        assert!(deprecated_installed_names(&[plain], installed).is_empty());
+        assert!(deprecated_installed_names(&[plain], &deprecated, installed).is_empty());
 
-        // 标记了但未安装：不命中
-        let mut absent = preset("dsh-not-installed", "dshmarket", false);
-        absent.deprecated = true;
-        assert!(deprecated_installed_names(&[absent], installed).is_empty());
+        // 登记了但未安装：不命中
+        let absent = preset("dsh-not-installed", "dshmarket", false);
+        assert!(deprecated_installed_names(&[absent], &deprecated, installed).is_empty());
 
-        // 内部插件即使标记 deprecated 也不命中（内部插件由启动自愈强制安装）
-        let mut internal = preset("dsh-internal", "dsh-tauri@0.2.0", true);
-        internal.deprecated = true;
+        // 内部插件即使登记弃用也不命中（内部插件由启动自愈强制安装）
+        let internal = preset("dsh-internal", "dsh-tauri@0.2.0", true);
         assert!(
-            deprecated_installed_names(&[internal], |name| matches!(name, "dsh-internal"))
+            deprecated_installed_names(&[internal], &deprecated, |name| matches!(name, "dsh-internal"))
                 .is_empty()
         );
     }

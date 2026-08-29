@@ -118,7 +118,6 @@ mod tests {
             default_checked: false,
             win_only: false,
             internal,
-            deprecated: false,
         }
     }
 

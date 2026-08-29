@@ -46,7 +46,7 @@ pub(crate) use super::ensure_profile_npmrc;
 pub(crate) use super::errors;
 pub(crate) use super::installed::{installed_name, is_installed, profile_dir};
 pub(crate) use super::preset::{
-    bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo,
+    bundled_dep_spec, bundled_plugin_dir, load_deprecated_ids, load_presets, PreinstallPluginInfo,
 };
 pub(crate) use super::process::{
     acquire_operation_lock, acquire_process_lock, new_process_owner, run_plugin_process, PidGuard,

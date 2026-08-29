@@ -338,7 +338,6 @@ mod tests {
             default_checked: false,
             win_only: false,
             internal: false,
-            deprecated: false,
         }
     }
 

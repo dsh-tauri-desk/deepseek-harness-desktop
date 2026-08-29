@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
-use super::preset::{load_presets, PreinstallPluginInfo};
+use super::preset::{load_deprecated_ids, load_presets, PreinstallPluginInfo};
 
 /// 用于强类型解析 profile 下 package.json 的辅助结构
 /// （字段 pub(crate)：供 watch 模块解析已安装插件清单复用）
@@ -97,6 +97,9 @@ pub(crate) fn installed_name(p: &PreinstallPluginInfo) -> &str {
 pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
     let installed = list_installed(app_handle);
     let is_windows = cfg!(windows);
+    // 弃用插件（deprecated-plugins.json 登记）不再提供安装入口，启动时自动卸载，
+    // 不进入首次引导清单。
+    let deprecated_ids = load_deprecated_ids(app_handle);
 
     load_presets(app_handle)
         .into_iter()
@@ -104,8 +107,8 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
         // 内置插件（internal:true）由启动自愈强制安装，不进入首次引导清单：
         // 对用户而言它们“必装”，给出可取消的勾选框反而造成歧义。
         .filter(|p| !p.internal)
-        // 弃用插件（deprecated:true）不再提供安装入口，启动时自动卸载，不进入清单。
-        .filter(|p| !p.deprecated)
+        // 弃用插件不再提供安装入口，启动时自动卸载，不进入清单。
+        .filter(|p| !deprecated_ids.contains(&p.id))
         .map(|p| {
             // 已安装检测以实际 npm 包名为准：预设可显式声明 package（scoped 包
             // 名与预设 id 不一致时），未声明则回落到 id。
@@ -266,7 +269,6 @@ mod tests {
             default_checked: true,
             win_only: false,
             internal: false,
-            deprecated: false,
         };
         // scoped 包名与预设 id 不同：以 package 为准
         assert_eq!(

@@ -149,6 +149,8 @@ $DSH_HOME/turnrewind/
 
 私有 Git 仓库和账本都必须位于 `$DSH_HOME`，不可写入用户项目的 Git 工作树，也不可让内部快照出现在用户当前分支中。
 
+> 当前原型直接把 `ledger.sqlite` 与 `snapshots/` 放在 `$DSH_HOME` 根目录（兼容已发布给早期用户的本地数据）；迁移到本节的 `turnrewind/` 子布局需要一次性数据搬迁，随首个正式版本一起做。
+
 ### 4.2 私有 Git 快照仓库
 
 对于每个 `workspaceKey`，插件在 `$DSH_HOME/turnrewind/snapshots/<workspace-hash>.git` 维护一个独立 Git 仓库。它只保存工作区文件快照，不改变用户项目仓库的 `HEAD`、当前分支、index、stash 或提交历史。
@@ -232,6 +234,17 @@ operation_paths(operation_id, path, expected_current_digest,
 - 在界面显示「正在整理可撤销改动」，而不是阻塞或伪造完成状态。
 
 若扫描失败、被取消或有未授权路径，turn 必须标记 `reversible = false` 或 `partiallyReversible = true`，并附带明确原因。
+
+### 5.3 工作区资格守卫（已落地）
+
+首个原型曾对任意工作区直接建立全量基线：一位 QQ 机器人用户的会话默认工作目录是家目录（约 250 GB），首个 `git add --all` 级别的基线快照直接耗尽磁盘。OpenCode 的对照实现给出了两条可借鉴的约束：它对非 Git 工作区完全不启用快照；对 Git 工作区也只枚举 `git status` 语义下的变更路径、通过共享用户对象库（`objects/info/alternates`）和复制用户 index 白拿基线，并对未跟踪大文件设置单文件上限。
+
+在引入 OpenCode 式增量基线（见 Phase 4）之前，快照前必须先通过两层资格检查，不合格的 turn 记为 `skipped`（`reversible = 0`）并如实向用户说明原因，绝不为它建立「看似可撤销」的记录：
+
+1. **系统目录直接拒绝**：家目录本身、家目录的祖先、任何盘符根目录；
+2. **预算预扫描**（元数据遍历、超限即中止）：文件数、总大小、单文件大小（与恢复读取上限一致）三重上限，`.git`/`node_modules` 等排除目录不计入；上限可通过环境变量调整。
+
+预扫描是同步、带早停的元数据遍历，只发生在 turn 领取时；即使面对 250 GB 目录，代价也是一次有界的扫描而不是全量哈希。配套提供 `purge-workspace` 维护命令，用于清掉旧版本在错误工作区上生成的快照仓库与账本记录。
 
 ## 6. 撤销语义
 
@@ -550,6 +563,8 @@ Agent 文本回复成功不是「可撤销」的判断标准；只有结算扫�
 ### Phase 4：性能、容量与 Worktree 联动
 
 - 大仓库索引优化、排除规则；
+- Git 仓库工作区的增量基线（参考 OpenCode：共享用户仓库 object database、按 `git status` 语义只 stage 变更路径、未跟踪大文件写入快照仓库 `info/exclude`）；
+- 快照/恢复全链路异步化，避免阻塞 Host 事件循环；
 - 配额与 GC；
 - worktree 专用恢复域与 UI 状态；
 - 诊断页和可导出审计。

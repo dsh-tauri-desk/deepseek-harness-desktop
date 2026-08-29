@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { it } from 'vitest'
-import { claimRewindNotices, completeUndoWithNotice, getLatestSnapshotRef, getLatestTurn, getTurn, insertTurn, openLedger, queueRewindNotice, settleInterruptedTurn, settleNoopTurn, settleTurn } from '../lib/core/ledger.js'
+import { claimRewindNotices, completeUndoWithNotice, getLatestSnapshotRef, getLatestTurn, getTurn, insertTurn, openLedger, queueRewindNotice, recordSkippedTurn, settleInterruptedTurn, settleNoopTurn, settleTurn } from '../lib/core/ledger.js'
 
 it('persists turn lifecycle and resumes from the latest durable snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'turnrewind-ledger-test-'))
@@ -95,6 +95,33 @@ it('merges multiple pending rewind notices and delivers them once', async () => 
     assert.deepEqual(notices.map(notice => notice.turns), [['session:1'], ['session:2']])
     assert.deepEqual(notices.map(notice => notice.paths), [['src/old.ts'], ['src/new.ts']])
     assert.deepEqual(claimRewindNotices(db, 'session', 'workspace'), [])
+  }
+  finally {
+    db.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('records a skipped turn with a single unsupported-workspace heads-up', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'turnrewind-skip-test-'))
+  const db = openLedger(root)
+  try {
+    const turn = {
+      sessionId: 'session',
+      workspaceKey: 'c:\\users\\someone',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }
+    recordSkippedTurn(db, { ...turn, turnId: 'session:1' }, 'TURNREWIND_WORKSPACE_UNSUPPORTED: home directory')
+    recordSkippedTurn(db, { ...turn, turnId: 'session:2' }, 'TURNREWIND_WORKSPACE_UNSUPPORTED: home directory')
+    assert.equal(getTurn(db, 'session:1').status, 'skipped')
+    assert.equal(getTurn(db, 'session:2').status, 'skipped')
+    const notices = claimRewindNotices(db, 'session', 'c:\\users\\someone')
+    assert.equal(notices.length, 1)
+    assert.equal(notices[0].kind, 'unsupported')
+    assert.equal(notices[0].reason, 'TURNREWIND_WORKSPACE_UNSUPPORTED: home directory')
+    assert.equal(claimRewindNotices(db, 'session', 'c:\\users\\someone').length, 0)
+    recordSkippedTurn(db, { ...turn, turnId: 'session:3' }, 'TURNREWIND_WORKSPACE_TOO_LARGE: budget')
+    assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM rewind_notices WHERE kind = 'unsupported'`).get().count, 1)
   }
   finally {
     db.close()

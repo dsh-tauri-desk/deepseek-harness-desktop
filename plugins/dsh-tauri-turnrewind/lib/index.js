@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { createDialogProjection } from './core/dialog-projection.js'
 import { captureSnapshot, createSnapshotStore, currentState, restorePath, snapshotDiff, stateAt } from './core/git-snapshot.js'
-import { claimRewindNotices, completeUndoWithNotice, createOperation, failTurn, getLatestSnapshotRef, getLatestTurn, getLatestTurnSummary, getTurn, insertTurn, openLedger, registerWorkspace, settleInterruptedTurn, settleNoopTurn, settleOperation, settleTurn } from './core/ledger.js'
+import { assessWorkspace } from './core/guard.js'
+import { claimRewindNotices, completeUndoWithNotice, createOperation, failTurn, getLatestSnapshotRef, getLatestTurn, getLatestTurnSummary, getTurn, insertTurn, openLedger, recordSkippedTurn, registerWorkspace, settleInterruptedTurn, settleNoopTurn, settleOperation, settleTurn } from './core/ledger.js'
 import { classifyUndo } from './core/planner.js'
 
 const name = 'dsh-tauri-turnrewind'
-const inject = ['commands']
+const inject = ['commands', 'sessionProjections']
 const ROOT_DIR = process.env.DSH_HOME ? resolve(process.env.DSH_HOME) : join(homedir(), '.dsh')
 const TURN_ID_RE = /[^\w.-]/gu
 
@@ -26,6 +28,11 @@ function workspaceForSession(session) {
 
 function workspaceKeyFor(path) {
   return path.toLowerCase()
+}
+
+function workspaceIssue(workspaceDir) {
+  const assessment = assessWorkspace(workspaceDir)
+  return assessment.eligible ? undefined : assessment.reason
 }
 
 function activeKey(sessionId, turn) {
@@ -81,6 +88,27 @@ function createRewindNoticeMessage(notice) {
       sections: [{ name, text }],
     },
   }
+}
+
+function createUnsupportedNoticeMessage(notice) {
+  const text = `[Turn rewind unavailable]\nUndo is disabled for this workspace.\nReason: ${notice.reason}\n\nTurns here still run normally, but their file changes are not recorded, so /undo cannot revert them. Move this session to a normal project directory if you want undoable turns.`
+  return {
+    id: `turnrewind-notice-${notice.notice_id}`,
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: {
+      kind: 'plugin',
+      plugin: name,
+      form: 'undo-unavailable-notice',
+      sections: [{ name, text }],
+    },
+  }
+}
+
+function createNoticeMessage(notice) {
+  return notice.kind === 'unsupported'
+    ? createUnsupportedNoticeMessage(notice)
+    : createRewindNoticeMessage(notice)
 }
 
 function workspaceHasActiveTurn(active, workspaceKey) {
@@ -228,6 +256,9 @@ function apply(ctx) {
   const active = new Map()
   const workspaceStores = new Map()
   const commands = ctx.commands
+  // Client-visible projection: lets the web UI raise the unavailable-dialog
+  // from the session list it already receives, no conversation API needed.
+  ctx.effect(() => ctx.sessionProjections.register(createDialogProjection()), 'turnrewind projection')
 
   function ensureRuntime(agent) {
     const workspaceDir = workspaceForAgent(agent)
@@ -263,16 +294,37 @@ function apply(ctx) {
       return decision
     return {
       ...decision,
-      messages: [...decision.messages, ...notices.map(createRewindNoticeMessage)],
+      messages: [...decision.messages, ...notices.map(createNoticeMessage)],
     }
   })
 
   ctx.on('agent/inbox/claimed', (payload) => {
+    const sessionId = payload.agent.session.id
+    const key = activeKey(sessionId, payload.turn)
+    const workspaceDir = workspaceForAgent(payload.agent)
+    if (!workspaceDir)
+      return
+    const issue = workspaceIssue(workspaceDir)
+    if (issue) {
+      // Record the refusal and queue a one-time heads-up so the user sees why
+      // this turn will not be undoable instead of discovering it via /undo.
+      try {
+        recordSkippedTurn(ledger, {
+          turnId: key,
+          sessionId,
+          workspaceKey: workspaceKeyFor(workspaceDir),
+          startedAt: new Date().toISOString(),
+        }, issue)
+      }
+      catch (error) {
+        console.error(`turnrewind: failed to record skipped turn ${key}: ${String(error)}`)
+      }
+      console.error(`turnrewind: skipped turn ${key}: ${issue}`)
+      return
+    }
     const runtime = ensureRuntime(payload.agent)
     if (!runtime)
       return
-    const sessionId = payload.agent.session.id
-    const key = activeKey(sessionId, payload.turn)
     if (runtime.undoing) {
       console.error(`turnrewind: skipped turn ${key} while an undo is running`)
       return
@@ -335,6 +387,12 @@ function apply(ctx) {
     description: 'Plan or undo file changes made by the latest Agent turn',
     input: { hint: '[turn-id] [--dry-run]' },
     handler: (invocation) => {
+      const workspaceDir = workspaceForAgent(invocation.agent)
+      if (!workspaceDir)
+        return { kind: 'error', text: 'Undo is unavailable because this session has no workspace.' }
+      const issue = workspaceIssue(workspaceDir)
+      if (issue)
+        return { kind: 'error', text: `Undo is unavailable for this workspace. ${issue}` }
       const runtime = ensureRuntime(invocation.agent)
       if (!runtime)
         return { kind: 'error', text: 'Undo is unavailable because this session has no workspace.' }

@@ -9,7 +9,9 @@
 这是 Host MVP 原型，当前实现：
 
 - 为已领取的 Agent turn 建立私有 Git 快照；
-- 将快照映射记录到 `$DSH_HOME/turnrewind/ledger.sqlite`；
+- 将快照映射记录到 `$DSH_HOME/ledger.sqlite`；
+- **工作区资格守卫**：家目录、家目录的祖先、盘根目录，以及超过快照预算（文件数 / 总大小 / 单文件大小）的目录不做快照，turn 记为 `skipped` 并向 `/undo` 说明原因（见「工作区资格与快照预算」）；
+- **不可用弹窗**：客户端半（`lib/client.js`）通过 `turnrewind` 会话投影检测到不可用提示时，在 Web UI 内弹出模态对话框（中英双语、每个浏览器只弹一次）；
 - 注册人类命令 `/undo`；
 - `/undo` 只处理当前会话最新的单个可恢复 turn；
 - `/undo --dry-run` 只输出预检计划，不修改文件；
@@ -56,6 +58,35 @@
 ```
 
 父对话递归撤销、redo、消息旁 Undo 按钮和设置页模式切换尚未实现。
+
+## 工作区资格与快照预算
+
+快照的第一版实现会对任意工作区做全量基线，曾有用户在 QQ 机器人会话（默认工作目录是家目录、约 250 GB 内容）上触发 `git add --all` 级别的灾难。现在 turn 开始前会先做资格检查，不合格的工作区**不建快照、不产生可撤销 turn**，并在账本中记为 `skipped`（`/undo` 会显示原因）。两层检查：
+
+1. **系统目录直接拒绝**：家目录本身、家目录的祖先目录（如 `C:\Users`、`C:\`）、以及任何盘符根目录。这类目录无论多小都不做快照。
+2. **预算预扫描**（带元数据的快速遍历，超限立即中止）：
+   - 文件数上限：默认 50,000（环境变量 `TURNREWIND_MAX_FILES`）；
+   - 总大小上限：默认 1 GiB（环境变量 `TURNREWIND_MAX_BYTES`）；
+   - 单文件上限：64 MB（与恢复读取上限一致，超限文件永远无法恢复，因此整个工作区拒绝快照）；
+   - `.git`、`node_modules`、`dist`、`build`、`coverage`、`.turnrewind` 目录不计入预算。
+
+被拒绝的 turn 仍正常执行，只是不提供 undo。同时该会话会收到一条一次性提示（`[Turn rewind unavailable]`），说明工作区被拒绝的原因；每个会话只提示一次，后续 turn 不再重复打扰。提示会以两种形态呈现：
+
+1. **会话内消息**：插件来源的上下文注入消息，模型和用户都可见、可审计；
+2. **Web UI 弹窗**：宿主端 `turnrewind` 会话投影（`lib/core/dialog-projection.js`）把提示折叠进会话列表快照，客户端半（`lib/client.js`）从 `sessions.list` 的 `projectionValues.turnrewind` 读到后弹出模态对话框，按提示 id 在 `localStorage` 去重——同一浏览器每条提示只弹一次，重装/换浏览器会重弹一次。
+
+若确有合法的大工作区需要 undo，可通过环境变量放宽预算，自行承担快照耗时与磁盘占用。
+
+### 清理已膨胀的快照数据
+
+如果某个工作区在旧版本下已经生成过巨大快照，先停止 DSH Host 进程，再执行：
+
+```powershell
+node plugins\dsh-tauri-turnrewind\lib\purge-workspace.js "C:\Users\<user>"          # release 数据目录 ~/.dsh
+node plugins\dsh-tauri-turnrewind\lib\purge-workspace.js "C:\Users\<user>" --home "$env:USERPROFILE\.dsh.dev"  # debug
+```
+
+该命令删除该工作区对应的私有快照仓库（`$DSH_HOME/snapshots/<hash>.git`）及其全部账本记录（turns / operations / notices / workspaces），其他工作区的数据不受影响。
 
 ## Undo 的工作区范围
 
@@ -221,13 +252,13 @@ notice 只消费一次。下一次模型 step 后不会重复注入。
 快照存放在插件私有目录：
 
 ```text
-$DSH_HOME/turnrewind/snapshots/<workspace-hash>.git
+$DSH_HOME/snapshots/<workspace-hash>.git
 ```
 
 账本存放在：
 
 ```text
-$DSH_HOME/turnrewind/ledger.sqlite
+$DSH_HOME/ledger.sqlite
 ```
 
 插件不会调用用户项目的：
@@ -299,7 +330,9 @@ pnpm exec vitest run plugins/dsh-tauri-turnrewind/test --testTimeout=30000
 这是实验版本，正式启用前仍需要：
 
 - 接入受控的宿主 sandbox/Tauri bridge；
-- 完成真实 DSH lifecycle integration tests；
+- 完成 DSH lifecycle integration tests；
+- 快照/扫描改为异步执行（当前 `spawnSync` 会阻塞 Host 事件循环）；
+- 完善 Git 仓库工作区的增量基线（参考 OpenCode：共享用户对象库 + 仅 stage 变更路径）；
 - 完善多 workspace 并发锁；
 - 实现父对话递归 undo；
 - 实现 redo 和冲突处理 UI；

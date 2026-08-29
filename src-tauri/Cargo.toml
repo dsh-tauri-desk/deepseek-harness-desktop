@@ -67,6 +67,9 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSProcessInfo",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 rfd = "0.16"
 webview2-com = "0.38"

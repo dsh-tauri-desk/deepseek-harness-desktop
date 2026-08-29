@@ -51,7 +51,7 @@ pub(crate) async fn terminate_owned_install(owner: super::process::ProcessOwner)
 }
 
 #[cfg(windows)]
-fn terminate_pid_tree(pid: u32) -> bool {
+pub(crate) fn terminate_pid_tree(pid: u32) -> bool {
     use std::os::windows::process::CommandExt;
     let mut command = std::process::Command::new("taskkill");
     command
@@ -66,7 +66,7 @@ fn terminate_pid_tree(pid: u32) -> bool {
 }
 
 #[cfg(not(windows))]
-fn terminate_pid_tree(pid: u32) -> bool {
+pub(crate) fn terminate_pid_tree(pid: u32) -> bool {
     // `--` 防止负 PID 被解析为信号；KILL 保证忽略 TERM 的 pnpm/git 后代也退出。
     let group = std::process::Command::new("kill")
         .args(["-KILL", "--", &format!("-{pid}")])

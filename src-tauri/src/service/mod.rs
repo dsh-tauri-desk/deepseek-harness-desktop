@@ -4,6 +4,7 @@ pub mod download;
 pub(crate) mod env;
 pub mod fs_guard;
 pub mod migrate;
+pub(crate) mod patch;
 pub mod plugin;
 pub mod profile;
 pub mod scheduler;

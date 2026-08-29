@@ -1,11 +1,8 @@
-pub(crate) mod client_hmr_patch;
-pub(crate) mod renderer_patch;
 pub mod status;
 pub mod utils;
 pub(crate) mod win_inspector;
 #[cfg(windows)]
 pub(crate) mod win_spawn;
-pub(crate) mod workspace_patch;
 
 use crate::config;
 use crate::service::download;
@@ -960,17 +957,22 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 活动核心的 dsh-client-ui-renderer lib/client.js，已含导出即跳过（幂等；核心
     // 换版本后自动重打，上游官方导出后自动退休）。最佳努力：失败只告警，不阻断
     // 启动——未打补丁时插件侧降级，官方设置 dialog 照常工作，绝不白屏。
-    if let Err(e) = renderer_patch::apply(&app_handle) {
+    if let Err(e) = crate::service::patch::renderer::apply(&app_handle) {
         log::warn!("renderer SlotOutlet patch failed: {e}");
+    }
+    // Expose an id-based SessionStore.remove facade so plugins can perform a
+    // real in-memory teardown instead of leaving deleted sessions ungrouped.
+    if let Err(e) = crate::service::patch::session::apply(&app_handle) {
+        log::warn!("SessionStore.remove patch failed: {e}");
     }
     // worktree 会话以隔离 cwd 执行，但产品归属仍是源 Workspace；放宽上游显式
     // attach 的 cwd 相等约束，其他 cwd 有效性校验保持不变。最佳努力且幂等。
-    if let Err(e) = workspace_patch::apply(&app_handle) {
+    if let Err(e) = crate::service::patch::workspace::apply(&app_handle) {
         log::warn!("workspace worktree membership patch failed: {e}");
     }
     // 当前 DSH client-HMR 会卸载第三方插件却不重新挂载。debug 直接联接本地
     // 插件源码，故将 rebuilt 降级为自动刷新页面；release 保持上游行为。
-    if let Err(e) = client_hmr_patch::apply(&app_handle) {
+    if let Err(e) = crate::service::patch::client_hmr::apply(&app_handle) {
         log::warn!("debug client plugin reload fallback patch failed: {e}");
     }
     // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，
@@ -980,6 +982,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 已有配置）。最佳努力：失败只告警，不阻断启动。
     if let Err(e) = crate::service::plugin::ensure_profile_npmrc(&app_handle) {
         log::warn!("ensure profile .npmrc failed: {e}");
+    }
+    // 弃用插件自动卸载：预设清单里带 `deprecated` 标记的社区插件若已安装，启动时
+    // 自动移除（避免残留插件继续在 profile 里加载、甚至导致启动失败）。最佳努力：
+    // 失败只告警，不阻断启动。
+    if let Err(e) = crate::service::plugin::uninstall_deprecated_plugins(&app_handle).await {
+        log::warn!("uninstall deprecated plugins failed: {e}");
     }
     // 内置插件自愈：随包分发的内置插件（dsh-tauri 等）必须在服务进程加载插件
     // 前就绪——核对「已安装 + 安装路径指向当前捆绑目录」，未安装、路径不正确
@@ -1586,7 +1594,7 @@ mod tests {
 
         // 端口此刻确实被占用（模拟残留进程仍在监听）
         assert!(is_port_in_use(held));
-        std::thread::spawn(move || {
+        let releaser = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(150));
             drop(listener);
         });
@@ -1598,7 +1606,7 @@ mod tests {
             started.elapsed() < std::time::Duration::from_millis(800),
             "wait_for_port_release should return shortly after the port is released, not wait the full window"
         );
-        assert!(!is_port_in_use(held));
+        releaser.join().expect("port releaser thread");
     }
 
     #[test]

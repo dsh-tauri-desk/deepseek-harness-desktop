@@ -104,6 +104,8 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
         // 内置插件（internal:true）由启动自愈强制安装，不进入首次引导清单：
         // 对用户而言它们“必装”，给出可取消的勾选框反而造成歧义。
         .filter(|p| !p.internal)
+        // 弃用插件（deprecated:true）不再提供安装入口，启动时自动卸载，不进入清单。
+        .filter(|p| !p.deprecated)
         .map(|p| {
             // 已安装检测以实际 npm 包名为准：预设可显式声明 package（scoped 包
             // 名与预设 id 不一致时），未声明则回落到 id。
@@ -264,6 +266,7 @@ mod tests {
             default_checked: true,
             win_only: false,
             internal: false,
+            deprecated: false,
         };
         // scoped 包名与预设 id 不同：以 package 为准
         assert_eq!(

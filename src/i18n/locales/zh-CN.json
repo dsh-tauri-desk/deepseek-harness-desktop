@@ -19,6 +19,8 @@
   "status.internal_checking": "正在检查 {{total}} 个内部插件。",
   "status.internal_installing": "正在安装 {{total}} 个内部插件。",
   "status.internal_done": "已核验 {{total}} 个内部插件。",
+  "status.internal_timeout": "内部插件安装已超时。",
+  "status.internal_cancelled": "内部插件安装已取消。",
   "startup.phase.plugin-install": "插件安装",
   "startup.phase.process-boot": "进程启动",
   "startup.phase.client-modules": "客户端模块加载",

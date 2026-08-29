@@ -821,6 +821,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "image",
+ "libc",
  "log",
  "objc2-foundation",
  "regex",

@@ -18,6 +18,7 @@ import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
+import { internalPluginReason } from '@/utils/internal-plugin-phase'
 import { containsInotifyLimitError, pickErrorLines } from '@/utils/log'
 import { BoundedReloadGate, pollReadiness, SingleFlight, waitForActivityTask } from '@/utils/readiness'
 import { harnessUpdater } from '../harness-updater'
@@ -150,22 +151,6 @@ function startupError(phase: StartupPhase, reason: string, kind: 'failed' | 'ina
   error.phase = phase
   error.lastReason = reason
   return error
-}
-
-function internalPluginReason(payload: InternalPluginsPhasePayload): string {
-  if (payload.detail === 'waiting') {
-    return i18next.t('status.internal_waiting')
-  }
-  if (payload.detail === 'checking') {
-    return i18next.t('status.internal_checking', { total: payload.total })
-  }
-  if (payload.detail === 'installing') {
-    return i18next.t('status.internal_installing', { total: payload.total })
-  }
-  if (payload.detail === 'done') {
-    return i18next.t('status.internal_done', { total: payload.total })
-  }
-  return pluginActivityReason
 }
 
 function pollHarnessReadiness(
@@ -313,7 +298,11 @@ export const harness = defineStore({
         await listen<InternalPluginsPhasePayload>('internal-plugins-phase', (event) => {
           const payload = event.payload
           pluginActivitySequence++
-          pluginActivityReason = internalPluginReason(payload)
+          pluginActivityReason = internalPluginReason(
+            payload,
+            pluginActivityReason,
+            (key, options) => i18next.t(key, options),
+          )
           if (payload.phase !== 'done') {
             this.startupPhase = 'plugin-install'
             this.startupReason = pluginActivityReason

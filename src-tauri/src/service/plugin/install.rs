@@ -29,6 +29,7 @@ use crate::service::workflow;
 use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
@@ -37,8 +38,8 @@ use super::installed::{installed_name, is_installed, profile_dir};
 use super::output;
 use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
 use super::process::{
-    acquire_process_lock, new_process_owner, run_plugin_process, PidGuard, PreinstallLogPayload,
-    ProcessOwner, PREINSTALL_LOG_EVENT,
+    acquire_operation_lock, acquire_process_lock, new_process_owner, run_plugin_process, PidGuard,
+    PreinstallLogPayload, ProcessOwner, PREINSTALL_LOG_EVENT,
 };
 use super::recovery::is_actionable_plugin_ref;
 use super::uninstall_recovery;
@@ -56,6 +57,9 @@ const MAX_ALLOW_LIST_RETRIES: usize = 8;
 const MIN_TRUSTED_PNPM_MAJOR: u32 = 10;
 const PNPM_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const PNPM_PROBE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PNPM_PROBE_REAP_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+const PNPM_PROBE_REAP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+const PNPM_PROBE_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// 校验并安装选中的预装插件：`dsh plugin --profile <当前档案> add <ids...>`
 pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), String> {
@@ -611,7 +615,7 @@ async fn run_plugin_with_allow_build_retry(
     cancel: Option<&tokio::sync::watch::Receiver<bool>>,
     owner: ProcessOwner,
 ) -> Result<(i32, String), String> {
-    let _process_guard = acquire_process_lock().await;
+    let _operation_guard = acquire_operation_lock().await;
     let mut retries = 0usize;
     let mut all_output = String::new();
     let exit_code = loop {
@@ -714,6 +718,56 @@ pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 计算需要自动卸载的弃用插件已安装包名（纯函数，便于单测）。
+///
+/// 命中条件：清单中带 `deprecated` 标记、非内部插件（内部插件由启动自愈强制
+/// 安装，不适用弃用语义），且当前已安装（以实际 npm 包名 `installed_name` 为准）。
+/// 返回实际安装包名——离线卸载（`uninstall_recovery`）以它为键从 profile 清单与
+/// `node_modules` 精准移除（scoped 包名与预设 id 不一致时也能正确卸载）。
+fn deprecated_installed_names(
+    presets: &[PreinstallPluginInfo],
+    installed: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    presets
+        .iter()
+        .filter(|p| p.deprecated && !p.internal)
+        .filter(|p| installed(installed_name(p)))
+        .map(|p| installed_name(p).to_string())
+        .collect()
+}
+
+/// 启动时自动卸载清单中带 `deprecated` 标记的插件。
+///
+/// 弃用是发布侧决策：某个社区插件下架/被替换后，在 `preset-plugins.json` 里给它
+/// 打上 `deprecated` 标记，桌面端每次启动核对「已安装 → 自动卸载」，无需用户手动
+/// 处理，也避免残留插件继续在 profile 里加载破坏启动。仅处理社区预设；未被引用
+/// 的条目跳过。已卸载/未安装的插件跳过，绝不误伤其它插件。
+///
+/// 启动阶段走离线精准卸载（`uninstall_recovery`）：不依赖 node/pnpm/窗口，即使
+/// 插件产物已损坏也能移除，也不会触发服务停止或 pnpm 下载。最佳努力：任何失败
+/// 只记告警，不阻断启动（调用方仅打日志）。
+pub(crate) async fn uninstall_deprecated_plugins(app_handle: &AppHandle) -> Result<(), String> {
+    let presets = load_presets(app_handle);
+    let names = deprecated_installed_names(&presets, |name| is_installed(app_handle, name));
+    if names.is_empty() {
+        return Ok(());
+    }
+    log::info!("uninstalling deprecated preset plugins: {names:?}");
+    let mut failures = Vec::new();
+    for name in &names {
+        log::info!("DEPRECATED_PLUGIN_UNINSTALL: removing deprecated plugin {name}");
+        if let Err(e) = uninstall_recovery(app_handle, name) {
+            log::warn!("DEPRECATED_PLUGIN_UNINSTALL_FAILED: {name}: {e}");
+            failures.push(format!("{name}: {e}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 /// 执行单个插件的升级/卸载：准备环境 → 停止服务 → 运行 `dsh plugin` →
@@ -995,6 +1049,7 @@ async fn user_pnpm_major_version_bounded(
         command.process_group(0);
     }
 
+    let process_guard = acquire_process_lock().await?;
     let child = match command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1012,33 +1067,370 @@ async fn user_pnpm_major_version_bounded(
     let pid = child.id();
     let pid_guard = PidGuard::set(owner, pid);
     let mut waiter = tauri::async_runtime::spawn_blocking(move || {
-        let _pid_guard = pid_guard;
-        child.wait_with_output()
+        let mut child = child;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait_for_probe_output(&mut child)
+        }))
+        .unwrap_or_else(|_| {
+            super::cancel::terminate_pid_tree(pid);
+            ProbeWaitResult::CleanupPending {
+                pid,
+                reason: format!(
+                    "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe pid {pid} panicked before cleanup completed"
+                ),
+            }
+        });
+        match result {
+            ProbeWaitResult::Finished(result) => ProbeTaskResult::Finished(result),
+            ProbeWaitResult::CleanupPending { pid, reason } => {
+                ProbeTaskResult::CleanupPending { child, pid, reason }
+            }
+        }
     });
 
     let output = match tokio::time::timeout(PNPM_PROBE_TIMEOUT, &mut waiter).await {
-        Ok(joined) => joined
-            .map_err(|e| format!("PNPM_PROBE_WAIT_FAILED: {e}"))?
-            .map_err(|e| format!("PNPM_PROBE_OUTPUT_FAILED: {e}"))?,
+        Ok(joined) => {
+            let Some(task) = probe_task_or_fallback(&pnpm, joined) else {
+                let reason =
+                    "PNPM_PROBE_WAIT_TASK_FAILED: pnpm version probe wait task failed".to_string();
+                monitor_orphaned_probe_pid(owner, pid, reason, process_guard, pid_guard);
+                return Ok(None);
+            };
+            match task {
+                ProbeTaskResult::Finished(waited) => {
+                    match probe_output_or_fallback(&pnpm, waited)? {
+                        Some(output) => output,
+                        None => return Ok(None),
+                    }
+                }
+                ProbeTaskResult::CleanupPending { child, pid, reason } => {
+                    let pending = ProbeCleanupPending {
+                        child,
+                        pid,
+                        reason,
+                        owner,
+                        _process_guard: process_guard,
+                        _pid_guard: pid_guard,
+                    };
+                    let reason = pending.reason.clone();
+                    monitor_probe_cleanup(pending);
+                    return Err(reason);
+                }
+            }
+        }
         Err(_) => {
-            log::warn!(
+            let reason = format!(
                 "PNPM_PROBE_TIMEOUT: pnpm version probe exceeded {} seconds",
                 PNPM_PROBE_TIMEOUT.as_secs()
             );
+            log::error!("{reason}");
+            super::process::mark_process_cleanup_failed(owner, reason.clone());
             super::cancel::terminate_owned_install(owner).await;
-            let joined = tokio::time::timeout(PNPM_PROBE_CLEANUP_TIMEOUT, &mut waiter)
-                .await
-                .map_err(|_| {
-                    "PNPM_PROBE_CLEANUP_TIMEOUT: pnpm version probe did not exit after forced termination"
-                        .to_string()
-                })?;
-            joined
-                .map_err(|e| format!("PNPM_PROBE_WAIT_FAILED: {e}"))?
-                .map_err(|e| format!("PNPM_PROBE_OUTPUT_FAILED: {e}"))?;
-            return Ok(None);
+            let cleanup = match tokio::time::timeout(PNPM_PROBE_CLEANUP_TIMEOUT, &mut waiter).await
+            {
+                Ok(cleanup) => cleanup,
+                Err(_) => {
+                    let cleanup_reason =
+                        "PNPM_PROBE_CLEANUP_TIMEOUT: pnpm version probe did not exit after forced termination"
+                            .to_string();
+                    monitor_probe_wait_task(
+                        waiter,
+                        owner,
+                        pid,
+                        cleanup_reason.clone(),
+                        process_guard,
+                        pid_guard,
+                    );
+                    return Err(cleanup_reason);
+                }
+            };
+            match cleanup {
+                Ok(ProbeTaskResult::Finished(_)) => {
+                    super::process::clear_process_cleanup_failed(owner);
+                    return Err(reason);
+                }
+                Ok(ProbeTaskResult::CleanupPending { child, pid, reason }) => {
+                    let pending = ProbeCleanupPending {
+                        child,
+                        pid,
+                        reason,
+                        owner,
+                        _process_guard: process_guard,
+                        _pid_guard: pid_guard,
+                    };
+                    let cleanup_reason = pending.reason.clone();
+                    monitor_probe_cleanup(pending);
+                    return Err(cleanup_reason);
+                }
+                Err(error) => {
+                    monitor_orphaned_probe_pid(
+                        owner,
+                        pid,
+                        format!(
+                            "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe wait task failed during cleanup: {error}"
+                        ),
+                        process_guard,
+                        pid_guard,
+                    );
+                    return Err(format!(
+                        "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe wait task failed during cleanup: {error}"
+                    ));
+                }
+            }
         }
     };
     Ok(parse_pnpm_major_output(&pnpm, &output))
+}
+
+enum ProbeWaitResult {
+    Finished(std::io::Result<std::process::Output>),
+    CleanupPending { pid: u32, reason: String },
+}
+
+enum ProbeTaskResult {
+    Finished(std::io::Result<std::process::Output>),
+    CleanupPending {
+        child: std::process::Child,
+        pid: u32,
+        reason: String,
+    },
+}
+
+struct ProbeCleanupPending {
+    child: std::process::Child,
+    pid: u32,
+    reason: String,
+    owner: ProcessOwner,
+    _process_guard: tokio::sync::OwnedMutexGuard<()>,
+    _pid_guard: PidGuard,
+}
+
+impl ProbeCleanupPending {
+    fn release(self) {
+        let Self {
+            child,
+            owner,
+            _process_guard,
+            _pid_guard,
+            ..
+        } = self;
+        super::process::release_process_cleanup(owner, _pid_guard, _process_guard);
+        drop(child);
+    }
+}
+
+fn wait_for_probe_output(child: &mut std::process::Child) -> ProbeWaitResult {
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = match std::thread::Builder::new()
+        .name("pnpm-probe-stdout".to_string())
+        .spawn(move || read_probe_pipe(stdout))
+    {
+        Ok(reader) => reader,
+        Err(error) => return reap_probe_after_wait_failure(child, pid, error),
+    };
+    let stderr_reader = match std::thread::Builder::new()
+        .name("pnpm-probe-stderr".to_string())
+        .spawn(move || read_probe_pipe(stderr))
+    {
+        Ok(reader) => reader,
+        Err(error) => return reap_probe_after_wait_failure(child, pid, error),
+    };
+
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => return reap_probe_after_wait_failure(child, pid, error),
+    };
+    let stdout = match join_probe_reader(stdout_reader) {
+        Ok(stdout) => stdout,
+        Err(error) => return ProbeWaitResult::Finished(Err(error)),
+    };
+    let stderr = match join_probe_reader(stderr_reader) {
+        Ok(stderr) => stderr,
+        Err(error) => return ProbeWaitResult::Finished(Err(error)),
+    };
+    ProbeWaitResult::Finished(Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+fn reap_probe_after_wait_failure(
+    child: &mut std::process::Child,
+    pid: u32,
+    error: std::io::Error,
+) -> ProbeWaitResult {
+    super::cancel::terminate_pid_tree(pid);
+    if let Err(kill_error) = child.kill() {
+        log::warn!("pnpm version probe kill after wait failure failed: {kill_error}");
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return ProbeWaitResult::Finished(Err(error)),
+            Ok(None) => {}
+            Err(cleanup_error) => {
+                log::warn!("pnpm version probe reap after wait failure failed: {cleanup_error}");
+                if super::process::plugin_process_has_exited(pid) {
+                    return ProbeWaitResult::Finished(Err(error));
+                }
+            }
+        }
+        if started.elapsed() >= PNPM_PROBE_REAP_RETRY_TIMEOUT {
+            return ProbeWaitResult::CleanupPending {
+                pid,
+                reason: format!(
+                    "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe pid {pid} could not be reaped after wait failure: {error}"
+                ),
+            };
+        }
+        std::thread::sleep(PNPM_PROBE_REAP_RETRY_INTERVAL);
+    }
+}
+
+fn monitor_probe_cleanup(mut pending: ProbeCleanupPending) {
+    super::process::mark_process_cleanup_failed(pending.owner, pending.reason.clone());
+    tauri::async_runtime::spawn(async move {
+        wait_for_probe_cleanup(&mut pending).await;
+        pending.release();
+    });
+}
+
+fn monitor_probe_wait_task(
+    waiter: tauri::async_runtime::JoinHandle<ProbeTaskResult>,
+    owner: ProcessOwner,
+    pid: u32,
+    reason: String,
+    process_guard: tokio::sync::OwnedMutexGuard<()>,
+    pid_guard: PidGuard,
+) {
+    super::process::mark_process_cleanup_failed(owner, reason);
+    tauri::async_runtime::spawn(async move {
+        match waiter.await {
+            Ok(ProbeTaskResult::CleanupPending { child, pid, reason }) => {
+                let mut pending = ProbeCleanupPending {
+                    child,
+                    pid,
+                    reason,
+                    owner,
+                    _process_guard: process_guard,
+                    _pid_guard: pid_guard,
+                };
+                wait_for_probe_cleanup(&mut pending).await;
+                pending.release();
+            }
+            Ok(ProbeTaskResult::Finished(_)) => {
+                super::process::release_process_cleanup(owner, pid_guard, process_guard);
+            }
+            Err(error) => {
+                log::error!("pnpm version probe cleanup wait task failed: {error}");
+                wait_for_probe_cleanup_with(
+                    || !super::process::plugin_process_has_exited(pid),
+                    PNPM_PROBE_LIVENESS_INTERVAL,
+                )
+                .await;
+                super::process::release_process_cleanup(owner, pid_guard, process_guard);
+            }
+        }
+    });
+}
+
+fn monitor_orphaned_probe_pid(
+    owner: ProcessOwner,
+    pid: u32,
+    reason: String,
+    process_guard: tokio::sync::OwnedMutexGuard<()>,
+    pid_guard: PidGuard,
+) {
+    super::process::mark_process_cleanup_failed(owner, reason);
+    super::cancel::terminate_pid_tree(pid);
+    tauri::async_runtime::spawn(async move {
+        wait_for_probe_cleanup_with(
+            || !super::process::plugin_process_has_exited(pid),
+            PNPM_PROBE_LIVENESS_INTERVAL,
+        )
+        .await;
+        super::process::release_process_cleanup(owner, pid_guard, process_guard);
+    });
+}
+
+async fn wait_for_probe_cleanup(pending: &mut ProbeCleanupPending) {
+    wait_for_probe_cleanup_with(
+        || match pending.child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(error) => {
+                log::warn!(
+                    "pnpm version probe cleanup monitor wait failed for pid {}: {error}",
+                    pending.pid
+                );
+                !super::process::plugin_process_has_exited(pending.pid)
+            }
+        },
+        PNPM_PROBE_LIVENESS_INTERVAL,
+    )
+    .await;
+    log::info!(
+        "pnpm version probe cleanup monitor released pid {}",
+        pending.pid
+    );
+}
+
+async fn wait_for_probe_cleanup_with<F>(mut remains_active: F, interval: std::time::Duration)
+where
+    F: FnMut() -> bool,
+{
+    while remains_active() {
+        tokio::time::sleep(interval).await;
+    }
+}
+
+fn read_probe_pipe<R: Read>(pipe: Option<R>) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut output)?;
+    }
+    Ok(output)
+}
+
+fn join_probe_reader(
+    reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> std::io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| std::io::Error::other("pnpm version probe output reader thread panicked"))?
+}
+
+fn log_probe_fallback(pnpm: &Path, phase: &str, error: impl std::fmt::Display) {
+    log::warn!(
+        "pnpm version probe {phase} failed for {}: {error}; falling back to bundled pnpm",
+        pnpm.display()
+    );
+}
+
+fn probe_task_or_fallback<T, E: std::fmt::Display>(pnpm: &Path, result: Result<T, E>) -> Option<T> {
+    match result {
+        Ok(task) => Some(task),
+        Err(error) => {
+            log_probe_fallback(pnpm, "wait task", error);
+            None
+        }
+    }
+}
+
+fn probe_output_or_fallback(
+    pnpm: &Path,
+    result: std::io::Result<std::process::Output>,
+) -> Result<Option<std::process::Output>, String> {
+    match result {
+        Ok(output) => Ok(Some(output)),
+        Err(error) => {
+            log_probe_fallback(pnpm, "output", error);
+            Ok(None)
+        }
+    }
 }
 
 /// 用户 pnpm 主版本号（解析 `pnpm --version` 首个点分字段）；不存在或不可运行
@@ -1662,13 +2054,78 @@ mod tests {
     use super::pnpm_major_version_at_with_node;
     use super::{
         append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates,
-        dep_path_to_name, diagnostic_suffix, extract_allow_line_key, extract_only_builds_git_name,
-        git_transport_hint, has_github_ssh_rewrite_in_output, normalize_git_spec,
-        parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install,
+        dep_path_to_name, deprecated_installed_names, diagnostic_suffix, extract_allow_line_key,
+        extract_only_builds_git_name, git_transport_hint, has_github_ssh_rewrite_in_output,
+        normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml,
+        preset_spec_for_install, probe_output_or_fallback, probe_task_or_fallback, read_probe_pipe,
         rewrite_rule_targets_ssh_github, shell_quote_spec, silent_install_failure_detail,
-        PreinstallPluginInfo,
+        wait_for_probe_cleanup_with, PreinstallPluginInfo,
     };
     use std::path::PathBuf;
+
+    #[test]
+    fn pnpm_probe_wait_and_output_failures_fall_back_to_bundled() {
+        let pnpm = PathBuf::from("broken-pnpm");
+        let output = probe_output_or_fallback(
+            &pnpm,
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "output pipe closed",
+            )),
+        )
+        .unwrap();
+
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn pnpm_probe_wait_task_join_failure_falls_back_to_bundled() {
+        let pnpm = PathBuf::from("broken-pnpm");
+        let task: Option<()> = probe_task_or_fallback(&pnpm, Err("blocking worker dropped"));
+        assert!(task.is_none());
+    }
+
+    #[tokio::test]
+    async fn pnpm_probe_cleanup_monitor_releases_after_process_disappears() {
+        let polls = std::sync::atomic::AtomicUsize::new(0);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            wait_for_probe_cleanup_with(
+                || polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2,
+                std::time::Duration::from_millis(1),
+            ),
+        )
+        .await
+        .expect("cleanup monitor should release after liveness turns false");
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn pnpm_probe_cleanup_monitor_stays_fail_closed_while_process_lives() {
+        let pending = tokio::time::timeout(
+            std::time::Duration::from_millis(5),
+            wait_for_probe_cleanup_with(|| true, std::time::Duration::from_millis(1)),
+        )
+        .await;
+        assert!(pending.is_err());
+    }
+
+    struct BrokenPipeReader;
+
+    impl std::io::Read for BrokenPipeReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "probe output pipe closed",
+            ))
+        }
+    }
+
+    #[test]
+    fn pnpm_probe_broken_output_pipe_is_reported_as_fallback_failure() {
+        let error = read_probe_pipe(Some(BrokenPipeReader)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1743,7 +2200,47 @@ mod tests {
             default_checked: false,
             win_only: false,
             internal,
+            deprecated: false,
         }
+    }
+
+    #[test]
+    fn deprecated_installed_only_picks_marked_and_installed() {
+        // 只把 `dsh-ok` 视为已安装，其余一律未安装（便于区分「标记但未安装」）。
+        let installed = |name: &str| matches!(name, "dsh-ok" | "@scope/deprecated");
+
+        // 命中：deprecated 且已安装 → 返回实际安装包名（dsh-ok 未声明 package，回落 id）
+        let mut deprecated = preset("dsh-ok", "dshmarket", false);
+        deprecated.deprecated = true;
+        assert_eq!(
+            deprecated_installed_names(&[deprecated], installed),
+            vec!["dsh-ok".to_string()]
+        );
+
+        // scoped 包：返回真实安装包名（与预设 id 不一致）
+        let mut scoped = preset("dsh-scoped", "github:x/y", false);
+        scoped.deprecated = true;
+        scoped.package = Some("@scope/deprecated".into());
+        assert_eq!(
+            deprecated_installed_names(&[scoped], installed),
+            vec!["@scope/deprecated".to_string()]
+        );
+
+        // 未标记 deprecated：即使已安装也不命中
+        let plain = preset("dsh-plain", "dsh-plain", false);
+        assert!(deprecated_installed_names(&[plain], installed).is_empty());
+
+        // 标记了但未安装：不命中
+        let mut absent = preset("dsh-not-installed", "dshmarket", false);
+        absent.deprecated = true;
+        assert!(deprecated_installed_names(&[absent], installed).is_empty());
+
+        // 内部插件即使标记 deprecated 也不命中（内部插件由启动自愈强制安装）
+        let mut internal = preset("dsh-internal", "dsh-tauri@0.2.0", true);
+        internal.deprecated = true;
+        assert!(
+            deprecated_installed_names(&[internal], |name| matches!(name, "dsh-internal")).is_empty()
+        );
     }
 
     #[test]

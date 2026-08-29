@@ -29,9 +29,21 @@ use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, Preinsta
 #[derive(serde::Serialize, Clone)]
 struct InternalPluginsPhase {
     phase: &'static str,
-    detail: &'static str,
+    detail: InternalPluginPhaseDetail,
     completed: usize,
     total: usize,
+}
+
+#[derive(serde::Serialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum InternalPluginPhaseDetail {
+    Waiting,
+    Checking,
+    Installing,
+    Heartbeat,
+    Done,
+    Timeout,
+    Cancelled,
 }
 
 /// 串行化内置插件核对/安装：auto_start（Rust 侧 start→launch）与前端 boot 流程
@@ -40,6 +52,8 @@ struct InternalPluginsPhase {
 /// 完成后再核对（幂等：上次已装好则本轮全部 no-op）。
 const ENSURE_ABSOLUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const ENSURE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const ENSURE_OWNER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const ENSURE_OWNER_DRAIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Clone)]
 struct EnsureFlight {
@@ -50,15 +64,17 @@ struct EnsureFlight {
     cancel: tokio::sync::watch::Sender<bool>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum EnsureFlightState {
     Running,
     Cancelling,
+    CleanupFailed(String),
 }
 
 enum EnsureSubscription {
     Running(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
     Cancelling(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
+    CleanupFailed(String),
 }
 
 #[derive(Default)]
@@ -69,9 +85,12 @@ struct EnsureCoordinator {
 
 impl EnsureCoordinator {
     fn subscribe(&self) -> Option<EnsureSubscription> {
-        self.active.as_ref().map(|flight| match flight.state {
+        self.active.as_ref().map(|flight| match &flight.state {
             EnsureFlightState::Running => EnsureSubscription::Running(flight.result.clone()),
             EnsureFlightState::Cancelling => EnsureSubscription::Cancelling(flight.result.clone()),
+            EnsureFlightState::CleanupFailed(reason) => {
+                EnsureSubscription::CleanupFailed(reason.clone())
+            }
         })
     }
 
@@ -108,9 +127,17 @@ impl EnsureCoordinator {
 
     fn begin_cancel(&mut self) -> Option<tokio::sync::watch::Receiver<Option<Result<(), String>>>> {
         let active = self.active.as_mut()?;
-        active.state = EnsureFlightState::Cancelling;
-        let _ = active.cancel.send(true);
+        if !matches!(&active.state, EnsureFlightState::CleanupFailed(_)) {
+            active.state = EnsureFlightState::Cancelling;
+            let _ = active.cancel.send(true);
+        }
         Some(active.result.clone())
+    }
+
+    fn mark_cleanup_failed(&mut self, id: u64, reason: String) {
+        if let Some(active) = self.active.as_mut().filter(|flight| flight.id == id) {
+            active.state = EnsureFlightState::CleanupFailed(reason);
+        }
     }
 }
 
@@ -143,12 +170,26 @@ async fn subscribe_or_start(
             let app_handle = app_handle.clone();
             let internal = internal.to_vec();
             tauri::async_runtime::spawn(async move {
-                let outcome =
+                let mut outcome =
                     run_ensure_operation(&app_handle, &internal, owner, cancel_tx, cancel_rx).await;
                 // 强杀返回不等于持有句柄的 wait 已完成；必须等精确 owner 的 PID
                 // 守卫随 wait 退出，才能发布结果并允许 Retry 创建下一次 flight。
-                while super::process::active_plugin_pid(owner).is_some() {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if !wait_for_owner_release(owner, ENSURE_OWNER_DRAIN_TIMEOUT).await {
+                    let reason = format!(
+                        "INTERNAL_PLUGIN_PROCESS_REAP_TIMEOUT: plugin process owner {owner:?} remained active for {} seconds",
+                        ENSURE_OWNER_DRAIN_TIMEOUT.as_secs()
+                    );
+                    log::error!("{reason}");
+                    outcome = Err(reason.clone());
+                    let _ = result_tx.send(Some(outcome));
+                    ensure_lock().lock().await.mark_cleanup_failed(id, reason);
+                    // 保留 cleanup-failed flight 与唯一 owner；进程锁仍由 wait 线程持有。
+                    // 若系统最终完成 reap，再释放 flight 允许后续 Retry。
+                    while super::process::active_plugin_pid(owner).is_some() {
+                        tokio::time::sleep(ENSURE_OWNER_DRAIN_INTERVAL).await;
+                    }
+                    ensure_lock().lock().await.finish(id);
+                    return;
                 }
                 ensure_lock().lock().await.finish(id);
                 let _ = result_tx.send(Some(outcome));
@@ -174,7 +215,41 @@ where
                 // 移除后回到循环，创建且只创建一个全新的 flight。
                 let _ = receive_flight_result(&mut result).await?;
             }
+            EnsureSubscription::CleanupFailed(reason) => return Err(reason),
         }
+    }
+}
+
+async fn wait_for_owner_release(
+    owner: super::process::ProcessOwner,
+    timeout: std::time::Duration,
+) -> bool {
+    wait_for_release_with(
+        || super::process::active_plugin_pid(owner).is_some(),
+        timeout,
+        ENSURE_OWNER_DRAIN_INTERVAL,
+    )
+    .await
+}
+
+async fn wait_for_release_with<F>(
+    mut is_active: F,
+    timeout: std::time::Duration,
+    interval: std::time::Duration,
+) -> bool
+where
+    F: FnMut() -> bool,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        if !is_active() {
+            return true;
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return false;
+        }
+        tokio::time::sleep(interval.min(timeout - elapsed)).await;
     }
 }
 
@@ -206,8 +281,10 @@ pub(crate) async fn cancel() -> Result<(), String> {
             .begin_cancel()
             .expect("active flight must remain present while coordinator lock is held")
     };
-    let _ = receive_flight_result(&mut result).await?;
-    Ok(())
+    match receive_flight_result(&mut result).await? {
+        Err(reason) if reason.starts_with("INTERNAL_PLUGIN_PROCESS_REAP_TIMEOUT:") => Err(reason),
+        _ => Ok(()),
+    }
 }
 
 async fn run_ensure_operation(
@@ -218,8 +295,20 @@ async fn run_ensure_operation(
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     let total = internal.len();
-    emit_phase(app_handle, "loading", "waiting", 0, total);
-    emit_phase(app_handle, "progress", "checking", 0, total);
+    emit_phase(
+        app_handle,
+        "loading",
+        InternalPluginPhaseDetail::Waiting,
+        0,
+        total,
+    );
+    emit_phase(
+        app_handle,
+        "progress",
+        InternalPluginPhaseDetail::Checking,
+        0,
+        total,
+    );
     let refs: Vec<_> = internal.iter().collect();
     let operation = ensure_inner(app_handle, &refs, cancel.clone(), owner);
     tokio::pin!(operation);
@@ -231,7 +320,7 @@ async fn run_ensure_operation(
     loop {
         tokio::select! {
             outcome = &mut operation => {
-                emit_phase(app_handle, "done", "done", total, total);
+                emit_phase(app_handle, "done", InternalPluginPhaseDetail::Done, total, total);
                 return outcome;
             }
             _ = &mut deadline => {
@@ -242,7 +331,7 @@ async fn run_ensure_operation(
                 if tokio::time::timeout(ENSURE_CLEANUP_TIMEOUT, &mut operation).await.is_err() {
                     log::error!("INTERNAL_PLUGIN_CLEANUP_TIMEOUT: plugin process did not exit after forced termination");
                 }
-                emit_phase(app_handle, "done", "timeout", 0, total);
+                emit_phase(app_handle, "done", InternalPluginPhaseDetail::Timeout, 0, total);
                 return Err(reason.to_string());
             }
             changed = cancel.changed() => {
@@ -253,12 +342,12 @@ async fn run_ensure_operation(
                     if tokio::time::timeout(ENSURE_CLEANUP_TIMEOUT, &mut operation).await.is_err() {
                         log::error!("INTERNAL_PLUGIN_CLEANUP_TIMEOUT: plugin process did not exit after forced termination");
                     }
-                    emit_phase(app_handle, "done", "cancelled", 0, total);
+                    emit_phase(app_handle, "done", InternalPluginPhaseDetail::Cancelled, 0, total);
                     return Err(reason.to_string());
                 }
             }
             _ = heartbeat.tick() => {
-                emit_phase(app_handle, "progress", "heartbeat", 0, total);
+                emit_phase(app_handle, "progress", InternalPluginPhaseDetail::Heartbeat, 0, total);
             }
         }
     }
@@ -267,7 +356,7 @@ async fn run_ensure_operation(
 fn emit_phase(
     app_handle: &AppHandle,
     phase: &'static str,
-    detail: &'static str,
+    detail: InternalPluginPhaseDetail,
     completed: usize,
     total: usize,
 ) {
@@ -354,7 +443,13 @@ async fn ensure_inner(
 
     let ids: Vec<String> = need.iter().map(|(id, _, _)| id.clone()).collect();
     log::info!("Reinstalling internal preset plugins: {ids:?}");
-    emit_phase(app_handle, "progress", "installing", 0, ids.len());
+    emit_phase(
+        app_handle,
+        "progress",
+        InternalPluginPhaseDetail::Installing,
+        0,
+        ids.len(),
+    );
 
     // pnpm add 会先解析清单里的所有既有依赖。0.9.0 将随包目录从
     // `preset-plugins` 迁至 `internal-plugins` 后，旧 file:/link: 路径已不存在，pnpm
@@ -599,6 +694,7 @@ mod tests {
                                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             cancelling_subscribed.notify_one();
                         }
+
                         return subscription;
                     }
                     let (id, owner, result_tx, result_rx, _, _) = coordinator.start();
@@ -653,6 +749,31 @@ mod tests {
         assert!(second_retry.await.unwrap().is_ok());
         assert_eq!(fresh_started.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(coordinator.lock().await.subscribe().is_none());
+    }
+
+    #[tokio::test]
+    async fn stuck_owner_is_bounded_and_blocks_new_flights_without_hanging_waiters() {
+        let released = wait_for_release_with(
+            || true,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+        )
+        .await;
+        assert!(!released);
+
+        let mut coordinator = EnsureCoordinator::default();
+        let (id, _, result_tx, mut result, _, _) = coordinator.start();
+        let reason = "INTERNAL_PLUGIN_PROCESS_REAP_TIMEOUT: test owner remained active".to_string();
+        result_tx.send(Some(Err(reason.clone()))).unwrap();
+        coordinator.mark_cleanup_failed(id, reason.clone());
+
+        assert!(matches!(
+            coordinator.subscribe(),
+            Some(EnsureSubscription::CleanupFailed(error)) if error == reason
+        ));
+        let outcome = receive_flight_result(&mut result).await.unwrap();
+        assert_eq!(outcome, Err(reason));
+        assert_eq!(coordinator.next_id, 1);
     }
 
     #[test]

@@ -19,6 +19,8 @@
   "status.internal_checking": "Checking {{total}} internal plugins.",
   "status.internal_installing": "Installing {{total}} internal plugins.",
   "status.internal_done": "Verified {{total}} internal plugins.",
+  "status.internal_timeout": "Internal plugin installation timed out.",
+  "status.internal_cancelled": "Internal plugin installation was cancelled.",
   "startup.phase.plugin-install": "plugin installation",
   "startup.phase.process-boot": "process boot",
   "startup.phase.client-modules": "client modules",

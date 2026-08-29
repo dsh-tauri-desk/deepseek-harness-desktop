@@ -50,6 +50,11 @@ pub struct PreinstallPluginInfo {
     /// 仅 Windows 平台列出
     #[serde(default)]
     pub win_only: bool,
+    /// 弃用标记：带该字段的社区预设不再提供安装入口；若此前已安装，应用启动时
+    /// 自动卸载（见 [`super::install::uninstall_deprecated_plugins`]）。适用于社区
+    /// 预设（`preset-plugins.json`）；内部插件由启动自愈强制安装，不走弃用语义。
+    #[serde(default)]
+    pub deprecated: bool,
 }
 
 /// 在资源根目录下查找清单：先探测扁平布局（exe 同级），再探测
@@ -419,6 +424,18 @@ mod tests {
         assert_eq!(found, dir.join(PRESET_PLUGINS_FILE));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deprecated_flag_parses_and_defaults_to_false() {
+        // 显式 `deprecated: true` 被解析
+        let raw = r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u","deprecated":true}]"#;
+        let parsed = parse_plugins(raw, false).expect("preset manifest should parse");
+        assert!(parsed[0].deprecated);
+        // 未声明该字段时回落为 false（老清单向后兼容）
+        let raw = r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"}]"#;
+        let parsed = parse_plugins(raw, false).expect("preset manifest should parse");
+        assert!(!parsed[0].deprecated);
     }
 
     #[test]

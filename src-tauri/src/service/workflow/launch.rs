@@ -530,8 +530,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             if no_open {
                 cmd.arg("--no-open");
             }
+            let child_envs = crate::service::env::environment_with_explicit(&envs);
             cmd.env_clear()
-                .envs(&envs)
+                .envs(&child_envs)
                 .current_dir(config::get_dsh_install_path(&app_handle))
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())

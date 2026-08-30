@@ -192,4 +192,21 @@ mod tests {
         );
         assert!(!environment.values().any(|value| value == "must-not-pass"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_environment_retains_safe_unix_runtime_settings() {
+        let expected_home = std::env::var("HOME").expect("test environment should define HOME");
+        let expected_path = std::env::var("PATH").expect("test environment should define PATH");
+        let extra = HashMap::from([("DSH_HOME".to_string(), "/tmp/dsh".to_string())]);
+
+        let environment = environment_with_explicit(&extra);
+
+        assert_eq!(environment.get("HOME"), Some(&expected_home));
+        assert_eq!(environment.get("PATH"), Some(&expected_path));
+        assert_eq!(
+            environment.get("DSH_HOME").map(String::as_str),
+            Some("/tmp/dsh")
+        );
+    }
 }

@@ -305,7 +305,9 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
         }
     };
 
-    // 4. 资产 URL 与摘要：仅 API 可达时资产/摘要可信；否则 URL 平台确定性回退、digest=None
+    // 4. 资产 URL 与摘要：URL 与摘要必须始终来自同一个 release。
+    // API 不可用时 tag 来自 Atom，因此下载地址也必须按该 tag 确定性构造，
+    // 不能继续使用 latest 地址，否则会把别的 release 内容拿来匹配当前摘要。
     let (asset_url, mut digest) = match api_release.as_ref() {
         Some(release) => {
             let asset = release
@@ -327,7 +329,7 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
                 .map(|v| v.to_string());
             (asset_url, digest)
         }
-        None => (config::get_dsh_download_url()?, None),
+        None => (config::get_dsh_download_url_for_tag(&tag_name)?, None),
     };
 
     // 4b. API 限流/不可用导致取不到可信摘要时，改从 expanded_assets HTML
@@ -363,12 +365,24 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     })
 }
 
+/// 按指定 SemVer 查找并返回 Harness 发行版，供推荐版本策略使用。
+///
+/// 推荐版本可能是 pre-release，不能使用 GitHub 的 `/releases/latest`；该端点会
+/// 排除标记为 pre-release 的发行版。先从完整 release 列表按解析后的 SemVer 精确匹配
+/// tag，再复用固定 tag 的资产与摘要查询，确保下载内容与校验摘要属于同一发布。
+pub async fn fetch_dsh_pkg_version(version: &str) -> Result<LatestDshPkg, String> {
+    let release = fetch_dsh_pkg_releases()
+        .await?
+        .into_iter()
+        .find(|release| parse_version_from_tag(&release.tag).as_deref() == Some(version))
+        .ok_or_else(|| format!("DSH_RECOMMENDED_NOT_FOUND: no release found for {version}"))?;
+    fetch_dsh_pkg_asset(&release.tag).await
+}
+
 /// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
 ///
-/// 与 `fetch_latest_dsh_pkg_info` 同源策略：优先走 api.github.com
-/// （`/releases/tags/{tag}` 拿资产与摘要），失败时资产 URL 平台确定性推导
-/// （latest 地址的 tag 位替换）、摘要走 expanded_assets HTML；digest 仍取不到
-/// 则置 `None`，调用方据此安全中止下载（沿用 DSH_INTEGRITY_UNAVAILABLE 设计）。
+/// API 失败时资产 URL 按 tag 确定性构造，摘要从同一个 tag 的页面读取，避免
+/// latest 地址与固定 tag 的摘要发生错配。
 pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
     let client = github_client()?;
     let expected_name = config::get_dsh_download_url()?
@@ -728,6 +742,20 @@ mod tests {
             asset_url: "https://example.invalid/dsh.zip".to_string(),
             digest: Some(format!("sha256:{}", "0".repeat(64))),
         }
+    }
+
+    #[test]
+    fn atom_fallback_download_url_is_pinned_to_resolved_tag() {
+        let tag = "dsh-src-0.1.2-alpha.1-33260039971";
+        let url = config::get_dsh_download_url_for_tag(tag).expect("dsh url");
+        assert!(url.contains(&format!("/releases/download/{tag}/")));
+        assert!(!url.contains("/releases/latest/download/"));
+        assert!(
+            url.ends_with("deepseek-harness-pkg-windows.zip")
+                || url.ends_with("deepseek-harness-pkg-linux.zip")
+                || url.ends_with("deepseek-harness-pkg-macos-arm64.zip")
+                || url.ends_with("deepseek-harness-pkg-macos-x64.zip")
+        );
     }
 
     #[test]

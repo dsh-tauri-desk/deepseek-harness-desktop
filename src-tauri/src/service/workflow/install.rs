@@ -148,7 +148,11 @@ pub async fn install(
                 // issue #31），这里带退避重取，避免启动被瞬时失败卡死。
                 if dsh_latest.is_none() {
                     for attempt in 0..3 {
-                        match download::fetch_latest_dsh_pkg_info().await {
+                        let metadata = match config::recommended_dsh_version(app_handle) {
+                            Some(version) => download::fetch_dsh_pkg_version(&version).await,
+                            None => download::fetch_latest_dsh_pkg_info().await,
+                        };
+                        match metadata {
                             Ok(info) => {
                                 dsh_latest = Some(info);
                                 break;

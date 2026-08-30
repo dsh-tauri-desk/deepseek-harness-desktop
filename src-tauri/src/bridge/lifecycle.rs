@@ -116,7 +116,14 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         return Ok(false);
     }
 
-    let dsh_latest = download::fetch_latest_dsh_pkg_info().await;
+    // 安装目标遵循应用资源中的推荐版本，而不是 GitHub 的 latest。
+    // latest 可能是 alpha/beta 等超出推荐范围的预览版；并且 `/releases/latest`
+    // 不保证与推荐版本的摘要属于同一 release。按推荐 SemVer 反查固定 tag，后续
+    // 资产 URL 与 digest 都从该 tag 获取。
+    let dsh_latest = match config::recommended_dsh_version(&app_handle) {
+        Some(version) => download::fetch_dsh_pkg_version(&version).await,
+        None => download::fetch_latest_dsh_pkg_info().await,
+    };
 
     // 已安装文件在盘时，用 resolve_update 甄别「记录滞后」与「真更新」：
     // 记录滞后（HealUpToDate）只修正 store 记录、绝不整包重下。否则会把一个

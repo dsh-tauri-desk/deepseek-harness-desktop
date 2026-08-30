@@ -283,7 +283,7 @@ pub(crate) async fn run_plugin_process(
                     return Err("PREINSTALL_WAIT: GetExitCodeProcess failed".to_string());
                 }
                 CloseHandle(handle.0);
-                code as i32
+                Ok(code as i32)
             }
         })
         .await

@@ -9,10 +9,33 @@ export interface Profile {
   id: string
   /** 展示名（manifest name 去 dsh-profile- 前缀，首字母大写） */
   name: string
+  /** 描述（manifest.description；克隆自动写入「克隆自 <源>」） */
+  description: string
   /** 是否桌面端内置默认档案（web） */
   default: boolean
   /** 是否当前使用中的档案 */
   active: boolean
+}
+
+/** Rust 侧 service::profile::backup::ProfileBackup 的序列化形态（camelCase） */
+export interface ProfileBackup {
+  /** 备份 id（`<创建时间ms>-<原因>`，即文件名去 .zip） */
+  id: string
+  /** 所属档案 id */
+  profileId: string
+  /** 创建时间（毫秒时间戳） */
+  createdAt: number
+  /** 触发原因（manual / startup / interval / config_change / before_restore） */
+  reason: string
+  /** 压缩包字节数 */
+  sizeBytes: number
+}
+
+/** Rust 侧 service::profile::backup::RestoreResult 的序列化形态（camelCase） */
+export interface RestoreResult {
+  profile: Profile
+  /** 还原的正是当前运行档案时后端已停止 Harness，前端需调用既有重启流程 */
+  serviceStopped: boolean
 }
 
 export interface UseDshProfilesResult {
@@ -21,11 +44,17 @@ export interface UseDshProfilesResult {
   error: string
   /** 新建档案（返回新档案；不自动激活） */
   createProfile: (name: string) => Promise<Profile>
+  /** 克隆档案（复制配置、排除依赖目录；name 为自定义新档案名称） */
+  cloneProfile: (sourceId: string, name: string) => Promise<Profile>
+  /** 重命名档案（含描述；只改 manifest 展示元信息，目录 id 不变） */
+  renameProfile: (id: string, name: string, description: string) => Promise<Profile>
   /** 切换当前使用中的档案（持久化；重启服务后生效） */
   activateProfile: (id: string) => Promise<Profile>
-  /** 删除档案（默认/使用中的档案会被后端拒绝） */
+  /** 删除档案（当前使用中的档案会被后端拒绝） */
   removeProfile: (id: string) => Promise<void>
-  /** 操作进行中标记（新建/切换/删除任一） */
+  /** 手动创建档案备份（返回创建的备份行） */
+  backupNow: (id: string) => Promise<ProfileBackup>
+  /** 操作进行中标记（新建/克隆/重命名/切换/删除任一） */
   busy: boolean
 }
 
@@ -71,6 +100,15 @@ export function useDshProfiles(): UseDshProfilesResult {
     mutationFn: (name: string) => invoke<Profile>('create_profile', { name }),
     onSuccess: invalidate,
   })
+  const clone = useMutation({
+    mutationFn: (args: { id: string, name: string }) => invoke<Profile>('clone_profile', args),
+    onSuccess: invalidate,
+  })
+  const rename = useMutation({
+    mutationFn: (args: { id: string, name: string, description: string }) =>
+      invoke<Profile>('rename_profile', args),
+    onSuccess: invalidate,
+  })
   const activate = useMutation({
     mutationFn: (id: string) => invoke<Profile>('set_active_profile', { id }),
     onSuccess: invalidate,
@@ -78,6 +116,9 @@ export function useDshProfiles(): UseDshProfilesResult {
   const remove = useMutation({
     mutationFn: (id: string) => invoke<void>('remove_profile', { id }),
     onSuccess: invalidate,
+  })
+  const backup = useMutation({
+    mutationFn: (id: string) => invoke<ProfileBackup>('create_profile_backup', { profileId: id }),
   })
 
   return {
@@ -89,6 +130,16 @@ export function useDshProfiles(): UseDshProfilesResult {
       await refetch()
       return created
     },
+    cloneProfile: async (sourceId, name) => {
+      const cloned = await clone.mutateAsync({ id: sourceId, name })
+      await refetch()
+      return cloned
+    },
+    renameProfile: async (id, name, description) => {
+      const renamed = await rename.mutateAsync({ id, name, description })
+      await refetch()
+      return renamed
+    },
     activateProfile: async (id) => {
       const activated = await activate.mutateAsync(id)
       await refetch()
@@ -98,6 +149,11 @@ export function useDshProfiles(): UseDshProfilesResult {
       await remove.mutateAsync(id)
       await refetch()
     },
-    busy: create.isPending || activate.isPending || remove.isPending,
+    backupNow: async (id) => {
+      const backupRow = await backup.mutateAsync(id)
+      void queryClient.invalidateQueries({ queryKey: ['profile-backups'] })
+      return backupRow
+    },
+    busy: create.isPending || clone.isPending || rename.isPending || activate.isPending || remove.isPending || backup.isPending,
   }
 }

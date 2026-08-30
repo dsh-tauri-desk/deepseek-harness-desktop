@@ -34,6 +34,7 @@ fn lang() -> Lang {
 /// Look up a translation key. Keys are grouped by domain with `_` separators.
 pub fn t(key: &str) -> String {
     let (zh, en): (&str, &str) = match key {
+        "profile.clone_of" => ("克隆自 {}", "Cloned from {}"),
         "runtime.unsupported_platform" => {
             ("不支持当前平台/架构", "Unsupported platform/architecture")
         }
@@ -91,10 +92,38 @@ pub fn t(key: &str) -> String {
         "menu.copy" => ("复制", "Copy"),
         "menu.paste" => ("粘贴", "Paste"),
         "menu.select_all" => ("全选", "Select All"),
+        "backup.reason.manual" => ("手动", "Manual"),
+        "backup.reason.startup" => ("启动", "Startup"),
+        "backup.reason.interval" => ("周期", "Periodic"),
+        "backup.reason.config_change" => ("配置变化", "Config change"),
+        "backup.reason.before_restore" => ("还原前", "Before restore"),
+        "backup.notify_success_title" => ("档案备份完成", "Profile backup completed"),
+        "backup.notify_failed_title" => ("档案备份失败", "Profile backup failed"),
+        "backup.notify_success_body" => ("档案 {} 已自动备份（{}）", "Profile {} backed up automatically ({})"),
+        "backup.notify_failed_body" => ("档案 {} 自动备份失败（{}）", "Profile {} auto backup failed ({})"),
         _ => (key, key),
     };
     match lang() {
         Lang::Zh => zh.to_string(),
         Lang::En => en.to_string(),
     }
+}
+
+/// 用参数依次替换模板中的 `{}` 占位符（Rust `format!` 要求字面量，
+/// i18n 文案是运行时字符串，这里手写填充）。
+pub fn fill_template(template: &str, args: &[&str]) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    for arg in args {
+        match rest.find("{}") {
+            Some(pos) => {
+                out.push_str(&rest[..pos]);
+                out.push_str(arg);
+                rest = &rest[pos + 2..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
 }

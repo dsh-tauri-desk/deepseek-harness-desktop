@@ -367,6 +367,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
         log::warn!("ensure preset plugins failed: {e}");
     }
+    // 克隆/还原后写入的依赖重建标记：按 manifest/lockfile 执行 `pnpm install`
+    // 重建直接依赖（不复制 node_modules）。最佳努力：失败只告警，不阻断启动
+    // （标记保留，下次启动重试）。
+    if let Err(e) = crate::service::profile::run_pending_dependency_rebuild(&app_handle).await {
+        log::warn!("profile dependency rebuild failed: {e}");
+    }
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert(
         "DSH_HOME".to_string(),

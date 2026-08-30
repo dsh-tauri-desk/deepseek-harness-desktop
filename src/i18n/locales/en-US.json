@@ -179,6 +179,7 @@
   "profiles.backup_max_count": "Keep at most",
   "profiles.backup_include_credentials": "Include credentials (.credentials.yaml) in manual backups",
   "profiles.backup_credentials_warning": "Your API keys will be stored in the backup ZIP. Keep it secure.",
+  "profiles.backup_notify": "Notify on automatic backups",
   "profiles.backup_settings_saved": "Backup settings saved",
   "profiles.backup_settings_failed": "Failed to save backup settings",
   "profiles.backup_history_empty": "No backups yet.",

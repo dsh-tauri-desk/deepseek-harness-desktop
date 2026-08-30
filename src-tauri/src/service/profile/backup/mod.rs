@@ -303,12 +303,15 @@ fn create_zip_backup(
     Ok(backup)
 }
 
-/// 自动备份（startup / interval / config_change）：成功与失败均调用原生通知；
+/// 自动备份（startup / interval / config_change）：按设置决定是否发送原生
+/// 通知（默认关闭，本功能面向配置面板的高级用户，后台例行行为不打扰）；
 /// 返回是否实际创建了 ZIP（供同一轮去重）。
 ///
 /// 自动备份永远不带凭据：密钥不应在用户不知情时被周期性地复制进备份文件。
 fn create_auto(app_handle: &AppHandle, reason: BackupReason) -> bool {
     let profile_id = active_profile(app_handle);
+    // 通知开关在创建前读取一次；创建本身不改变设置
+    let notify = get_settings(app_handle).notify;
     match create_zip_backup(app_handle, &profile_id, reason, false) {
         Ok(backup) => {
             log::info!(
@@ -316,12 +319,16 @@ fn create_auto(app_handle: &AppHandle, reason: BackupReason) -> bool {
                 backup.id,
                 backup.size_bytes
             );
-            notify_backup(app_handle, &profile_id, reason, true);
+            if notify {
+                notify_backup(app_handle, &profile_id, reason, true);
+            }
             true
         }
         Err(e) => {
             log::error!("auto backup failed for profile {profile_id}: {e}");
-            notify_backup(app_handle, &profile_id, reason, false);
+            if notify {
+                notify_backup(app_handle, &profile_id, reason, false);
+            }
             false
         }
     }
@@ -559,6 +566,8 @@ pub fn update_settings(
         max_count: settings.max_count.clamp(1, 100),
         // 凭据开关是显式偏好，直接透传（无范围钳制）
         include_credentials: settings.include_credentials,
+        // 通知开关是显式偏好，直接透传
+        notify: settings.notify,
     };
     config::update_store_dat_setting(app_handle, |setting| {
         setting.profile_backup = normalized.clone();
@@ -785,6 +794,9 @@ mod tests {
         assert!(!settings.on_change);
         assert_eq!(settings.interval_days, 0);
         assert_eq!(settings.max_count, 10);
+        // 高级用户功能：默认不打扰（无凭据、无通知）
+        assert!(!settings.include_credentials);
+        assert!(!settings.notify);
     }
 
     #[test]

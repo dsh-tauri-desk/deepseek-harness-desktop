@@ -12,6 +12,8 @@ export interface ProfileBackupSettings {
   max_count: number
   /** 手动备份是否包含 `$DSH_HOME/.credentials.yaml`（自动备份永远不带） */
   include_credentials: boolean
+  /** 自动备份成功/失败是否发送原生通知（默认关闭，高级功能不打扰） */
+  notify: boolean
 }
 
 export const DEFAULT_BACKUP_SETTINGS: ProfileBackupSettings = {
@@ -20,6 +22,7 @@ export const DEFAULT_BACKUP_SETTINGS: ProfileBackupSettings = {
   interval_days: 0,
   max_count: 10,
   include_credentials: false,
+  notify: false,
 }
 
 export interface UseProfileBackupsResult {

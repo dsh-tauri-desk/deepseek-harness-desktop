@@ -25,6 +25,7 @@ interface BackupSettingsDraft {
   interval_days: string
   max_count: string
   include_credentials: boolean
+  notify: boolean
 }
 
 export interface ProfileBackupSectionProps {
@@ -60,6 +61,7 @@ export function ProfileBackupSection({ activeProfile }: ProfileBackupSectionProp
         interval_days: String(settings.interval_days),
         max_count: String(settings.max_count),
         include_credentials: settings.include_credentials,
+        notify: settings.notify,
       })
 
   const busy = busyAction !== null
@@ -75,6 +77,7 @@ export function ProfileBackupSection({ activeProfile }: ProfileBackupSectionProp
         // 0 在这里不是合法值（后端钳制 ≥1），回退到 1 而非默认 10
         max_count: Number(draftValue.max_count) || 1,
         include_credentials: draftValue.include_credentials,
+        notify: draftValue.notify,
       })
       setDraft({
         on_startup: normalized.on_startup,
@@ -82,6 +85,7 @@ export function ProfileBackupSection({ activeProfile }: ProfileBackupSectionProp
         interval_days: String(normalized.interval_days),
         max_count: String(normalized.max_count),
         include_credentials: normalized.include_credentials,
+        notify: normalized.notify,
       })
       setDirty(false)
       toast(t('profiles.backup_settings_saved'), {})
@@ -286,6 +290,28 @@ export function ProfileBackupSection({ activeProfile }: ProfileBackupSectionProp
                 {t('profiles.backup_credentials_warning')}
               </Description>
             </If>
+          </div>
+
+          {/* 自动备份通知：默认关闭——后台例行行为不打扰，面向需要知晓的高级用户 */}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-ink">{t('profiles.backup_notify')}</span>
+            <Switch
+              isSelected={draftValue?.notify ?? false}
+              isDisabled={!draftValue || saving}
+              onChange={(next) => {
+                if (draftValue) {
+                  setDraft({ ...draftValue, notify: next })
+                  setDirty(true)
+                }
+              }}
+              aria-label={t('profiles.backup_notify')}
+            >
+              <Switch.Content>
+                <Switch.Control>
+                  <Switch.Thumb />
+                </Switch.Control>
+              </Switch.Content>
+            </Switch>
           </div>
 
           <div className="flex justify-end">

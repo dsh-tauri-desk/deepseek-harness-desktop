@@ -179,6 +179,7 @@
   "profiles.backup_max_count": "最多保留",
   "profiles.backup_include_credentials": "手动备份包含凭据（.credentials.yaml）",
   "profiles.backup_credentials_warning": "你的 API 密钥将存入备份 ZIP，请妥善保管。",
+  "profiles.backup_notify": "自动备份时通知",
   "profiles.backup_settings_saved": "备份设置已保存",
   "profiles.backup_settings_failed": "保存备份设置失败",
   "profiles.backup_history_empty": "暂无备份。",

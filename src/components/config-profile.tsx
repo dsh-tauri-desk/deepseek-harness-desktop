@@ -82,6 +82,10 @@ export function ConfigProfile() {
   // 避免 overlastic holder 不刷新 props 的输入冻结问题，见 rename 对话框）
   const [cloning, setCloning] = useState<{ sourceId: string, sourceName: string } | null>(null)
   const [cloneName, setCloneName] = useState('')
+  // 对话框 JSX 的 children 表达式在元素创建时求值（不受 If cond 控制），
+  // cloning 为 null 时不能解引用，这里用 ?? '' 兜底保证求值安全
+  const cloneSourceName = cloning?.sourceName ?? ''
+  const cloneSourceId = cloning?.sourceId ?? ''
 
   /** 推导下一个未占用的自动递增名称（仅作为对话框建议；后端才是权威） */
   function suggestCloneName(base: string): string {
@@ -107,8 +111,12 @@ export function ConfigProfile() {
       toast(t('profiles.clone_empty'), {})
       return
     }
+    // 快照源档案信息：await 期间用户可能关闭对话框（cloning 变 null），
+    // 失败 toast 不能读已置空的 state
+    const sourceId = cloning.sourceId
+    const sourceName = cloning.sourceName
     try {
-      const cloned = await cloneProfile(cloning.sourceId, trimmed)
+      const cloned = await cloneProfile(sourceId, trimmed)
       setCloning(null)
       setCloneName('')
       // 克隆成功后列表已刷新出新档案，UI 本身就有变化，只提示克隆结果
@@ -117,7 +125,7 @@ export function ConfigProfile() {
     catch (err) {
       console.error('[ConfigProfile] clone failed:', err)
       // 对话框保持打开：用户可改名重试
-      toast(t('profiles.clone_failed', { name: cloning.sourceName }), { variant: 'danger' })
+      toast(t('profiles.clone_failed', { name: sourceName }), { variant: 'danger' })
     }
   }
 
@@ -386,9 +394,11 @@ export function ConfigProfile() {
                 <AlertDialog.Heading>{t('profiles.clone_dialog_title')}</AlertDialog.Heading>
               </AlertDialog.Header>
               <AlertDialog.Body>
+                {/* JSX children 表达式在元素创建时即求值（不受 If cond 控制），
+                    cloning 为 null 时不能解引用；?? '' 兜底保证求值安全 */}
                 <If cond={cloning != null}>
                   <p className="text-xs text-muted">
-                    {t('profiles.clone_dialog_desc', { name: cloning!.sourceName })}
+                    {t('profiles.clone_dialog_desc', { name: cloneSourceName })}
                   </p>
                 </If>
                 <Input
@@ -405,7 +415,7 @@ export function ConfigProfile() {
                 />
                 <If cond={cloning != null}>
                   <p className="text-xs text-muted">
-                    {t('profiles.clone_default_hint', { name: suggestCloneName(cloning!.sourceId) })}
+                    {t('profiles.clone_default_hint', { name: suggestCloneName(cloneSourceId) })}
                   </p>
                 </If>
               </AlertDialog.Body>

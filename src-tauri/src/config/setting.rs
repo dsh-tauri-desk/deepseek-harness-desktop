@@ -64,6 +64,9 @@ pub struct Setting {
 /// - `max_count`：每个档案最多保留的备份份数（每次成功创建后按档案删除最旧）
 /// - `include_credentials`：手动备份是否包含 `$DSH_HOME/.credentials.yaml`
 ///   （默认 false；自动备份永远不带凭据，见 `service::profile::backup`）
+/// - `notify`：自动备份成功/失败是否发送原生通知。默认关闭——本功能面向
+///   配置面板的高级用户，自动备份是后台例行行为，默认不打扰（见
+///   `service::profile::backup::create_auto`）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ProfileBackupSettings {
@@ -77,6 +80,8 @@ pub struct ProfileBackupSettings {
     pub max_count: u32,
     #[serde(default)]
     pub include_credentials: bool,
+    #[serde(default)]
+    pub notify: bool,
 }
 
 /// 每个档案默认最多保留的备份份数。
@@ -92,6 +97,7 @@ impl Default for ProfileBackupSettings {
             interval_days: 0,
             max_count: default_profile_backup_max_count(),
             include_credentials: false,
+            notify: false,
         }
     }
 }

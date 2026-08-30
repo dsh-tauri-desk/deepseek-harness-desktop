@@ -416,12 +416,22 @@ pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
     })
 }
 
-/// 从 release tag 中解析版本号：`dsh-0.1.0-rc.7-32054485373` → `0.1.0-rc.7`。
-///
-/// tag 约定为 `dsh-<version>-<commit 后缀>`；格式不符时返回 `None`，
-/// 调用方据此回退到仅 commit 比对的旧行为，避免误判。
+/// 从核心 tag 中解析版本号：`dsh-0.1.0-rc.7-32054485373`、
+/// `src-0.1.2-alpha.1` 或 `dsh-src-0.1.2-alpha.1-33260039971` → 对应的 SemVer。
 pub fn parse_version_from_tag(tag: &str) -> Option<String> {
-    let version = tag.strip_prefix("dsh-")?.rsplit_once('-')?.0;
+    let has_dsh_prefix = tag.starts_with("dsh-");
+    let tag = tag.strip_prefix("dsh-").unwrap_or(tag);
+    if let Some(version) = tag.strip_prefix("src-") {
+        let version = if has_dsh_prefix {
+            version.rsplit_once('-').map(|(version, _)| version)?
+        } else {
+            version
+        };
+        return semver::Version::parse(version)
+            .ok()
+            .map(|_| version.to_string());
+    }
+    let version = has_dsh_prefix.then(|| tag.rsplit_once('-').map(|(version, _)| version))??;
     (!version.is_empty()).then(|| version.to_string())
 }
 
@@ -718,6 +728,14 @@ mod tests {
         assert_eq!(parse_version_from_tag("dsh-0.2.0"), None);
         assert_eq!(parse_version_from_tag("0.1.0-rc.7-abc"), None);
         assert_eq!(parse_version_from_tag(""), None);
+        assert_eq!(
+            parse_version_from_tag("src-0.1.2-alpha.1").as_deref(),
+            Some("0.1.2-alpha.1")
+        );
+        assert_eq!(
+            parse_version_from_tag("dsh-src-0.1.2-alpha.1-33260039971").as_deref(),
+            Some("0.1.2-alpha.1")
+        );
     }
 
     #[test]

@@ -43,7 +43,17 @@ export function ConfigCore() {
   const [refreshing, setRefreshing] = useState(false)
 
   // 本地核心未检测到时不渲染 local 行（保留 local_missing_hint 提示）
-  const rows = cores.filter(core => !(core.source === 'local' && !core.present))
+  // 后端列表在部分缓存/旧版本返回路径中可能仍保持远程顺序，前端统一按版本从高到低排序。
+  // 本地核心固定放在版本列表前，预打包核心按 SemVer 排序。
+  const rows = cores
+    .filter(core => !(core.source === 'local' && !core.present))
+    .sort((a, b) => {
+      if (a.source !== b.source)
+        return a.source === 'local' ? -1 : 1
+      if (a.source === 'local')
+        return 0
+      return -compareVersions(a.version, b.version)
+    })
   const localCore = cores.find(c => c.source === 'local')
 
   // 本地核心是否有新版可更新：仅当存在更新的预打包发布时才显示「更新本地核心」。
@@ -51,7 +61,7 @@ export function ConfigCore() {
   // 版本"（预览版不参与更新判定；本地版本已是最新时不再展示更新入口，避免
   // "已最新仍提示更新"）。
   const localVersion = localCore?.version ?? ''
-  const latestVersion = cores.find(c => c.source === 'app' && !c.preview)?.version ?? ''
+  const latestVersion = cores.find(c => c.source === 'app' && !c.preview && !c.aboveRecommended)?.version ?? ''
   const hasLocalUpdate = !!(localCore?.present && localVersion && latestVersion && compareVersions(localVersion, latestVersion) < 0)
 
   /** 包裹行内操作：全局单例守卫 + 该行 busy 标记 */
@@ -71,12 +81,18 @@ export function ConfigCore() {
     if (core.active || busy || !core.present)
       return
     try {
+      const isRiskyVersion = core.recommendedVersion !== null
+        && (core.aboveRecommended || compareVersions(core.version, core.recommendedVersion) > 0)
       await openDialog({
-        status: 'warning',
-        title: t('core.switch_confirm_title'),
+        status: isRiskyVersion ? 'danger' : 'warning',
+        title: isRiskyVersion ? t('core.recommended_warning_title') : t('core.switch_confirm_title'),
         description: (
           <p>
-            {t('core.switch_confirm_desc', { version: displayVersion(core) })}
+            <If
+              cond={isRiskyVersion}
+              then={t('core.recommended_warning_desc', { version: core.recommendedVersion ?? '' })}
+              else={t('core.switch_confirm_desc', { version: displayVersion(core) })}
+            />
           </p>
         ),
       })
@@ -360,7 +376,8 @@ function displayVersion(version: HarnessCore): string {
  * 返回值：负数 a < b，0 相等，正数 a > b。
  */
 function compareVersions(a: string, b: string): number {
-  const parse = (v: string) => {
+  const parse = (value: string) => {
+    const v = value.replace(/^(?:src|dsh)-/, '')
     const [core, pre = ''] = v.split('-', 2)
     const nums = core.split('.').map(n => parseInt(n, 10) || 0)
     return { nums, pre }

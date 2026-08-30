@@ -118,6 +118,18 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     // 很容易留下破损安装，导致启动报找不到 @deepseek-ai/dsh-client-ui-settings
     // 或 HARNESS_NOT_FOUND。仅在真更新（UpdateAvailable）时才允许重新下载。
     let dsh_need_install = match &dsh_latest {
+        Ok(latest)
+            if dsh_files_ok
+                && download::parse_version_from_tag(&latest.tag).is_some_and(|version| {
+                    config::is_dsh_version_above_recommended(&app_handle, &version)
+                }) =>
+        {
+            log::info!(
+                "Recommended version policy prevents automatic dsh installation: {}",
+                latest.tag
+            );
+            false
+        }
         Ok(latest) if dsh_files_ok => {
             let record_commit = config::get_dsh_pkg_commit(&app_handle);
             let record_tag = config::get_dsh_pkg_tag(&app_handle);
@@ -227,7 +239,28 @@ pub async fn check_dsh_update(
         return Ok(None);
     }
 
+    // 当前已运行版本高于推荐版本时也不提示更新；否则从高版本核心切换后，
+    // latest release 仍可能被误判为更新并再次弹出通知。
+    if let Some(installed_version) = config::get_dsh_version(&app_handle) {
+        if config::is_dsh_version_above_recommended(&app_handle, &installed_version) {
+            log::info!(
+                "Suppressing dsh update because installed version is above recommended: {}",
+                installed_version
+            );
+            return Ok(None);
+        }
+    }
+
     let latest = download::fetch_latest_dsh_pkg_info().await?;
+    if let Some(version) = download::parse_version_from_tag(&latest.tag) {
+        if config::is_dsh_version_above_recommended(&app_handle, &version) {
+            log::info!(
+                "Suppressing dsh update above recommended version: {}",
+                version
+            );
+            return Ok(None);
+        }
+    }
     let record_commit = config::get_dsh_pkg_commit(&app_handle);
     let record_tag = config::get_dsh_pkg_tag(&app_handle);
     let installed_version = config::get_dsh_version(&app_handle);

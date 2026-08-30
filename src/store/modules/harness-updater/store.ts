@@ -22,9 +22,9 @@ export const harnessUpdater = defineStore({
     async checkForUpdate() {
       try {
         const info = await invoke<DshUpdateInfo | null>('check_dsh_update')
-        if (info) {
-          this.updateInfo = info
-        }
+        // 后端返回 null 表示没有可推送的更新（包括高于推荐版本的最新版本），
+        // 必须清空旧提示，避免调试页继续显示已经被策略拦截的更新。
+        this.updateInfo = info
       }
       catch (err) {
         console.warn('[Harness] update check skipped:', err)

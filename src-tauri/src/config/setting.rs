@@ -50,6 +50,56 @@ pub struct Setting {
     /// 归一化到受支持的 50%–200% 范围和 10% 步长。
     #[serde(default = "default_zoom_factor")]
     pub zoom_factor: f64,
+    /// 档案自动备份设置（策略实现见 service::profile::backup）。
+    /// 旧配置缺失时回落到全关闭 + 每档案最多保留 10 份。
+    #[serde(default)]
+    pub profile_backup: ProfileBackupSettings,
+}
+
+/// 档案自动备份设置（全局一份，作用于「当前使用中的档案」）。
+///
+/// - `on_startup`：每次桌面端启动最多触发一次启动备份
+/// - `on_change`：配置内容（排除依赖目录）指纹变化且稳定 10 秒后触发备份
+/// - `interval_days`：周期备份间隔天数；0 = 关闭周期备份
+/// - `max_count`：每个档案最多保留的备份份数（每次成功创建后按档案删除最旧）
+/// - `include_credentials`：手动备份是否包含 `$DSH_HOME/.credentials.yaml`
+///   （默认 false；自动备份永远不带凭据，见 `service::profile::backup`）
+/// - `notify`：自动备份成功/失败是否发送原生通知。默认关闭——本功能面向
+///   配置面板的高级用户，自动备份是后台例行行为，默认不打扰（见
+///   `service::profile::backup::create_auto`）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ProfileBackupSettings {
+    #[serde(default)]
+    pub on_startup: bool,
+    #[serde(default)]
+    pub on_change: bool,
+    #[serde(default)]
+    pub interval_days: u32,
+    #[serde(default = "default_profile_backup_max_count")]
+    pub max_count: u32,
+    #[serde(default)]
+    pub include_credentials: bool,
+    #[serde(default)]
+    pub notify: bool,
+}
+
+/// 每个档案默认最多保留的备份份数。
+fn default_profile_backup_max_count() -> u32 {
+    10
+}
+
+impl Default for ProfileBackupSettings {
+    fn default() -> Self {
+        Self {
+            on_startup: false,
+            on_change: false,
+            interval_days: 0,
+            max_count: default_profile_backup_max_count(),
+            include_credentials: false,
+            notify: false,
+        }
+    }
 }
 
 pub const ZOOM_FACTOR_MIN: f64 = 0.5;
@@ -107,6 +157,7 @@ impl Default for Setting {
             active_core: None,
             manual_port: None,
             zoom_factor: default_zoom_factor(),
+            profile_backup: ProfileBackupSettings::default(),
         }
     }
 }

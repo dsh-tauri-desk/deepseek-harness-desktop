@@ -125,12 +125,14 @@ pub(crate) async fn ensure_preset_plugins(app_handle: &AppHandle) -> Result<(), 
     Ok(())
 }
 
-/// 在 profile 目录执行 `pnpm install` 修复 node_modules 依赖图。
+/// 在指定 profile 目录执行 `pnpm install` 重建 node_modules 依赖图。
 ///
 /// 选定直接执行的 pnpm（见 [`pnpm_direct`]），环境沿用桌面端插件子进程策略
 /// （`build_plugin_envs`：隔离 $DSH_HOME、PATH 前置 shim 与 node 目录、pnpm
 /// 选版开关），与安装/升级/卸载同一套行为，避免意外的 store/版本不兼容。
-async fn repair_with_pnpm_install(app_handle: &AppHandle, profile: &Path) -> Result<(), String> {
+///
+/// `pub(crate)`：档案克隆/还原后的依赖重建标记处理（`service::profile`）复用。
+pub(crate) async fn repair_with_pnpm_install(app_handle: &AppHandle, profile: &Path) -> Result<(), String> {
     let (program, mut args) = pnpm_direct(app_handle).ok_or_else(|| {
         "PNPM_NOT_FOUND: 无捆绑 pnpm 且无用户 pnpm，无法修复插件依赖（如需可手动执行 pnpm install）"
             .to_string()

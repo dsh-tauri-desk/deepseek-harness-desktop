@@ -89,20 +89,36 @@ pub fn remove(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
         return Ok(get_status(app_handle));
     }
     let bin_dir = get_bin_dir(app_handle);
+    let mut removal_errors = Vec::new();
 
     #[cfg(windows)]
     {
         use super::shim::{PNPM_SHIM_CMD_NAME, PNPM_SHIM_PS1_NAME, SHIM_CMD_NAME, SHIM_PS1_NAME};
-        remove_generated_shim(&bin_dir.join(SHIM_CMD_NAME));
-        remove_generated_shim(&bin_dir.join(SHIM_PS1_NAME));
-        remove_generated_shim(&bin_dir.join(PNPM_SHIM_CMD_NAME));
-        remove_generated_shim(&bin_dir.join(PNPM_SHIM_PS1_NAME));
+        for name in [
+            SHIM_CMD_NAME,
+            SHIM_PS1_NAME,
+            PNPM_SHIM_CMD_NAME,
+            PNPM_SHIM_PS1_NAME,
+        ] {
+            if let Err(error) = remove_generated_shim(&bin_dir.join(name)) {
+                removal_errors.push(error);
+            }
+        }
     }
     #[cfg(not(windows))]
     {
         use super::shim::{PNPM_SHIM_SH_NAME, SHIM_SH_NAME};
-        remove_generated_shim(&bin_dir.join(SHIM_SH_NAME));
-        remove_generated_shim(&bin_dir.join(PNPM_SHIM_SH_NAME));
+        for name in [SHIM_SH_NAME, PNPM_SHIM_SH_NAME] {
+            if let Err(error) = remove_generated_shim(&bin_dir.join(name)) {
+                removal_errors.push(error);
+            }
+        }
+    }
+
+    if !removal_errors.is_empty() {
+        let detail = removal_errors.join("; ");
+        log::warn!("failed to remove generated CLI shims: {detail}");
+        return Err(detail);
     }
 
     unregister_path(app_handle)?;
@@ -111,14 +127,9 @@ pub fn remove(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
     Ok(get_status(app_handle))
 }
 
-fn remove_generated_shim(path: &Path) {
+fn remove_generated_shim(path: &Path) -> Result<(), String> {
     if !is_generated_shim(path) {
-        return;
+        return Ok(());
     }
-    if let Err(error) = fs::remove_file(path) {
-        log::warn!(
-            "failed to remove generated CLI shim {}: {error}",
-            path.display()
-        );
-    }
+    fs::remove_file(path).map_err(|error| format!("CLI_SHIM_REMOVE: {}: {error}", path.display()))
 }

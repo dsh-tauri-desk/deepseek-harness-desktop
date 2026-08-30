@@ -65,15 +65,18 @@ const SAFE_EXPLICIT_KEYS: &[&str] = &[
     "PATH",
 ];
 
+/// 将受控环境变量键规范为 ASCII 大写，便于和固定白名单比较。
 fn normalized(key: &str) -> String {
     key.to_ascii_uppercase()
 }
 
+/// 判断环境变量是否可以从桌面端进程继承。
 pub(crate) fn is_safe_inherited_key(key: &str) -> bool {
     let key = normalized(key);
     SAFE_INHERITED_KEYS.iter().any(|allowed| *allowed == key)
 }
 
+/// 判断环境变量是否可以由调用方显式传入子进程。
 pub(crate) fn is_safe_explicit_key(key: &str) -> bool {
     let key = normalized(key);
     SAFE_EXPLICIT_KEYS.iter().any(|allowed| *allowed == key)
@@ -98,6 +101,7 @@ pub(crate) fn sanitize_proxy_value(key: &str, value: &str) -> Option<String> {
     Some(proxy.to_string())
 }
 
+/// 按不区分大小写的键更新环境映射，避免 Windows 重复变量名。
 fn insert_case_insensitive(map: &mut HashMap<String, String>, key: String, value: String) {
     if let Some(existing) = map
         .keys()

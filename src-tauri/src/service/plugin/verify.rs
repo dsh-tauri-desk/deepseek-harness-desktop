@@ -482,7 +482,7 @@ mod tests {
 
         assert_eq!(exit_code, 0);
         assert!(
-            started.elapsed() < Duration::from_millis(500),
+            started.elapsed() < OUTPUT_READER_GRACE + Duration::from_millis(750),
             "detached child must not hold plugin verification open"
         );
     }

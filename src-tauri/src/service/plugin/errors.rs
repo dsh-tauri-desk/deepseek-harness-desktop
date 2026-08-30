@@ -103,6 +103,7 @@ pub(crate) fn validate_input(
     Ok((action.to_string(), validate_message(message)?))
 }
 
+/// 获取桌面端自己的插件错误记录文件路径。
 fn errors_path(app_handle: &AppHandle) -> PathBuf {
     config::get_base_dir(app_handle).join("plugin-errors.json")
 }
@@ -147,6 +148,7 @@ pub(crate) fn load(app_handle: &AppHandle) -> HashMap<String, PluginError> {
         .collect()
 }
 
+/// 将插件错误记录写入临时文件并原子替换目标文件，避免留下半写状态。
 fn save(app_handle: &AppHandle, map: &HashMap<String, PluginError>) -> Result<(), String> {
     if map.len() > MAX_PLUGIN_ERROR_RECORDS {
         return Err("PLUGIN_ERRORS_LIMIT: too many plugin error records".to_string());
@@ -188,11 +190,13 @@ fn save(app_handle: &AppHandle, map: &HashMap<String, PluginError>) -> Result<()
 }
 
 #[cfg(not(windows))]
+/// 在 Unix 上用同目录重命名原子替换错误记录文件。
 fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     fs::rename(from, to)
 }
 
 #[cfg(windows)]
+/// 在 Windows 上用带写-through 的系统替换操作更新错误记录文件。
 fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{

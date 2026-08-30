@@ -63,6 +63,7 @@ const NPM_REGISTRY = 'https://registry.npmjs.org/'
 interface CommandInvocation {
   executable: string
   args: string[]
+  windowsVerbatimArguments?: boolean
 }
 
 function die(message: string): never {
@@ -85,6 +86,7 @@ function run(program: string, args: readonly string[], cwd: string): void {
     cwd,
     stdio: 'inherit',
     shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   })
   if (result.error !== undefined) {
     die(`${program} 启动失败: ${result.error.message}`)
@@ -98,7 +100,7 @@ function quoteCmdArgument(value: string): string {
   if (/["%\r\n\0]/.test(value)) {
     throw new Error(`unsafe command argument: ${value}`)
   }
-  return `"${value.replace(/[&|<>^()]/g, '^$&')}"`
+  return `"${value}"`
 }
 
 export function buildCommandInvocation(
@@ -115,6 +117,7 @@ export function buildCommandInvocation(
   return {
     executable: comspec,
     args: ['/d', '/v:off', '/s', '/c', command],
+    windowsVerbatimArguments: true,
   }
 }
 

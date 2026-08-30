@@ -15,6 +15,7 @@ const READ_CHUNK_BYTES: usize = 8 * 1024;
 
 pub(crate) type CapturedOutput = Arc<Mutex<String>>;
 
+/// 创建线程安全的有界输出缓冲。
 pub(crate) fn new_capture() -> CapturedOutput {
     Arc::new(Mutex::new(String::new()))
 }
@@ -27,6 +28,7 @@ pub(crate) fn append_captured(captured: &CapturedOutput, text: &str) {
     append_bounded_string(&mut output, text);
 }
 
+/// 追加文本并只保留 UTF-8 边界上的尾部内容。
 pub(crate) fn append_bounded_string(output: &mut String, text: &str) {
     output.push_str(text);
     if output.len() <= MAX_CAPTURED_BYTES {
@@ -78,6 +80,7 @@ pub(crate) fn read_bounded_lines<R: Read>(mut reader: R, mut on_line: impl FnMut
     }
 }
 
+/// 将一行字节转换为可展示文本，并标记被截断的行。
 fn render_line(bytes: &[u8], truncated: bool) -> String {
     let mut line = String::from_utf8_lossy(bytes).into_owned();
     if truncated {
@@ -105,6 +108,7 @@ where
     })
 }
 
+/// 取出当前捕获内容并清空共享缓冲。
 pub(crate) fn drain_captured(captured: CapturedOutput) -> String {
     captured
         .lock()

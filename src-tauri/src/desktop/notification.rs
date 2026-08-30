@@ -14,12 +14,14 @@ const MAX_NOTIFICATION_SEQUENCE_CHARS: usize = 20;
 const NOTIFICATION_RATE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_NOTIFICATIONS_PER_WINDOW: usize = 30;
 
+/// 记录通知限流窗口及窗口内已经发出的通知数量。
 struct NotificationRateLimiter {
     window_started: Instant,
     emitted: usize,
 }
 
 impl NotificationRateLimiter {
+    /// 创建一个从当前时刻开始计数的通知限流器。
     fn new() -> Self {
         Self {
             window_started: Instant::now(),
@@ -27,6 +29,7 @@ impl NotificationRateLimiter {
         }
     }
 
+    /// 判断当前通知是否仍在时间窗口配额内，并在允许时消耗一个配额。
     fn allow(&mut self) -> bool {
         if self.window_started.elapsed() >= NOTIFICATION_RATE_WINDOW {
             self.window_started = Instant::now();
@@ -40,11 +43,13 @@ impl NotificationRateLimiter {
     }
 }
 
+/// 获取进程内共享的通知限流器，避免消息桥持续弹出通知。
 fn notification_rate_limiter() -> &'static Mutex<NotificationRateLimiter> {
     static LIMITER: OnceLock<Mutex<NotificationRateLimiter>> = OnceLock::new();
     LIMITER.get_or_init(|| Mutex::new(NotificationRateLimiter::new()))
 }
 
+/// 检查会话等通知标识符是否为有限长度的 ASCII 安全字符。
 fn valid_notification_identifier(value: &str, max_chars: usize) -> bool {
     !value.is_empty()
         && value.chars().count() <= max_chars
@@ -54,12 +59,14 @@ fn valid_notification_identifier(value: &str, max_chars: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+/// 检查通知文本的长度、空值策略及 NUL 字符。
 fn valid_notification_text(value: &str, max_chars: usize, allow_empty: bool) -> bool {
     (allow_empty || !value.trim().is_empty())
         && value.chars().count() <= max_chars
         && !value.contains('\0')
 }
 
+/// 检查通知 tag 尾部的数字序号，避免把任意字符串带入解析路径。
 fn valid_sequence(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_NOTIFICATION_SEQUENCE_CHARS
@@ -74,6 +81,7 @@ fn validate_notification_tag(tag: &str) -> Result<Option<&str>, String> {
     let Some(rest) = tag.strip_prefix("dsh-notification-") else {
         return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
     };
+    let rest = rest.strip_prefix("pending-").unwrap_or(rest);
     if let Some(sequence) = rest.strip_prefix("test-") {
         if valid_sequence(sequence) {
             return Ok(None);
@@ -81,7 +89,6 @@ fn validate_notification_tag(tag: &str) -> Result<Option<&str>, String> {
         return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
     }
 
-    let rest = rest.strip_prefix("pending-").unwrap_or(rest);
     let Some((session_id, sequence)) = rest.rsplit_once('-') else {
         return Err("NOTIFICATION_INVALID_TAG: notification tag is not valid".to_string());
     };
@@ -93,6 +100,7 @@ fn validate_notification_tag(tag: &str) -> Result<Option<&str>, String> {
     Ok(Some(session_id))
 }
 
+/// 校验通知字段以及 tag 与 session_id 之间的一致性。
 fn validate_notification_payload(payload: &NativeNotificationPayload) -> Result<(), String> {
     if !valid_notification_text(&payload.title, MAX_NOTIFICATION_TITLE_CHARS, false) {
         return Err("NOTIFICATION_INVALID_TITLE: notification title is not valid".to_string());
@@ -326,6 +334,10 @@ mod tests {
             validate_notification_tag("dsh-notification-test-123").unwrap(),
             None
         );
+        assert_eq!(
+            validate_notification_tag("dsh-notification-pending-test-123").unwrap(),
+            None
+        );
         assert!(validate_notification_tag("arbitrary-tag").is_err());
         assert!(validate_notification_tag("dsh-notification-session-1-x").is_err());
     }
@@ -341,6 +353,11 @@ mod tests {
             validate_notification_payload(&payload(Some("dsh-notification-test-123"), None))
                 .is_ok()
         );
+        assert!(validate_notification_payload(&payload(
+            Some("dsh-notification-pending-test-123"),
+            None
+        ))
+        .is_ok());
         assert!(validate_notification_payload(&payload(
             Some("dsh-notification-session-1-2"),
             Some("session-2")

@@ -77,7 +77,7 @@
 - **为什么用 `link:` 而不是 `file:`** — pnpm 会把 `file:D:/...`（Windows 盘符绝对路径）当**相对路径**解析而失败（`scandir <cwd>\D:\... ENOENT`），`link:<绝对路径>` 才正确按绝对路径解析并建立目录联接。`bundled_dep_spec` 还会用 `dunce::simplified` 归一化 Windows `\\?\` verbatim 前缀，避免生成坏联接；否则自愈每轮都重装（死循环）。该 spec 在 Windows 上大小写不敏感比对，并容忍 `link:`/`file:` 混写与尾部斜杠差异。
 - **路径含空格** — 应用安装目录（如 `G:\Deepseek Harness Desktop\...`）常含空格；`dsh plugin add` 经 shell 传参，`install.rs` 用 `shell_quote_spec` 给这类 spec 加内嵌双引号，不要去掉。
 - **prebuild 响亮失败** — `scripts/prebuild.ts` 任何失败都会以非零退出码终止构建，宁可不发也不要发出损坏的内置插件。若 release 运行期仍缺捆绑目录，日志会记 `INTERNAL_PLUGIN_BUNDLE_MISSING`。
-- **构建机访问** — prebuild 需要访问 GitHub/npm，PATH 上要有 `git`/`pnpm`；它只用 Node 内置模块（零新增依赖）。
+- **构建机访问** — prebuild 需要访问 GitHub/npm，PATH 上要有 `git`/`npm`/`pnpm`；它只用 Node 内置模块（零新增依赖）。
 - **id 保持唯一** — 清单单测要求 id 唯一。插件自身的发布与版本号变更在其自己的仓库进行，不在本仓库内。
 
 ## 参考

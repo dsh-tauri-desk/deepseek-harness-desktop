@@ -57,6 +57,7 @@ describe('internal plugin prebuild validation', () => {
         '/c',
         '"pnpm.cmd" "add" "C:\\work dir\\plugin.tgz" "--registry" "https://registry.npmjs.org/"',
       ],
+      windowsVerbatimArguments: true,
     })
     expect(buildCommandInvocation('git', ['status'], 'win32', 'C:\\Windows\\System32\\cmd.exe')).toEqual({
       executable: 'git',

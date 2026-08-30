@@ -60,6 +60,11 @@ const GIT_COMMIT_RE = /^[0-9a-f]{40}$/i
 const NPM_INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]+={0,2}$/
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 
+interface CommandInvocation {
+  executable: string
+  args: string[]
+}
+
 function die(message: string): never {
   console.error(`[prebuild] ${message}`)
   process.exit(1)
@@ -68,10 +73,15 @@ function die(message: string): never {
 /** 同步执行命令，非零退出码即终止构建（内置插件缺失是发布缺陷，必须响亮失败）。 */
 function run(program: string, args: readonly string[], cwd: string): void {
   console.log(`[prebuild] $ ${program} ${args.join(' ')}`)
-  const executable = process.platform === 'win32' && (program === 'npm' || program === 'pnpm')
-    ? `${program}.cmd`
-    : program
-  const result = spawnSync(executable, [...args], {
+  let invocation: CommandInvocation
+  try {
+    invocation = buildCommandInvocation(program, args)
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    die(`${program} 参数不安全: ${message}`)
+  }
+  const result = spawnSync(invocation.executable, invocation.args, {
     cwd,
     stdio: 'inherit',
     shell: false,
@@ -81,6 +91,30 @@ function run(program: string, args: readonly string[], cwd: string): void {
   }
   if (result.status !== 0) {
     die(`${program} ${args.join(' ')} 退出码 ${result.status}`)
+  }
+}
+
+function quoteCmdArgument(value: string): string {
+  if (/["%\r\n\0]/.test(value)) {
+    throw new Error(`unsafe command argument: ${value}`)
+  }
+  return `"${value.replace(/[&|<>^()]/g, '^$&')}"`
+}
+
+export function buildCommandInvocation(
+  program: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  comspec: string = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe',
+): CommandInvocation {
+  if (platform !== 'win32' || (program !== 'npm' && program !== 'pnpm')) {
+    return { executable: program, args: [...args] }
+  }
+
+  const command = [`${program}.cmd`, ...args].map(quoteCmdArgument).join(' ')
+  return {
+    executable: comspec,
+    args: ['/d', '/v:off', '/s', '/c', command],
   }
 }
 
@@ -409,6 +443,18 @@ function main(): void {
   console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}`)
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(SCRIPT_PATH)) {
+export function isDirectEntry(entry: string | undefined, scriptPath: string): boolean {
+  if (entry === undefined) {
+    return false
+  }
+  try {
+    return realpathSync(resolve(entry)) === realpathSync(resolve(scriptPath))
+  }
+  catch {
+    return resolve(entry) === resolve(scriptPath)
+  }
+}
+
+if (isDirectEntry(process.argv[1], SCRIPT_PATH)) {
   main()
 }

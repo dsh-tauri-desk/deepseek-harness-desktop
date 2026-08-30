@@ -51,6 +51,7 @@ pub(crate) fn read_bounded_lines<R: Read>(mut reader: R, mut on_line: impl FnMut
         let read = match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
         for byte in &chunk[..read] {
@@ -86,7 +87,11 @@ fn render_line(bytes: &[u8], truncated: bool) -> String {
 }
 
 /// 在线程中读取管道，捕获有界尾部并执行可选的实时回调。
-pub(crate) fn spawn_bounded_reader<R, F>(reader: R, captured: CapturedOutput, mut on_line: F)
+pub(crate) fn spawn_bounded_reader<R, F>(
+    reader: R,
+    captured: CapturedOutput,
+    mut on_line: F,
+) -> std::thread::JoinHandle<()>
 where
     R: Read + Send + 'static,
     F: FnMut(String) + Send + 'static,
@@ -97,7 +102,7 @@ where
             append_captured(&captured, "\n");
             on_line(line);
         });
-    });
+    })
 }
 
 pub(crate) fn drain_captured(captured: CapturedOutput) -> String {
@@ -110,7 +115,22 @@ pub(crate) fn drain_captured(captured: CapturedOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
+
+    struct InterruptOnce {
+        interrupted: bool,
+        inner: Cursor<Vec<u8>>,
+    }
+
+    impl Read for InterruptOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.inner.read(buffer)
+        }
+    }
 
     #[test]
     fn long_line_is_bounded_before_callback() {
@@ -130,5 +150,29 @@ mod tests {
         let output = drain_captured(capture);
         assert!(output.len() <= MAX_CAPTURED_BYTES);
         assert!(output.ends_with("tail"));
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried() {
+        let reader = InterruptOnce {
+            interrupted: false,
+            inner: Cursor::new(b"after interrupt\n".to_vec()),
+        };
+        let mut lines = Vec::new();
+
+        read_bounded_lines(reader, |line| lines.push(line));
+
+        assert_eq!(lines, vec!["after interrupt"]);
+    }
+
+    #[test]
+    fn bounded_reader_handle_can_be_joined_before_draining() {
+        let capture = new_capture();
+        let reader =
+            spawn_bounded_reader(Cursor::new(b"complete\n".to_vec()), capture.clone(), |_| {});
+
+        reader.join().expect("output reader should finish");
+
+        assert_eq!(drain_captured(capture), "complete\n");
     }
 }

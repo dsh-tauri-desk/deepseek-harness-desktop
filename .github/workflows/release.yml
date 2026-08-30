@@ -81,12 +81,28 @@ jobs:
           script: |
             const ref = `tags/${process.env.RELEASE_TAG}`;
             const sha = process.env.RELEASE_SHA;
+            let existing;
             try {
-              await github.rest.git.getRef({ ...context.repo, ref });
-              await github.rest.git.updateRef({ ...context.repo, ref, sha, force: true });
+              existing = (await github.rest.git.getRef({ ...context.repo, ref })).data;
             } catch (error) {
-              if (error.status !== 404) throw error;
-              await github.rest.git.createRef({ ...context.repo, ref: `refs/${ref}`, sha });
+              if (error.status === 404) {
+                await github.rest.git.createRef({ ...context.repo, ref: `refs/${ref}`, sha });
+                return;
+              }
+              throw error;
+            }
+
+            let target = existing.object;
+            for (let depth = 0; target.type === 'tag' && depth < 10; depth += 1) {
+              target = (await github.rest.git.getTag({
+                ...context.repo,
+                tag_sha: target.sha,
+              })).data.object;
+            }
+            if (target.type !== 'commit' || target.sha.toLowerCase() !== sha.toLowerCase()) {
+              throw new Error(
+                `RELEASE_TAG_MISMATCH: ${process.env.RELEASE_TAG} points to ${target.sha}, expected ${sha}`,
+              );
             }
 
       - name: Create release and generate release notes
@@ -233,10 +249,11 @@ jobs:
           # finalize 未 checkout，gh 无法从 .git 推断仓库，需显式指定。
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('test-{0}-{1}', github.ref_name, github.run_number) || needs.prepare.outputs.tag }}
+          RELEASE_SOURCE_REF: ${{ needs.prepare.outputs.source_ref }}
           PRERELEASE: ${{ github.event_name == 'workflow_dispatch' || needs.prepare.outputs.prerelease == 'true' }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --draft --title "DeepSeek Harness Desktop $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" --target "$RELEASE_SOURCE_REF" --draft --title "DeepSeek Harness Desktop $RELEASE_TAG"
           fi
           mapfile -d '' assets < <(find release-assets -type f -print0)
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

@@ -41,14 +41,16 @@
   },
   {
     "id": "dsh-tauri-session",
-    "spec": "dsh-tauri-session",
+    "spec": "dsh-tauri-session@0.5.3",
+    "integrity": "sha512-0nGMQmCTn0rm7c2jLUmQTl8xLHOri+ouBrlOBl6Ms8/I1ZL6l1a7NLWdrS0ZfjaMaz8ayKUdJ74B4WQzIO+y4A==",
     "name": "DSH Tauri Session",
     "description": "Session archive for the desktop: rewrites the workspace browser's 'delete workspace' action into 'archive workspace', and adds an 'Archived chats' settings page with search, sort, grouping, project filter and unarchive.",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session"
   },
   {
     "id": "dsh-tauri-rightclick",
-    "spec": "dsh-tauri-rightclick",
+    "spec": "dsh-tauri-rightclick@0.5.3",
+    "integrity": "sha512-js3UdADNU2G8Utpsf2nKsNankazn/K1qwigg61s4CQzzsJrFtMT80aCimkfDJP7FY9briTdXJOWDpc+Lb+mojQ==",
     "name": "DSH Tauri Rightclick Menu",
     "description": "Native-style right-click context menu for the desktop shell: quick actions for sessions, workspaces, conversation text, links, and inputs — in-house successor to the deprecated dsh-session-context-menu.",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick"

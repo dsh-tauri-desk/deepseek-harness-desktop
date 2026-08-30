@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 const SAFE_INHERITED_KEYS: &[&str] = &[
     "APPDATA",
+    "ALL_PROXY",
     "COLORTERM",
     "COMSPEC",
     "DBUS_SESSION_BUS_ADDRESS",
@@ -15,12 +16,15 @@ const SAFE_INHERITED_KEYS: &[&str] = &[
     "HOMEDRIVE",
     "HOMEPATH",
     "HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
     "LANG",
     "LC_ALL",
     "LC_CTYPE",
     "LC_MESSAGES",
     "LOCALAPPDATA",
     "LOGNAME",
+    "NO_PROXY",
     "NUMBER_OF_PROCESSORS",
     "OS",
     "PATH",
@@ -47,12 +51,16 @@ const SAFE_INHERITED_KEYS: &[&str] = &[
 ];
 
 const SAFE_EXPLICIT_KEYS: &[&str] = &[
+    "ALL_PROXY",
     "DSH_HOME",
     "DSH_NODE",
     "DSH_PNPM",
     "DSH_PREFER_BUNDLED_PNPM",
     "DSH_TELEMETRY_DISABLED",
     "DSH_WEB_PORT",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
     "NO_COLOR",
     "PATH",
 ];
@@ -69,6 +77,25 @@ pub(crate) fn is_safe_inherited_key(key: &str) -> bool {
 pub(crate) fn is_safe_explicit_key(key: &str) -> bool {
     let key = normalized(key);
     SAFE_EXPLICIT_KEYS.iter().any(|allowed| *allowed == key)
+}
+
+/// 保留代理配置的路由能力，但移除代理 URL 中可能泄露给子进程的账号密码。
+pub(crate) fn sanitize_proxy_value(key: &str, value: &str) -> Option<String> {
+    let key = normalized(key);
+    if key == "NO_PROXY" {
+        return Some(value.to_string());
+    }
+    if !matches!(key.as_str(), "ALL_PROXY" | "HTTP_PROXY" | "HTTPS_PROXY") {
+        return Some(value.to_string());
+    }
+
+    let mut proxy = reqwest::Url::parse(value).ok()?;
+    if proxy.username().is_empty() && proxy.password().is_none() {
+        return Some(value.to_string());
+    }
+    proxy.set_username("").ok()?;
+    proxy.set_password(None).ok()?;
+    Some(proxy.to_string())
 }
 
 fn insert_case_insensitive(map: &mut HashMap<String, String>, key: String, value: String) {
@@ -88,7 +115,9 @@ pub(crate) fn safe_environment() -> HashMap<String, String> {
     let mut environment = HashMap::new();
     for (key, value) in std::env::vars() {
         if is_safe_inherited_key(&key) {
-            insert_case_insensitive(&mut environment, key, value);
+            if let Some(value) = sanitize_proxy_value(&key, &value) {
+                insert_case_insensitive(&mut environment, key, value);
+            }
         }
     }
     environment
@@ -101,7 +130,9 @@ pub(crate) fn environment_with_explicit(
     let mut environment = safe_environment();
     for (key, value) in extra {
         if is_safe_explicit_key(key) {
-            insert_case_insensitive(&mut environment, key.clone(), value.clone());
+            if let Some(value) = sanitize_proxy_value(key, value) {
+                insert_case_insensitive(&mut environment, key.clone(), value);
+            }
         }
     }
     environment
@@ -115,11 +146,33 @@ mod tests {
     fn inherited_allowlist_excludes_common_credentials() {
         assert!(is_safe_inherited_key("PATH"));
         assert!(is_safe_inherited_key("SystemRoot"));
+        assert!(is_safe_inherited_key("HTTPS_PROXY"));
+        assert!(is_safe_inherited_key("NO_PROXY"));
         assert!(!is_safe_inherited_key("AWS_SECRET_ACCESS_KEY"));
         assert!(!is_safe_inherited_key("GITHUB_TOKEN"));
-        assert!(!is_safe_inherited_key("HTTP_PROXY"));
         assert!(!is_safe_inherited_key("NODE_OPTIONS"));
         assert!(!is_safe_inherited_key("NPM_CONFIG_USERCONFIG"));
+    }
+
+    #[test]
+    fn proxy_configuration_is_allowed_and_credentials_are_removed() {
+        assert!(is_safe_explicit_key("HTTP_PROXY"));
+        assert!(is_safe_explicit_key("ALL_PROXY"));
+        assert!(is_safe_explicit_key("NO_PROXY"));
+
+        assert_eq!(
+            sanitize_proxy_value("HTTPS_PROXY", "https://proxy.example:8443"),
+            Some("https://proxy.example:8443".to_string())
+        );
+        assert_eq!(
+            sanitize_proxy_value("HTTPS_PROXY", "https://alice:secret@proxy.example:8443"),
+            Some("https://proxy.example:8443/".to_string())
+        );
+        assert_eq!(
+            sanitize_proxy_value("NO_PROXY", "127.0.0.1,localhost"),
+            Some("127.0.0.1,localhost".to_string())
+        );
+        assert!(sanitize_proxy_value("HTTPS_PROXY", "not a valid proxy").is_none());
     }
 
     #[test]

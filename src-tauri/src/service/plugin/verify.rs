@@ -20,9 +20,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-#[cfg(not(windows))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 use crate::config;
@@ -165,6 +163,25 @@ async fn repair_with_pnpm_install(app_handle: &AppHandle, profile: &Path) -> Res
 
 /// 修复输出日志保留的最大字符数（pnpm 失败信息集中在输出末尾）。
 const REPAIR_OUTPUT_LIMIT: usize = 4000;
+const OUTPUT_READER_GRACE: Duration = Duration::from_millis(250);
+
+/// 在有限收尾窗口内等待 stdout/stderr 读取线程，避免后代进程持有管道时永久阻塞。
+fn join_output_readers(readers: Vec<std::thread::JoinHandle<()>>) {
+    let deadline = Instant::now() + OUTPUT_READER_GRACE;
+    while !readers.iter().all(std::thread::JoinHandle::is_finished) {
+        if Instant::now() >= deadline {
+            log::warn!(
+                "PNPM_REPAIR_OUTPUT: output reader did not finish within {} ms",
+                OUTPUT_READER_GRACE.as_millis()
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
+}
 
 /// 选定修复用的 pnpm 直接执行程序：(program, 前置参数)。
 ///
@@ -249,8 +266,8 @@ async fn spawn_and_wait(
                 &envs,
             )
             .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
-            output::spawn_bounded_reader(stdout, captured.clone(), |_| {});
-            output::spawn_bounded_reader(stderr, captured.clone(), |_| {});
+            let stdout_reader = output::spawn_bounded_reader(stdout, captured.clone(), |_| {});
+            let stderr_reader = output::spawn_bounded_reader(stderr, captured.clone(), |_| {});
 
             let pid = unsafe { GetProcessId(handle) };
             if pid == 0 {
@@ -258,8 +275,6 @@ async fn spawn_and_wait(
                 return Err("PNPM_REPAIR_WAIT: unable to identify repair process".to_string());
             }
 
-            // 等孤立读取线程把管道内容写完（短命令通常已结束，此等待为兜底）。
-            std::thread::sleep(Duration::from_millis(200));
             let exit_code: Result<i32, String> = unsafe {
                 let wait = WaitForSingleObject(
                     handle,
@@ -270,27 +285,29 @@ async fn spawn_and_wait(
                     let terminated = WaitForSingleObject(handle, 5_000);
                     CloseHandle(handle);
                     if terminated == WAIT_TIMEOUT {
-                        return Err(
+                        Err(
                             "PNPM_REPAIR_TIMEOUT: repair process did not exit after termination"
                                 .to_string(),
-                        );
+                        )
+                    } else {
+                        Err(format!(
+                            "PNPM_REPAIR_TIMEOUT: repair process exceeded {} seconds",
+                            PLUGIN_PROCESS_TIMEOUT.as_secs()
+                        ))
                     }
-                    return Err(format!(
-                        "PNPM_REPAIR_TIMEOUT: repair process exceeded {} seconds",
-                        PLUGIN_PROCESS_TIMEOUT.as_secs()
-                    ));
-                }
-                if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
+                } else if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
                     CloseHandle(handle);
-                    return Err("PNPM_REPAIR_WAIT: WaitForSingleObject failed".to_string());
+                    Err("PNPM_REPAIR_WAIT: WaitForSingleObject failed".to_string())
+                } else {
+                    let mut code: u32 = 0;
+                    if GetExitCodeProcess(handle, &mut code) == 0 {
+                        code = 1;
+                    }
+                    CloseHandle(handle);
+                    Ok(code as i32)
                 }
-                let mut code: u32 = 0;
-                if GetExitCodeProcess(handle, &mut code) == 0 {
-                    code = 1;
-                }
-                CloseHandle(handle);
-                Ok(code as i32)
             };
+            join_output_readers(vec![stdout_reader, stderr_reader]);
             let exit_code = exit_code?;
             Ok::<_, String>((exit_code, output::drain_captured(captured)))
         })
@@ -315,14 +332,15 @@ async fn spawn_and_wait(
             .process_group(0) // 独立进程组，便于将来取消
             .spawn()
             .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
+        let mut output_readers = Vec::with_capacity(2);
         if let Some(out) = child.stdout.take() {
-            output::spawn_bounded_reader(out, captured.clone(), |_| {});
+            output_readers.push(output::spawn_bounded_reader(out, captured.clone(), |_| {}));
         }
         if let Some(err) = child.stderr.take() {
-            output::spawn_bounded_reader(err, captured.clone(), |_| {});
+            output_readers.push(output::spawn_bounded_reader(err, captured.clone(), |_| {}));
         }
         let pid = child.id();
-        let exit_code = tauri::async_runtime::spawn_blocking(move || {
+        let wait_result = tauri::async_runtime::spawn_blocking(move || {
             let deadline = Instant::now() + PLUGIN_PROCESS_TIMEOUT;
             loop {
                 match child.try_wait() {
@@ -344,9 +362,10 @@ async fn spawn_and_wait(
             }
         })
         .await
-        .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))??;
+        .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))?;
 
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        join_output_readers(output_readers);
+        let exit_code = wait_result?;
         Ok((exit_code, output::drain_captured(captured)))
     }
 }
@@ -443,5 +462,28 @@ mod tests {
         );
         assert_eq!(missing, vec!["dsh-session-context-menu"]);
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detached_child_pipe_cannot_block_plugin_verification_forever() {
+        let started = Instant::now();
+        let (exit_code, _) = spawn_and_wait(
+            Path::new("/bin/sh"),
+            &[
+                OsString::from("-c"),
+                OsString::from("/bin/sleep 1 & exit 0"),
+            ],
+            &std::env::temp_dir(),
+            &HashMap::new(),
+        )
+        .await
+        .expect("plugin verification should finish after the parent exits");
+
+        assert_eq!(exit_code, 0);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "detached child must not hold plugin verification open"
+        );
     }
 }

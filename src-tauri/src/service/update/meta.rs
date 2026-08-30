@@ -119,18 +119,37 @@ fn extract_asset_names(html: &str, tag: &str) -> Vec<String> {
     names
 }
 
-/// 从 expanded_assets HTML 片段中解析指定资产文件名后的 `sha256:<64hex>` 摘要。
+/// 从 expanded_assets HTML 片段中解析指定下载链接后的 `sha256:<64hex>` 摘要。
 ///
 /// 与 `download::core` 中 dsh 包的解析算法保持一致（非签名，仅页面元数据兜底，
 /// 不能替代独立信任根）；解析失败/缺失返回 `None`。
-fn parse_digest_from_expanded_assets(body: &str, expected_name: &str) -> Option<String> {
-    let pos = body.find(expected_name)?;
+fn parse_digest_from_expanded_assets(body: &str, tag: &str, expected_name: &str) -> Option<String> {
+    let needle = format!("releases/download/{tag}/");
+    let mut search_start = 0;
+    let asset_end = loop {
+        let relative = body.get(search_start..)?.find(&needle)?;
+        let asset_start = search_start + relative + needle.len();
+        let asset_end = body
+            .get(asset_start..)?
+            .find('"')
+            .map(|offset| asset_start + offset)?;
+        if &body[asset_start..asset_end] == expected_name {
+            break asset_end;
+        }
+        search_start = asset_end + 1;
+    };
+
+    // 当前资产没有摘要时，不能越过下一个下载链接读取另一个资产的摘要。
+    let next_asset = body[asset_end..]
+        .find(&needle)
+        .map(|offset| asset_end + offset)
+        .unwrap_or(body.len());
     // 4096 字节窗口的终点回退到 UTF-8 字符边界，避免切片落在多字节字符中间 panic
-    let mut end = (pos + 4096).min(body.len());
-    while end > pos && !body.is_char_boundary(end) {
+    let mut end = (asset_end + 4096).min(next_asset);
+    while end > asset_end && !body.is_char_boundary(end) {
         end -= 1;
     }
-    let window = &body[pos..end];
+    let window = &body[asset_end..end];
     const START: &str = "sha256:";
     let hash_start = window.find(START)?;
     let hash = &window[hash_start + START.len()..];
@@ -216,7 +235,7 @@ async fn fetch_release_assets(
         return Ok(None);
     };
 
-    let Some(digest) = parse_digest_from_expanded_assets(&body, &asset_name) else {
+    let Some(digest) = parse_digest_from_expanded_assets(&body, tag, &asset_name) else {
         log::warn!(
             "UPDATE_INTEGRITY_UNAVAILABLE: release {tag} has no valid SHA-256 for {asset_name}"
         );
@@ -321,20 +340,22 @@ mod tests {
     fn parse_digest_from_expanded_assets_extracts_sha256() {
         let hex = format!("sha256:{}", "a".repeat(64));
         let html = format!(
-            r#"<td>设置包</td><td class="d-block">app.dmg</td><td>下载</td><td>{hex}</td>"#
+            r#"<a href="/x/releases/download/v0.6.6/app.dmg">app.dmg</a><td>下载</td><td>{hex}</td>"#
         );
-        let digest = parse_digest_from_expanded_assets(&html, "app.dmg");
+        let digest = parse_digest_from_expanded_assets(&html, "v0.6.6", "app.dmg");
         let expected = format!("sha256:{}", "a".repeat(64));
         assert_eq!(digest.as_deref(), Some(expected.as_str()));
 
         // 无匹配资产 → None
-        assert!(parse_digest_from_expanded_assets(&html, "app-x86_64.dmg").is_none());
+        assert!(parse_digest_from_expanded_assets(&html, "v0.6.6", "app-x86_64.dmg").is_none());
         // 摘要长度/字符不合法 → None
-        let bad = r#"<td>app.dmg sha256:zz"#;
-        assert!(parse_digest_from_expanded_assets(bad, "app.dmg").is_none());
+        let bad = r#"<a href="/x/releases/download/v0.6.6/app.dmg">app.dmg</a> sha256:zz"#;
+        assert!(parse_digest_from_expanded_assets(bad, "v0.6.6", "app.dmg").is_none());
         // 多字节内容前移后仍能解析（切片边界安全）
-        let unicode = format!("中文说明app.dmg{}更多内容", hex);
-        assert!(parse_digest_from_expanded_assets(&unicode, "app.dmg").is_some());
+        let unicode = format!(
+            "中文说明<a href=\"/x/releases/download/v0.6.6/app.dmg\">app.dmg</a>{hex}更多内容"
+        );
+        assert!(parse_digest_from_expanded_assets(&unicode, "v0.6.6", "app.dmg").is_some());
     }
 
     /// 回归：多平台 release 页面里每个资产各带一个 `sha256:`，摘要必须按**所选
@@ -352,13 +373,29 @@ mod tests {
         );
         // 旧实现「取页面里第一个能解析的资产」会拿到 rpm 的摘要（a），
         // 而实际选中的是 setup.exe —— 修复后必须返回 setup.exe 自己的摘要（b）。
-        let rpm_digest = parse_digest_from_expanded_assets(&body, "app.rpm");
-        let picked_digest = parse_digest_from_expanded_assets(&body, "setup.exe");
+        let rpm_digest = parse_digest_from_expanded_assets(&body, "v0.7.5", "app.rpm");
+        let picked_digest = parse_digest_from_expanded_assets(&body, "v0.7.5", "setup.exe");
         let expected_rpm = format!("sha256:{a}");
         let expected_picked = format!("sha256:{b}");
         assert_eq!(rpm_digest.as_deref(), Some(expected_rpm.as_str()));
         assert_eq!(picked_digest.as_deref(), Some(expected_picked.as_str()));
         // 两个摘要必须不同才是「多资产 + 各自摘要」的有效回归用例
         assert_ne!(rpm_digest, picked_digest);
+    }
+
+    #[test]
+    fn digest_does_not_match_substring_named_companion_asset() {
+        let blockmap = "c".repeat(64);
+        let installer = "d".repeat(64);
+        let tag = "v0.7.6";
+        let body = format!(
+            r#"<a href="/x/releases/download/{tag}/setup.exe.blockmap">blockmap</a><span>sha256:{blockmap}</span>
+               <a href="/x/releases/download/{tag}/setup.exe">installer</a><span>sha256:{installer}</span>"#
+        );
+
+        let digest = parse_digest_from_expanded_assets(&body, tag, "setup.exe");
+        let expected = format!("sha256:{installer}");
+
+        assert_eq!(digest.as_deref(), Some(expected.as_str()));
     }
 }

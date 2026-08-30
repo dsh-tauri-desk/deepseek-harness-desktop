@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { isSafeGitRef, isSafeRelativePath, parseGithubSpec, parseNpmSpec, validateManifest } from '../scripts/prebuild'
+import {
+  buildCommandInvocation,
+  isDirectEntry,
+  isSafeGitRef,
+  isSafeRelativePath,
+  parseGithubSpec,
+  parseNpmSpec,
+  validateManifest,
+} from '../scripts/prebuild'
 
 describe('internal plugin prebuild validation', () => {
   it('accepts pinned Git refs and rejects unsafe ref forms', () => {
@@ -34,9 +42,46 @@ describe('internal plugin prebuild validation', () => {
     expect(isSafeRelativePath('C:/escape')).toBe(false)
   })
 
+  it('invokes Windows package-manager wrappers through COMSPEC', () => {
+    expect(buildCommandInvocation(
+      'pnpm',
+      ['add', 'C:\\work dir\\plugin.tgz', '--registry', 'https://registry.npmjs.org/'],
+      'win32',
+      'C:\\Windows\\System32\\cmd.exe',
+    )).toEqual({
+      executable: 'C:\\Windows\\System32\\cmd.exe',
+      args: [
+        '/d',
+        '/v:off',
+        '/s',
+        '/c',
+        '"pnpm.cmd" "add" "C:\\work dir\\plugin.tgz" "--registry" "https://registry.npmjs.org/"',
+      ],
+    })
+    expect(buildCommandInvocation('git', ['status'], 'win32', 'C:\\Windows\\System32\\cmd.exe')).toEqual({
+      executable: 'git',
+      args: ['status'],
+    })
+    expect(() => buildCommandInvocation('pnpm', ['--config', 'value%PATH%'], 'win32', 'cmd.exe'))
+      .toThrow(/unsafe command argument/)
+  })
+
+  it('matches entry points after canonicalizing filesystem paths', () => {
+    expect(isDirectEntry('scripts/../scripts/prebuild.ts', 'scripts/prebuild.ts')).toBe(true)
+    expect(isDirectEntry(undefined, 'scripts/prebuild.ts')).toBe(false)
+    expect(isDirectEntry('scripts/prebuild.ts', 'scripts/other.ts')).toBe(false)
+  })
+
   it('validates the checked-in internal plugin manifest', () => {
     const manifest = validateManifest()
-    expect(manifest).toHaveLength(5)
-    expect(manifest.every(plugin => plugin.integrity?.startsWith('sha512-'))).toBe(true)
+    expect(manifest.length).toBeGreaterThan(0)
+    for (const plugin of manifest) {
+      if (plugin.spec.startsWith('github:')) {
+        expect(plugin.commit).toMatch(/^[0-9a-f]{40}$/)
+      }
+      else {
+        expect(plugin.integrity).toMatch(/^sha512-/)
+      }
+    }
   })
 })

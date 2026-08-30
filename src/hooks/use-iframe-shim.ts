@@ -30,6 +30,17 @@ interface PluginErrorMessage {
   action?: string
 }
 
+/**
+ * iframe 剪贴板图片回退请求（desktop/paste::PASTE_SHIM_JS 发来）。
+ * Linux/WebKitGTK 下 dsh iframe 的 paste 事件拿不到图片，宿主侧据此调用
+ * `read_clipboard_image` 读系统剪贴板，再把 PNG data URL 回传给 iframe 重新贴图。
+ */
+interface ClipboardImageRequest {
+  source?: 'dsh-clipboard-image-bridge'
+  type?: 'dsh://clipboard-image:read'
+  id?: string
+}
+
 const PLUGIN_ID_PATTERN = /^(?:@[\w.-]+\/)?\w[\w.-]{0,127}$/
 const PLUGIN_ERROR_ACTIONS = new Set(['install', 'update', 'remove', 'runtime'])
 const MAX_PLUGIN_ERROR_CHARS = 2000

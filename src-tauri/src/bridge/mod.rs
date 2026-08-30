@@ -4,6 +4,7 @@
 //! 系统集成 / 更新），此处统一声明并重导出为「干净 API」，供 `generate_handler!`
 //! 以 `crate::bridge::<cmd>` 形式注册。
 
+pub mod clipboard;
 pub mod config;
 pub mod core;
 pub mod guard;
@@ -13,6 +14,7 @@ pub mod profile;
 pub mod system_os;
 pub mod updater;
 
+pub use clipboard::*;
 pub use config::*;
 pub use core::*;
 pub use lifecycle::*;

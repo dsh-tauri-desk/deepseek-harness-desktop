@@ -1,7 +1,8 @@
-//! Adds the missing public SessionStore removal primitive to the bundled DSH.
+//! 为捆绑的 DSH 补齐缺失的公开 SessionStore 移除原语。
 //!
-//! The upstream store already owns the exact detach lifecycle; this patch only
-//! exposes a narrow id-based facade for desktop plugins to use safely.
+//! 上游 store 已持有完整的 detach 生命周期；本补丁只暴露一个窄的、按 id 的
+//! 门面（facade），供桌面端插件安全地执行真正的内存内销毁，而不是让被删会话
+//! 残留在未分组状态。
 
 use crate::utils::{patch_dsh, PatchOutcome};
 

@@ -4,6 +4,12 @@ export type SetupStatus = 'checking' | 'installing' | 'starting' | 'preinstall' 
 /** 侧边栏忙碌标记：标识当前正在执行的服务操作 */
 export type SidebarBusyAction = 'restart' | 'shutdown' | 'start' | 'openBrowser' | null
 
+/** Rust 侧 harness-process-exited 事件载荷（camelCase）。 */
+export interface HarnessProcessExitedPayload {
+  pid: number
+  exitCode: number | null
+}
+
 /** 预装插件列表项（与 Rust service::plugin::PreinstallPlugin 对齐） */
 export interface PreinstallPlugin {
   id: string

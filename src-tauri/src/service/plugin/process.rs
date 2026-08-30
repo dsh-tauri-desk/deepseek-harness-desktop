@@ -248,16 +248,39 @@ pub(crate) async fn run_plugin_process(
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
             let _process_guard = process_guard;
             let _pid_guard = pid_guard;
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, WaitForSingleObject, INFINITE,
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
             };
+            use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
             let handle = handle;
             unsafe {
-                let wait = WaitForSingleObject(handle.0, INFINITE);
+                let wait = WaitForSingleObject(
+                    handle.0,
+                    PLUGIN_PROCESS_TIMEOUT.as_millis().min(u32::MAX as u128) as u32,
+                );
+                if wait == WAIT_TIMEOUT {
+                    workflow::kill_pid_tree(pid);
+                    let terminated = WaitForSingleObject(handle.0, 5_000);
+                    CloseHandle(handle.0);
+                    if terminated == WAIT_TIMEOUT {
+                        return Err(
+                            "PREINSTALL_TIMEOUT: plugin process did not exit after termination"
+                                .to_string(),
+                        );
+                    }
+                    return Err(format!(
+                        "PREINSTALL_TIMEOUT: plugin process exceeded {} seconds",
+                        PLUGIN_PROCESS_TIMEOUT.as_secs()
+                    ));
+                }
+                if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
+                    CloseHandle(handle.0);
+                    return Err("PREINSTALL_WAIT: WaitForSingleObject failed".to_string());
+                }
                 let mut code: u32 = 0;
                 if GetExitCodeProcess(handle.0, &mut code) == 0 {
-                    code = wait;
+                    CloseHandle(handle.0);
+                    return Err("PREINSTALL_WAIT: GetExitCodeProcess failed".to_string());
                 }
                 CloseHandle(handle.0);
                 code as i32
@@ -265,6 +288,7 @@ pub(crate) async fn run_plugin_process(
         })
         .await
         .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        let exit_code = exit_code?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok((exit_code, output::drain_captured(captured)))
@@ -308,10 +332,29 @@ pub(crate) async fn run_plugin_process(
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
             let _process_guard = process_guard;
             let _pid_guard = pid_guard;
-            child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
+            let deadline = Instant::now() + PLUGIN_PROCESS_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status.code().unwrap_or(1)),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(None) => {
+                        workflow::kill_pid_tree(pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!(
+                            "PREINSTALL_TIMEOUT: plugin process exceeded {} seconds",
+                            PLUGIN_PROCESS_TIMEOUT.as_secs()
+                        ));
+                    }
+                    Err(error) => break Err(format!("PREINSTALL_WAIT: {error}")),
+                }
+            }
         })
         .await
         .map_err(|e| format!("PREINSTALL_WAIT: {e}"))?;
+        let exit_code = exit_code?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok((exit_code, output::drain_captured(captured)))
@@ -344,8 +387,7 @@ impl LogEventLimiter {
     }
 }
 
-/// 在独立线程中逐行读取进程输出：实时通过 `preinstall-log` 事件转发，
-/// 同时追加进有界尾部缓冲区。
+/// 在独立线程中读取管道，捕获有界尾部并执行可选的实时回调。
 fn spawn_line_emitter<R: std::io::Read + Send + 'static>(
     reader: R,
     window: WebviewWindow,

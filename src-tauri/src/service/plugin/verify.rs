@@ -177,7 +177,7 @@ const REPAIR_OUTPUT_LIMIT: usize = 4000;
 ///
 /// Windows 上 `.cmd`/`.bat` 无法被 CreateProcess 直接执行（需 cmd.exe 解析），
 /// 用户 pnpm 只接受 `.exe`。
-fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
+pub(crate) fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
     use super::install::{bundled_pnpm_major, pnpm_major_version_at, profile_store_major};
 
     let bundled = config::get_pnpm_binary_path(app_handle);
@@ -369,7 +369,6 @@ mod tests {
             default_checked: false,
             win_only: false,
             internal: false,
-            deprecated: false,
         }
     }
 

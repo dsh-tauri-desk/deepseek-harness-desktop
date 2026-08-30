@@ -362,9 +362,16 @@ pub fn enable_notification_permissions(
         FramePermissionRequestedEventHandler,
         Microsoft::Web::WebView2::Win32::{
             ICoreWebView2Frame3, ICoreWebView2Profile4, ICoreWebView2_13, ICoreWebView2_4,
-            COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
-            COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
-            COREWEBVIEW2_PERMISSION_STATE_DENY,
+            COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY,
+            COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
+            COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+            COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+            COREWEBVIEW2_PERMISSION_KIND_MIDI_SYSTEM_EXCLUSIVE_MESSAGES,
+            COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
+            COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS,
+            COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
+            COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            COREWEBVIEW2_PERMISSION_STATE_DEFAULT, COREWEBVIEW2_PERMISSION_STATE_DENY,
         },
         PermissionRequestedEventHandler, SetPermissionStateCompletedHandler,
     };
@@ -395,6 +402,40 @@ pub fn enable_notification_permissions(
         origins
     }
 
+    fn permission_kinds() -> [COREWEBVIEW2_PERMISSION_KIND; 12] {
+        [
+            COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY,
+            COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+            COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
+            COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE,
+            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+            COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS,
+            COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+            COREWEBVIEW2_PERMISSION_KIND_MIDI_SYSTEM_EXCLUSIVE_MESSAGES,
+            COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
+            COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS,
+            COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT,
+            COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+        ]
+    }
+
+    fn should_allow_permission(kind: COREWEBVIEW2_PERMISSION_KIND) -> bool {
+        matches!(
+            kind,
+            COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY
+                | COREWEBVIEW2_PERMISSION_KIND_CAMERA
+                | COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ
+                | COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE
+                | COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION
+                | COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS
+                | COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                | COREWEBVIEW2_PERMISSION_KIND_MIDI_SYSTEM_EXCLUSIVE_MESSAGES
+                | COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS
+                | COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS
+                | COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT
+        )
+    }
+
     unsafe fn reset_persisted_notification_permissions(
         webview2: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
         origins: &[String],
@@ -407,33 +448,35 @@ pub fn enable_notification_permissions(
         };
 
         for origin in origins {
-            let origin_str = origin.clone();
-            let hstring = HSTRING::from(origin.as_str());
-            // HSTRING 是引用计数类型，克隆只增加引用计数、共享底层缓冲区。
-            // 回调（completed handler）是异步调用的，让克隆句柄随回调一起持有，
-            // 避免 set_permission_state(&hstring) 借用的句柄在回调存活期内失效。
-            let hstring_for_callback = hstring.clone();
+            for kind in permission_kinds() {
+                let origin_str = origin.clone();
+                let hstring = HSTRING::from(origin.as_str());
+                // HSTRING 是引用计数类型，克隆只增加引用计数、共享底层缓冲区。
+                // 回调（completed handler）是异步调用的，让克隆句柄随回调一起持有，
+                // 避免 SetPermissionState 借用的句柄在回调存活期内失效。
+                let hstring_for_callback = hstring.clone();
+                let state = if kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
+                    COREWEBVIEW2_PERMISSION_STATE_DEFAULT
+                } else {
+                    COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                };
 
-            log::info!(
-                "[notification] resetting persisted notification permission for {origin_str}"
-            );
-            profile4.SetPermissionState(
-                COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
-                &hstring,
-                COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
-                &SetPermissionStateCompletedHandler::create(Box::new(move |result| {
-                    if let Err(e) = result {
-                        log::warn!(
-                            "[notification] failed to reset permission for {origin_str}: {e}"
-                        );
-                    } else {
-                        log::info!("[notification] reset permission for {origin_str}");
-                    }
-                    // 持有 HSTRING 直到回调销毁，确保异步调用期间 PCWSTR 安全且无内存泄漏
-                    let _ = &hstring_for_callback;
-                    Ok(())
-                })),
-            )?;
+                log::info!("[permission] setting persisted permission for {origin_str}");
+                profile4.SetPermissionState(
+                    kind,
+                    &hstring,
+                    state,
+                    &SetPermissionStateCompletedHandler::create(Box::new(move |result| {
+                        if let Err(e) = result {
+                            log::warn!(
+                                "[permission] failed to set permission for {origin_str}: {e}"
+                            );
+                        }
+                        let _ = &hstring_for_callback;
+                        Ok(())
+                    })),
+                )?;
+            }
         }
         Ok(())
     }
@@ -451,13 +494,18 @@ pub fn enable_notification_permissions(
                     let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
                     args.PermissionKind(&mut kind)?;
 
-                    if kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
-                        let allow = ask_notification_permission(&parent_for_frame);
-                        let state = if allow {
+                    let state = if kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
+                        if ask_notification_permission(&parent_for_frame) {
                             COREWEBVIEW2_PERMISSION_STATE_ALLOW
                         } else {
                             COREWEBVIEW2_PERMISSION_STATE_DENY
-                        };
+                        }
+                    } else if should_allow_permission(kind) {
+                        COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                    } else {
+                        COREWEBVIEW2_PERMISSION_STATE_DEFAULT
+                    };
+                    if kind != COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION {
                         args.SetState(state)?;
                         args.SetHandled(true)?;
                     }
@@ -511,12 +559,18 @@ pub fn enable_notification_permissions(
                     let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
                     args.PermissionKind(&mut kind)?;
 
-                    if kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
-                        let state = if ask_notification_permission(&parent_for_top) {
+                    let state = if kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
+                        if ask_notification_permission(&parent_for_top) {
                             COREWEBVIEW2_PERMISSION_STATE_ALLOW
                         } else {
                             COREWEBVIEW2_PERMISSION_STATE_DENY
-                        };
+                        }
+                    } else if should_allow_permission(kind) {
+                        COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                    } else {
+                        COREWEBVIEW2_PERMISSION_STATE_DEFAULT
+                    };
+                    if kind != COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION {
                         args.SetState(state)?;
                     }
                 }

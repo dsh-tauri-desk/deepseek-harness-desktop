@@ -20,7 +20,7 @@ function payload(detail: InternalPluginsPhasePayload['detail']): InternalPlugins
 describe('internal plugin phase contract', () => {
   it('matches every Rust detail emitted by the startup phase', () => {
     const rustSource = readFileSync(
-      new URL('../src-tauri/src/service/plugin/internal.rs', import.meta.url),
+      new URL('../src-tauri/src/service/plugin/internal/mod.rs', import.meta.url),
       'utf8',
     )
     const declaration = rustSource.match(

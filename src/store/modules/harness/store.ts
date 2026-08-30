@@ -1,6 +1,7 @@
 /* eslint-disable no-control-regex */
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type {
+  HarnessProcessExitedPayload,
   InstallerState,
   InstallProgress,
   InternalPluginsPhasePayload,
@@ -21,6 +22,7 @@ import { queryClient } from '@/config/client'
 import { internalPluginReason } from '@/utils/internal-plugin-phase'
 import { containsInotifyLimitError, pickErrorLines } from '@/utils/log'
 import { BoundedReloadGate, pollReadiness, SingleFlight, waitForActivityTask } from '@/utils/readiness'
+import { runtimeExitMessageKey, shouldAcceptRuntimeExit } from '@/utils/runtime-exit'
 import { harnessUpdater } from '../harness-updater'
 
 const IFRAME_LOAD_TIMEOUT = 20000
@@ -63,6 +65,8 @@ const initialRecovery: RecoveryState = {
 
 /** 启动流程令牌：boot 并发/重复调用时只采纳最后一次的结果 */
 let bootToken = 0
+/** 最终健康复核到 ready 提交之间的启动代；退出事件可使该提交失效。 */
+let readinessCommitToken: number | null = null
 /** 首次自动启动去重（React StrictMode 会重复挂载 effect） */
 let bootStarted = false
 let pluginActivitySequence = 0
@@ -71,7 +75,9 @@ const restartFlight = new SingleFlight<void>()
 const iframeReloadGate = new BoundedReloadGate(3)
 let iframeRefreshTimer: ReturnType<typeof setTimeout> | undefined
 
-/** 构建带时间戳的 iframe URL，避免 WebView2 缓存旧页面 */
+/** 构建带时间戳的 iframe URL，避免 WebView2 缓存旧页面。
+ * alpha 鉴权由启动前的桌面端 patch 处理，iframe 永远不携带启动 token；旧核心
+ * 同样继续使用原有的缓存查询参数。 */
 function generateTimestampedUrl(baseUrl: string): string {
   const timestamp = Date.now()
   const separator = baseUrl.includes('?') ? '&' : '?'
@@ -269,8 +275,87 @@ export const harness = defineStore({
       await Promise.all([
         this.listenPluginRecovery(),
         this.listenInternalPhase(),
+        this.listenProcessExit(),
       ])
       await this.boot()
+    },
+
+    /** 订阅当前持有的 Harness 根进程退出事件，及时撤下失效 iframe。 */
+    async listenProcessExit() {
+      try {
+        await listen<HarnessProcessExitedPayload>('harness-process-exited', (event) => {
+          void this.handleProcessExit(event.payload)
+        })
+      }
+      catch (err) {
+        console.error('[Harness] failed to listen harness-process-exited:', err)
+      }
+    },
+
+    /**
+     * 处理运行期退出：先通过 ownership-aware 健康代理确认事件仍属于当前代，
+     * 避免延迟事件覆盖已重启的新进程；确认后使旧启动链失效并展示可重试错误页。
+     */
+    async handleProcessExit(payload: HarnessProcessExitedPayload) {
+      const observedToken = bootToken
+      if (!shouldAcceptRuntimeExit({
+        serviceHealthy: this.serviceHealthy,
+        serviceRunning: this.serviceRunning,
+        readinessCommitPending: readinessCommitToken === observedToken,
+        busyAction: this.busyAction,
+        observedToken,
+        currentToken: bootToken,
+        notOwned: true,
+      })) {
+        return
+      }
+
+      const probe = await checkHealthViaProxy()
+      if (!shouldAcceptRuntimeExit({
+        serviceHealthy: this.serviceHealthy,
+        serviceRunning: this.serviceRunning,
+        readinessCommitPending: readinessCommitToken === observedToken,
+        busyAction: this.busyAction,
+        observedToken,
+        currentToken: bootToken,
+        notOwned: probe.notOwned,
+      })) {
+        return
+      }
+
+      const exitToken = ++bootToken
+      const message = i18next.t(runtimeExitMessageKey(payload.exitCode), {
+        code: payload.exitCode,
+      })
+      let exitDetail = '(exit code unavailable)'
+      if (payload.exitCode != null)
+        exitDetail = `(exit code ${payload.exitCode})`
+      console.warn(
+        `[Harness] owned process ${payload.pid} exited unexpectedly`,
+        exitDetail,
+      )
+      iframeReloadGate.reset()
+      if (iframeRefreshTimer !== undefined) {
+        clearTimeout(iframeRefreshTimer)
+        iframeRefreshTimer = undefined
+      }
+      this.serviceHealthy = false
+      this.iframeLoaded = false
+      this.iframeError = false
+      this.fail(message)
+
+      const error = await attachStartupDiagnostics(new Error(message))
+      if (exitToken !== bootToken)
+        return
+      await this.reviewStartupRecovery(error.logLines ?? error.logs ?? [], exitToken)
+      if (exitToken !== bootToken)
+        return
+      this.fail(
+        error.message,
+        error.logs,
+        error.pluginConflictHint,
+        error.inotifyLimitHint,
+      )
     },
 
     /**
@@ -396,9 +481,25 @@ export const harness = defineStore({
     },
 
     /** 服务探测通过后的统一收尾；token 用于阻止旧启动流程覆盖新状态 */
-    async completeReadiness(token?: number): Promise<boolean> {
+    async completeReadiness(token: number): Promise<boolean> {
+      if (token !== bootToken)
+        return false
+
+      // poll 通过与 ready 提交之间仍可能退出。进入提交窗口后再复核一次 ownership，
+      // 既能捕获窗口开启前已丢失的退出事件，也让窗口内事件用 token 中止本次提交。
+      const finalProbe = await checkHealthViaProxy()
+      if (token !== bootToken)
+        return false
+      // 上一轮 poll 已确认就绪；这里只让 ownership 丢失推翻结果，短暂探测失败不降级。
+      if (finalProbe.notOwned) {
+        this.serviceRunning = false
+        const phase = finalProbe.phase ?? this.startupPhase
+        const reason = finalProbe.reason ?? (this.startupReason || i18next.t('errors.no_readiness_reason'))
+        throw startupError(phase, reason, 'exited')
+      }
+
       const readyInfo = await invoke<{ service_url: string }>('get_runtime_info')
-      if (token !== undefined && token !== bootToken)
+      if (token !== bootToken)
         return false
 
       this.serviceUrl = readyInfo.service_url
@@ -486,7 +587,15 @@ export const harness = defineStore({
         // （auto_start）而提前返回，此刻端口若尚未落库，上面读到的 service_url 会是
         // 旧端口；健康检查通过意味着服务已在最终端口就绪，此时读取必然准确。
         // 避免 iframe 挂载到一个无人监听的地址（表现为首次加载失败、刷新后恢复）。
-        await this.completeReadiness(token)
+        const readinessToken = token ?? bootToken
+        readinessCommitToken = readinessToken
+        try {
+          await this.completeReadiness(readinessToken)
+        }
+        finally {
+          if (readinessCommitToken === readinessToken)
+            readinessCommitToken = null
+        }
       }
       catch (err) {
         // 失败时附上服务日志里的真实错误行，供错误界面展示而不是只显示超时文案
@@ -646,11 +755,13 @@ export const harness = defineStore({
      * 启动失败时尝试定位问题插件并弹出修复界面。
      * 能定位到具体插件 → 设置 `recovery`；定位不到则保持普通错误态（无插件可卸载）。
      */
-    async reviewStartupRecovery(logs: string[]) {
+    async reviewStartupRecovery(logs: string[], token?: number) {
       if (this.recovery.required || logs.length === 0)
         return
       try {
         const info = await invoke<PluginRecoveryInfo>('detect_plugin_recovery', { logs })
+        if (token !== undefined && token !== bootToken)
+          return
         if (info.plugins.length > 0) {
           this.recovery = {
             required: true,
@@ -716,6 +827,11 @@ export const harness = defineStore({
         if (this.busyAction)
           return
         this.busyAction = 'restart'
+        // 重启旧进程前先撤下旧 iframe；这样延迟到达的旧进程退出事件不会被
+        // 误当成新一代启动失败。新进程通过 completeReadiness 后再恢复 healthy。
+        this.serviceHealthy = false
+        this.iframeLoaded = false
+        this.iframeError = false
         // 手动重启（含修复界面上的「重启 Harness」）：先退出恢复态，
         // 若重启仍失败，boot 的 catch 会重新定位问题插件并再次弹出。
         this.recovery = { ...this.recovery, required: false, busy: false }
@@ -727,7 +843,6 @@ export const harness = defineStore({
           console.error('[Harness] shutdown during restart failed:', err)
         }
         this.serviceRunning = false
-        this.iframeLoaded = false
         try {
           await this.boot()
         }

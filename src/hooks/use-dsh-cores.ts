@@ -23,6 +23,8 @@ export interface HarnessCore {
   present: boolean
   /** 当前是否使用中 */
   active: boolean
+  /** 是否预览版（GitHub Pre-release label 或 tag 命名判定）：预览版不参与更新提示，仅列表展示 */
+  preview: boolean
   error?: string | null
 }
 
@@ -38,6 +40,8 @@ export interface UseDshCoresResult {
   removeCore: (id: string) => Promise<void>
   /** 通过用户包管理器 CLI 更新本地核心，返回更新后的版本号 */
   updateLocalCore: () => Promise<string>
+  /** 手动刷新核心列表 */
+  refreshCores: () => Promise<void>
   /** 操作进行中标记 */
   busy: boolean
 }
@@ -119,6 +123,9 @@ export function useDshCores(): UseDshCoresResult {
       const version = await update.mutateAsync()
       await refetch()
       return version
+    },
+    refreshCores: async () => {
+      await refetch()
     },
     busy: activate.isPending || download.isPending || remove.isPending || update.isPending,
   }

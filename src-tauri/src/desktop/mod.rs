@@ -1,3 +1,4 @@
+pub mod autostart;
 pub mod builder;
 pub mod compat;
 pub mod nav;

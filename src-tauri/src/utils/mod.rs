@@ -58,9 +58,8 @@ pub fn patch_dsh(
             log::warn!("dsh patch anchor missing, skip: {}", target.display());
         }
         PatchOutcome::Patched(patched) => {
-            std::fs::write(&target, patched).map_err(|e| {
-                format!("DSH_PATCH_WRITE: {} failed: {e}", target.display())
-            })?;
+            std::fs::write(&target, patched)
+                .map_err(|e| format!("DSH_PATCH_WRITE: {} failed: {e}", target.display()))?;
             log::info!("dsh patch applied: {}", target.display());
         }
     }

@@ -95,7 +95,7 @@ export function Webview() {
             ref={iframeRef}
             className="block h-full w-full border-none bg-load-bg"
             src={iframeSrc}
-            allow="clipboard-read; clipboard-write; fullscreen"
+            allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; clipboard-read; clipboard-write; display-capture; document-domain; encrypted-media; fullscreen; gamepad; geolocation; gyroscope; hid; idle-detection; keyboard-map; magnetometer; microphone; midi; payment; picture-in-picture; publickey-credentials-get; screen-wake-lock; serial; speaker-selection; usb; web-share; xr-spatial-tracking"
             sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
             onLoad={store.harness.markIframeLoaded}
             onError={store.harness.markIframeError}

@@ -9,12 +9,20 @@ use super::format::get_dsh_service_url;
 use super::utils::search_node_binary;
 use super::{detect_region, Region};
 
-/// 获取 App Data 基础目录
+/// 获取当前构建专用的 AppData 基础目录。
+///
+/// debug 与 release 不能共用核心安装目录：更新或切换 debug 核心时，可能替换
+/// release 正在加载的 Node 原生模块。用户数据目录另由 `get_dsh_data_path` 隔离。
 pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    app_handle
+    let base = app_handle
         .path()
         .app_data_dir()
-        .expect("Failed to resolve app data directory")
+        .expect("Failed to resolve app data directory");
+    if cfg!(debug_assertions) {
+        base.join(APP_DATA_DEV_DIR_NAME)
+    } else {
+        base
+    }
 }
 
 /// Node.js 官方/镜像下载前缀：国内走 npmmirror，其他直连 nodejs.org
@@ -57,11 +65,6 @@ fn dsh_core_base_url() -> &'static str {
     DSH_CORE_URL
 }
 
-/// 打包的 DeepSeek Harness 发行版镜像下载前缀（ghfast.top 中转 GitHub Release）
-fn dsh_mirror_base_url() -> &'static str {
-    DSH_MIRROR_CORE_URL
-}
-
 /// Harness 发行版资产文件名（按平台与架构）
 fn dsh_pkg_asset_filename() -> Result<String, String> {
     let arch = env::consts::ARCH;
@@ -83,17 +86,6 @@ pub fn get_dsh_download_url() -> Result<String, String> {
         dsh_core_base_url(),
         dsh_pkg_asset_filename()?
     ))
-}
-
-/// 打包的 DeepSeek Harness 发行版下载地址列表（按顺序依次尝试）：
-/// GitHub 官方直连 → ghfast.top 镜像兜底。官方直连失败时由下载层自动
-/// 切换镜像并告知用户，避免 ghfast.top 不稳定导致首次安装失败。
-pub fn get_dsh_download_urls() -> Result<Vec<String>, String> {
-    let filename = dsh_pkg_asset_filename()?;
-    Ok(vec![
-        format!("{}{}", dsh_core_base_url(), filename),
-        format!("{}{}", dsh_mirror_base_url(), filename),
-    ])
 }
 
 /// 为任意 GitHub Release 资产 URL 生成 ghfast.top 镜像兜底地址
@@ -422,8 +414,7 @@ fn user_home_dir() -> Option<PathBuf> {
 /// - 否则 release 构建默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`，Unix
 ///   `$HOME/.dsh`，与官方 node 安装共用同一份数据）；
 /// - debug 构建默认 `~/.dsh.dev`：开发版与生产版同时运行时，会话、档案、
-///   插件与主题等数据互不干扰，也不会互相污染对方的会话（核心目录
-///   `dependencies/` 仍共用同一份安装）。
+///   插件与主题等数据互不干扰，也不会互相污染对方的会话。
 pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
     if let Some(home) = std::env::var_os("DSH_HOME") {
         if !home.is_empty() {
@@ -605,26 +596,6 @@ mod tests {
     fn node_base_url_switches_on_region() {
         assert_eq!(node_base_url(Region::Overseas), NODE_BASE_URL);
         assert_eq!(node_base_url(Region::Domestic), NODE_MIRROR_BASE_URL);
-    }
-
-    #[test]
-    fn dsh_download_urls_prefer_official_then_mirror() {
-        // 无论哪个地域，首选源都是 GitHub 官方直连；镜像仅作兜底
-        let urls = get_dsh_download_urls().expect("dsh urls");
-        assert_eq!(urls.len(), 2);
-        assert!(
-            urls[0].starts_with(DSH_CORE_URL),
-            "first source must be official GitHub: {}",
-            urls[0]
-        );
-        assert!(
-            urls[1].starts_with(DSH_MIRROR_PREFIX),
-            "fallback must be ghfast mirror: {}",
-            urls[1]
-        );
-        // 两个源的文件名一致（镜像只是换前缀，解压类型判定不受影响）
-        let name = |u: &str| u.rsplit('/').next().unwrap_or("").to_string();
-        assert_eq!(name(&urls[0]), name(&urls[1]));
     }
 
     #[test]

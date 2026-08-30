@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <CustomAction
+      Id="RemoveAutostartRunValue"
+      Directory="SystemFolder"
+      ExeCommand="reg.exe delete &quot;HKCU\Software\Microsoft\Windows\CurrentVersion\Run&quot; /v &quot;Deepseek Harness Desktop&quot; /f"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore"
+    />
+    <CustomAction
+      Id="RemoveAutostartApprovalValue"
+      Directory="SystemFolder"
+      ExeCommand="reg.exe delete &quot;HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run&quot; /v &quot;Deepseek Harness Desktop&quot; /f"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore"
+    />
+    <InstallExecuteSequence>
+      <!-- 真正卸载时清理登录启动项；重大升级卸载旧版本时保留用户选择。 -->
+      <Custom Action="RemoveAutostartRunValue" Before="RemoveFiles">
+        REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <Custom Action="RemoveAutostartApprovalValue" After="RemoveAutostartRunValue">
+        REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

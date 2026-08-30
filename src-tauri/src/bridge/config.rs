@@ -98,6 +98,21 @@ pub async fn update_app_config(
     Ok(setting)
 }
 
+/// 查询桌面应用是否已注册为随当前用户登录启动。
+///
+/// 系统启动项才是真实来源：用户可能在 Windows 任务管理器或其它平台的系统设置中
+/// 改动它，因此不能用应用 store 中的布尔值代替实际状态。
+#[tauri::command]
+pub fn get_launch_on_login(app_handle: AppHandle) -> Result<bool, String> {
+    crate::desktop::autostart::is_enabled(&app_handle)
+}
+
+/// 启用或移除桌面应用的系统登录启动项，并复查系统中的最终状态。
+#[tauri::command]
+pub fn set_launch_on_login(app_handle: AppHandle, enabled: bool) -> Result<bool, String> {
+    crate::desktop::autostart::set_enabled(&app_handle, enabled)
+}
+
 /// 把设置面板选择的缩放比例立即应用到主 WebView 并持久化。
 #[tauri::command]
 pub fn set_webview_zoom(app_handle: AppHandle, zoom_factor: f64) -> Result<f64, String> {

@@ -1,234 +1,18 @@
-//! shim 脚本内容生成：`dsh` / `pnpm` 的 cmd、ps1、sh 包装脚本与落盘。
-//!
-//! 各构建函数是纯函数（便于测试），`write_shims` 负责写入 bin 目录。
+//! shim 脚本内容生成：`dsh` / `pnpm` 的 cmd、ps1、sh 包装脚本构建函数。
+//! 各构建函数是纯函数（便于测试），落盘见 [`super::write`]。
 //! shim 文本必须全英文：cmd/ps1 按系统代码页解析，中文注释会乱码成命令执行。
 
-use crate::config;
-use std::fs;
 use std::path::Path;
-use tauri::AppHandle;
 
-/// Windows 下 shim 文件名（cmd 为主入口，ps1 供 PowerShell 原生体验）
-pub const SHIM_CMD_NAME: &str = "dsh.cmd";
-pub const SHIM_PS1_NAME: &str = "dsh.ps1";
-pub const PNPM_SHIM_CMD_NAME: &str = "pnpm.cmd";
-pub const PNPM_SHIM_PS1_NAME: &str = "pnpm.ps1";
-
-/// Unix 下 shim 文件名
-#[cfg(unix)]
-pub const SHIM_SH_NAME: &str = "dsh";
-#[cfg(unix)]
-pub const PNPM_SHIM_SH_NAME: &str = "pnpm";
-
-// ---------------------------------------------------------------------------
-// shim 共享片段：node 解析逻辑（dsh / pnpm shim 共用）
-//
-// 规则：优先 `DSH_NODE` 环境变量（桌面端注入其已解析并核验过的 node 路径，
-// 保证 shim 与应用预检一致），其次 PATH 中版本兼容的本地 node（v22.15+ /
-// v23.8+ / v24+，与 config::is_supported_node_version 一致），否则回退捆绑
-// 运行时。`DSH_NODE` 只在桌面端自身派生的子进程里存在，终端用户环境不受影响。
-// 变量约定：cmd 用 %APP_DIR%，ps1 用 $appDir，sh 用 $APP_DIR。
-// 这些常量作为 format! 的参数传入，其中的 `{`/`}` 是字面量。
-// ---------------------------------------------------------------------------
-
-const CMD_NODE_RESOLVE: &str = r#"
-rem Prefer the desktop-resolved node (DSH_NODE, injected by the app into its
-rem own child processes), then a version-compatible local node, then the
-rem bundled runtime. DSH_NODE makes the shim and the app's pre-check agree:
-rem the app verified the node exists before spawning the child, and the shim
-rem must not re-derive it from PATH (which can miss nodes the app found).
-rem Pure batch version check (for /f tokens + numeric compare), no powershell
-rem child: avoids console flashes when invoked without a console and skips the
-rem per-call powershell startup cost.
-if not defined DSH_NODE goto :skip_dsh_node
-set "NODE=%DSH_NODE%"
-rem Windows canonical paths may carry a \\?\ verbatim prefix that cmd.exe
-rem cannot launch directly; strip it before checking/using the path.
-if "%NODE:~0,4%"=="\\?\" set "NODE=%NODE:~4%"
-if exist "%NODE%" goto :launch
-:skip_dsh_node
-where node >nul 2>nul
-if errorlevel 1 goto :use_bundled
-for /f "tokens=1,2 delims=v." %%a in ('node --version 2^>nul ^| findstr /b "v"') do set "NODE_MAJOR=%%a" & set "NODE_MINOR=%%b"
-if not defined NODE_MAJOR goto :use_bundled
-if %NODE_MAJOR% GEQ 24 goto :node_ok
-if %NODE_MAJOR% EQU 22 if defined NODE_MINOR if %NODE_MINOR% GEQ 15 goto :node_ok
-if %NODE_MAJOR% EQU 23 if defined NODE_MINOR if %NODE_MINOR% GEQ 8 goto :node_ok
-goto :use_bundled
-
-:node_ok
-set "NODE=node"
-goto :launch
-
-:node_dsh
-set "NODE=%DSH_NODE%"
-goto :launch
-
-:use_bundled
-if not exist "%APP_DIR%\runtime\node.exe" goto :no_node
-set "NODE=%APP_DIR%\runtime\node.exe"
-set "PATH=%APP_DIR%\runtime;%PATH%"
-"#;
-
-const PS1_NODE_RESOLVE: &str = r#"
-# Prefer the desktop-resolved node (DSH_NODE, injected by the app into its
-# own child processes), then a version-compatible local node, then the
-# bundled runtime — see the CMD shim for why DSH_NODE wins first.
-$node = $null
-if ($env:DSH_NODE) {
-    $node = $env:DSH_NODE
-    # Windows canonical paths may carry a \\?\ verbatim prefix; strip it so
-    # PowerShell/cmd can launch the path directly.
-    if ($node.StartsWith('\\?\')) { $node = $node.Substring(4) }
-    if (-not (Test-Path -LiteralPath $node)) { $node = $null }
-}
-if (-not $node) {
-    $localNode = Get-Command node -ErrorAction SilentlyContinue
-    if ($localNode) {
-        try {
-            $version = & node --version 2>$null
-            if ($version -match '^v(\d+)\.(\d+)') {
-                $major = [int]$matches[1]
-                $minor = [int]$matches[2]
-                if (($major -eq 22 -and $minor -ge 15) -or ($major -eq 23 -and $minor -ge 8) -or $major -ge 24) {
-                    $node = 'node'
-                }
-            }
-        } catch { }
-    }
-}
-if (-not $node) {
-    $bundled = Join-Path $appDir 'runtime\node.exe'
-    if (Test-Path -LiteralPath $bundled) {
-        $node = $bundled
-        $env:PATH = (Split-Path -Parent $bundled) + ';' + $env:PATH
-    }
-}
-if (-not $node) {
-    Write-Error 'Node.js runtime not found. Please run DeepSeek Harness Desktop to install it first.'
-    exit 1
-}
-"#;
-
-const SH_NODE_RESOLVE: &str = r#"
-NODE=""
-# Prefer the desktop-resolved node (DSH_NODE, injected by the app into its
-# own child processes), then a version-compatible local node, then the
-# bundled runtime — see the CMD shim for why DSH_NODE wins first.
-if [ -n "$DSH_NODE" ] && [ -x "$DSH_NODE" ]; then
-  NODE="$DSH_NODE"
-fi
-if [ -z "$NODE" ] && command -v node >/dev/null 2>&1; then
-  NODE_V=$(node --version 2>/dev/null)
-  MAJOR=$(printf '%s' "$NODE_V" | awk -F. '{ gsub(/^v/, "", $1); print $1 }')
-  MINOR=$(printf '%s' "$NODE_V" | awk -F. '{ print $2 }')
-  if { [ -n "$MAJOR" ] && [ "$MAJOR" -ge 24 ]; } 2>/dev/null || \
-     { [ "$MAJOR" -eq 22 ] && [ "$MINOR" -ge 15 ]; } 2>/dev/null || \
-     { [ "$MAJOR" -eq 23 ] && [ "$MINOR" -ge 8 ]; } 2>/dev/null; then
-    NODE="node"
-  fi
-fi
-if [ -z "$NODE" ]; then
-  if [ -x "$APP_DIR/runtime/bin/node" ]; then
-    NODE="$APP_DIR/runtime/bin/node"
-    export PATH="$APP_DIR/runtime/bin:$PATH"
-  fi
-fi
-if [ -z "$NODE" ]; then
-  echo "Node.js runtime not found. Please run DeepSeek Harness Desktop to install it first." >&2
-  exit 1
-fi
-"#;
-
-// ---------------------------------------------------------------------------
-// dsh shim 共享片段：用户已安装的 dsh 优先（避免覆盖/遮蔽用户自己的 dsh 与
-// $DSH_HOME）。与 pnpm shim 的"用户优先"策略一致：先转发 PATH 中（排除本
-// shim 目录）的用户 dsh，转发时不注入本应用的 DSH_HOME，保留用户环境；
-// 仅找不到用户 dsh 时才回退到捆绑 dsh。
-// 变量约定：cmd 用 %SELF_PREFIX%/%USER_DSH%，ps1 用 $selfDir/$userDsh，
-// sh 用 $SELF_DIR。dsh shim 仅 release 构建写入（debug 构建不覆盖共享的
-// dsh shim，见 write_shims），debug 下这些常量/函数未使用，允许 dead_code。
-#[cfg_attr(debug_assertions, allow(dead_code))]
-const CMD_USER_DSH_PRECEDENCE: &str = r#"
-rem Prefer a user-installed dsh on PATH (skip our own shim dir), fall back to bundled.
-rem This preserves your own dsh binary and its $DSH_HOME config; nothing is overwritten.
-set "SELF_PREFIX=%~dp0"
-set "SELF_PREFIX=%SELF_PREFIX:~0,-1%"
-set "USER_DSH="
-for /f "delims=" %%d in ('where dsh 2^>nul') do (
-  if not defined USER_DSH (
-    if /i not "%%d"=="%SELF_PREFIX%\dsh.cmd" (
-      if /i not "%%d"=="%SELF_PREFIX%\dsh.ps1" (
-        if /i not "%%d"=="%SELF_PREFIX%\dsh.exe" (
-          if /i not "%%d"=="%SELF_PREFIX%\dsh.bat" (
-            if /i "%%~xd"==".cmd" set "USER_DSH=%%d"
-            if /i "%%~xd"==".exe" set "USER_DSH=%%d"
-            if /i "%%~xd"==".bat" set "USER_DSH=%%d"
-          )
-        )
-      )
-    )
-  )
-)
-if defined USER_DSH (
-  call "%USER_DSH%" %*
-  exit /b %ERRORLEVEL%
-)
-"#;
-
-#[cfg_attr(debug_assertions, allow(dead_code))]
-const PS1_USER_DSH_PRECEDENCE: &str = r#"
-# Prefer a user-installed dsh on PATH (skip our own shim dir), fall back to bundled.
-# This preserves your own dsh binary and its $env:DSH_HOME config; nothing is overwritten.
-$selfDir = $PSScriptRoot.TrimEnd('\') + '\'
-$userDsh = Get-Command dsh -All -ErrorAction SilentlyContinue |
-    Where-Object { $_.Source -and -not $_.Source.StartsWith($selfDir, [System.StringComparison]::OrdinalIgnoreCase) } |
-    Select-Object -First 1
-if ($userDsh) {
-    & $userDsh.Source @args
-    exit $LASTEXITCODE
-}
-"#;
-
-#[cfg_attr(windows, allow(dead_code))] // 仅 Unix shim 使用
-#[cfg_attr(debug_assertions, allow(dead_code))]
-const SH_USER_DSH_PRECEDENCE: &str = r#"
-# Prefer a user-installed dsh on PATH (skip our own shim dir), fall back to bundled.
-# This preserves your own dsh binary and its $DSH_HOME config; nothing is overwritten.
-SELF_DIR=$(cd "$(dirname "$0")" && pwd)
-IFS=:
-for dir in $PATH; do
-  if [ "$dir" = "$SELF_DIR" ]; then
-    continue
-  fi
-  if [ -x "$dir/dsh" ]; then
-    exec "$dir/dsh" "$@"
-  fi
-done
-unset IFS
-"#;
-
-// ---------------------------------------------------------------------------
-// 路径转义（按目标脚本语言的字符串规则）
-// ---------------------------------------------------------------------------
-
-/// 批处理中 `%` 会被展开，需写成 `%%`
-#[inline]
-pub fn escape_path_cmd(path: &Path) -> String {
-    path.to_string_lossy().replace('%', "%%")
-}
-
-/// 单引号字符串中 `'` 需翻倍
-#[inline]
-pub fn escape_path_ps1(path: &Path) -> String {
-    path.to_string_lossy().replace('\'', "''")
-}
-
-/// 单引号字符串中 `'` 需写成 `'\''`
-#[inline]
-pub fn escape_path_sh(path: &Path) -> String {
-    path.to_string_lossy().replace('\'', "'\\''")
-}
+use super::escape_path_cmd;
+use super::escape_path_ps1;
+use super::escape_path_sh;
+#[cfg(not(windows))]
+use super::templates::SH_USER_DSH_PRECEDENCE;
+use super::templates::{
+    CMD_NODE_RESOLVE, CMD_USER_DSH_PRECEDENCE, PS1_NODE_RESOLVE, PS1_USER_DSH_PRECEDENCE,
+    SH_NODE_RESOLVE,
+};
 
 // ---------------------------------------------------------------------------
 // dsh shim
@@ -271,7 +55,7 @@ exit /b 1
 "#,
         app_dir = escape_path_cmd(app_dir),
         dsh_bin = escape_path_cmd(&dsh_bin),
-        dsh_home = escape_path_cmd(dsh_home),
+        dsh_home = escape_path_cmd(&dsh_home),
         user_dsh = CMD_USER_DSH_PRECEDENCE,
         node_resolve = CMD_NODE_RESOLVE,
     )
@@ -316,7 +100,7 @@ exit $LASTEXITCODE
         dsh_bin = escape_path_ps1(&dsh_bin),
         user_dsh = PS1_USER_DSH_PRECEDENCE,
         node_resolve = PS1_NODE_RESOLVE,
-        dsh_home = escape_path_ps1(dsh_home),
+        dsh_home = escape_path_ps1(&dsh_home),
     )
 }
 
@@ -345,7 +129,7 @@ exec "$NODE" "$DSH_BIN" "$@"
         app_dir = escape_path_sh(app_dir),
         dsh_bin = escape_path_sh(&dsh_bin),
         user_dsh = SH_USER_DSH_PRECEDENCE,
-        dsh_home = escape_path_sh(dsh_home),
+        dsh_home = escape_path_sh(&dsh_home),
         node_resolve = SH_NODE_RESOLVE,
     )
 }
@@ -555,221 +339,14 @@ exec "$NODE" "$PNPM_BIN" "$@"
     )
 }
 
-// ---------------------------------------------------------------------------
-// 落盘
-// ---------------------------------------------------------------------------
-
-/// 生成的 shim 自带的可识别标记（首行注释）。用于区分"本应用生成的 shim"
-/// 与"用户自行放置的同名文件"。读文件只读该标记行，避免误删用户自有文件。
-const GENERATED_MARKER: &str = "DeepSeek Harness Desktop - ";
-
-/// 目标路径已存在且不是本应用生成的 shim（即用户手动放置的 `dsh`/`pnpm`）。
-///
-/// 此时绝不覆盖，保留用户文件，避免"安装后清空了之前手动安装的工具"。
-fn is_foreign_file(path: &Path) -> bool {
-    !is_generated_shim(path)
-}
-
-/// 路径是否为悬空符号链接（链接本身存在，但指向的目标不存在）。
-///
-/// 官方 dsh 安装器会在 `~/.local/bin/dsh -> ~/.dsh/source/current/bin/dsh` 留下
-/// 符号链接；当 `current` 指向的目录被移动/删除后链接即悬空。此时
-/// `Path::exists()` 跟随链接返回 `false`，但直接 `fs::write` 会沿链接打开目标
-/// 并在其父目录缺失时报 `No such file or directory (os error 2)`——必须先把
-/// 已失效的链接本身移除，才能按"文件不存在"正常写入。
-fn is_dangling_symlink(path: &Path) -> bool {
-    match path.symlink_metadata() {
-        Ok(meta) => meta.file_type().is_symlink() && !path.exists(),
-        Err(_) => false,
-    }
-}
-
-/// 判断路径是否为本应用生成的 shim（内容含生成标记）。
-///
-/// 用于在本地 dsh 探测中区分"本应用 shim"与"用户自行放置的同名文件"：
-/// 前者应被排除（它转发到捆绑 dsh，不构成用户本地核心），后者应被识别。
-pub fn is_generated_shim(path: &Path) -> bool {
-    if path
-        .symlink_metadata()
-        .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    match std::fs::read_to_string(path) {
-        Ok(content) => content.contains(GENERATED_MARKER),
-        Err(_) => false,
-    }
-}
-
-/// 写入单个 shim 文件，处理目标已存在时的三种情形：
-///
-/// 1. 悬空符号链接（用户/官方安装器残留、目标已失效）→ 移除链接后正常写入；
-/// 2. 已存在且非本应用生成（用户手动放置的 `dsh`/`pnpm`）→ 跳过，保留用户文件；
-/// 3. 其余（不存在，或本应用生成的 shim）→ 直接写入/覆盖。
-fn write_shim_file(target: &Path, content: &str) -> Result<(), String> {
-    if is_dangling_symlink(target) {
-        log::warn!(
-            "Removing dangling symlink {:?} before writing shim (its target is gone)",
-            target
-        );
-        fs::remove_file(target).map_err(|e| {
-            format!(
-                "SHIM_REMOVE_DANGLING_SYMLINK: remove dangling symlink {} failed: {e}",
-                target.display()
-            )
-        })?;
-    }
-    if target.exists() && is_foreign_file(target) {
-        log::warn!(
-            "Skipping shim write to {:?}: an existing user file is preserved",
-            target
-        );
-        return Ok(());
-    }
-    fs::write(target, content).map_err(|e| format!("write {} failed: {e}", target.display()))
-}
-
-/// 主 `dsh` shim 路径下是否保留了用户自行安装的同名文件（用于状态展示）。
-pub fn user_dsh_preserved(bin_dir: &Path) -> bool {
-    let path = {
-        #[cfg(windows)]
-        {
-            bin_dir.join(SHIM_CMD_NAME)
-        }
-        #[cfg(not(windows))]
-        {
-            bin_dir.join(SHIM_SH_NAME)
-        }
-    };
-    path.is_file() && is_foreign_file(&path)
-}
-
-/// 将 shim 文件写入 bin 目录；目标已存在但非本应用生成的同名文件时跳过（保留）。
-/// 目标为悬空符号链接时先移除链接再写入（链接目标已失效，保留只会让写入
-/// 报 ENOENT）。
-///
-/// 覆盖式仅针对本应用生成的 shim（自愈时内容与当前安装一致）；用户手动放置的
-/// 同名 `dsh`/`pnpm` 一律保留不动，避免覆盖用户自己的安装与配置。
-pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String> {
-    let app_dir = config::get_base_dir(app_handle);
-    fs::create_dir_all(bin_dir).map_err(|e| format!("create bin dir failed: {e}"))?;
-
-    // 写入单个 shim：若目标已存在且非本应用生成，则跳过不覆盖（保留用户文件）。
-    macro_rules! write_if_ours {
-        ($path:expr, $content:expr) => {{
-            let target = bin_dir.join($path);
-            write_shim_file(&target, &$content)?;
-            target
-        }};
-    }
-
-    // dsh shim 会在内容里烘焙 $DSH_HOME（生产为 ~/.dsh、开发为 ~/.dsh.dev）。
-    // 开发构建禁止改写用户共享的 dsh shim——改写会让终端 `dsh` 指向开发数据
-    // 目录，并覆盖生产的命令行集成；生产版生成的 dsh shim 原样保留。
-    #[cfg(not(debug_assertions))]
-    {
-        let dsh_home = config::get_dsh_data_path(app_handle);
-        #[cfg(windows)]
-        {
-            write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&app_dir, &dsh_home));
-            write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&app_dir, &dsh_home));
-        }
-        #[cfg(not(windows))]
-        {
-            write_if_ours!(SHIM_SH_NAME, build_sh_shim(&app_dir, &dsh_home));
-        }
-    }
-    #[cfg(debug_assertions)]
-    log::debug!("debug build: skip dsh shim write (shared user state kept for release)");
-
-    // pnpm shim 不烘焙 $DSH_HOME（仅绑定 bundle 目录与“用户 pnpm 优先”逻辑），
-    // 内容与生产完全一致，开发构建也可写入——dsh plugin 子进程经 PATH 解析
-    // pnpm 依赖它，写它不污染任何共享数据。
-    #[cfg(windows)]
-    {
-        write_if_ours!(PNPM_SHIM_CMD_NAME, build_pnpm_cmd_shim(&app_dir));
-        write_if_ours!(PNPM_SHIM_PS1_NAME, build_pnpm_ps1_shim(&app_dir));
-    }
-    #[cfg(not(windows))]
-    {
-        write_if_ours!(PNPM_SHIM_SH_NAME, build_pnpm_sh_shim(&app_dir));
-        // 仅对本应用生成/覆盖过的 shim 设置可执行位；保留的用户文件不动
-        let chmod_names: &[&str] = if cfg!(debug_assertions) {
-            &[PNPM_SHIM_SH_NAME]
-        } else {
-            &[SHIM_SH_NAME, PNPM_SHIM_SH_NAME]
-        };
-        for name in chmod_names {
-            let path = bin_dir.join(name);
-            if path.is_file() && !is_foreign_file(&path) {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-                    .map_err(|e| format!("chmod shim failed: {e}"))?;
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::test_util::{sample_app_dir, sample_dsh_home, temp_dir};
     use super::*;
     use std::path::PathBuf;
 
-    // ------------------------------------------------------------------
-    // escape_path_* 纯函数基线（与 shim 内嵌路径的场景一致）
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn escape_path_cmd_doubles_percent() {
-        assert_eq!(
-            escape_path_cmd(Path::new(r"C:\Users\%test%\x")),
-            r"C:\Users\%%test%%\x"
-        );
-        assert_eq!(escape_path_cmd(Path::new("/tmp/a b")), "/tmp/a b");
-    }
-
-    #[test]
-    fn escape_path_ps1_doubles_single_quotes() {
-        assert_eq!(
-            escape_path_ps1(Path::new(r"C:\Users\o'brien")),
-            r"C:\Users\o''brien"
-        );
-        assert_eq!(escape_path_ps1(Path::new("/plain/path")), "/plain/path");
-    }
-
-    #[test]
-    fn escape_path_sh_escapes_single_quotes() {
-        assert_eq!(
-            escape_path_sh(Path::new("/home/o'brien/.dsh")),
-            r"/home/o'\''brien/.dsh"
-        );
-        assert_eq!(escape_path_sh(Path::new("/plain/.dsh")), "/plain/.dsh");
-    }
-
-    fn sample_app_dir() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(
-                r"C:\Users\test\AppData\Roaming\io.github.hairyf.deepseek-harness-desktop",
-            )
-        } else {
-            PathBuf::from("/home/test/.local/share/io.github.hairyf.deepseek-harness-desktop")
-        }
-    }
-
-    /// 官方 $DSH_HOME（~/.dsh）
-    fn sample_dsh_home() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"C:\Users\test\.dsh")
-        } else {
-            PathBuf::from("/home/test/.dsh")
-        }
-    }
-
     #[cfg(windows)]
     #[test]
-    #[cfg(windows)]
     fn cmd_shim_contains_baked_paths() {
         let content = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
         assert!(content.contains(r"C:\Users\test\AppData\Roaming"));
@@ -1165,7 +742,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg(windows)]
     fn ps1_shim_escapes_quotes() {
         let dir = PathBuf::from(
             r"C:\Users\o'brien\AppData\Roaming\io.github.hairyf.deepseek-harness-desktop",
@@ -1212,163 +788,5 @@ mod tests {
             let home_at = content.find("export DSH_HOME").unwrap();
             assert!(user_at < home_at);
         }
-    }
-
-    #[test]
-    fn foreign_file_detection() {
-        let dir = std::env::temp_dir().join(format!("dsh-shim-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // 用户手动放置的 dsh 脚本 -> 视为 foreign，不应被覆盖
-        let user_dsh = dir.join(if cfg!(windows) { "dsh.cmd" } else { "dsh" });
-        std::fs::write(&user_dsh, "#!/bin/sh\necho my real dsh\n").unwrap();
-        assert!(
-            is_foreign_file(&user_dsh),
-            "user file must be treated as foreign"
-        );
-
-        // 本应用生成的 shim -> 不是 foreign，可覆盖
-        #[cfg(not(windows))]
-        let generated = build_sh_shim(&sample_app_dir(), &sample_dsh_home());
-        #[cfg(windows)]
-        let generated = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
-        std::fs::write(&user_dsh, generated).unwrap();
-        assert!(
-            !is_foreign_file(&user_dsh),
-            "generated shim must not be foreign"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // ------------------------------------------------------------------
-    // write_shim_file 目标文件处理（悬空符号链接 / 用户文件保留 / 生成文件覆盖）
-    // ------------------------------------------------------------------
-
-    /// 独立的临时目录，避免测试间互相干扰
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "dsh-shim-write-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// 悬空符号链接（官方 dsh 安装器残留 `~/.local/bin/dsh -> ~/.dsh/source/current/bin/dsh`
-    /// 且目标已消失）时：先移除失效链接，再正常写入生成 shim——修复原报错
-    /// `write ... failed: No such file or directory (os error 2)`
-    #[test]
-    #[cfg(unix)]
-    fn write_shim_file_removes_dangling_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let dir = temp_dir("dangling");
-        let target = dir.join("dsh");
-        symlink(dir.join("missing/source/current/bin/dsh"), &target).unwrap();
-        assert!(is_dangling_symlink(&target));
-
-        write_shim_file(&target, "#!/bin/sh\ngenerated shim\n").unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "#!/bin/sh\ngenerated shim\n"
-        );
-        assert!(
-            !std::fs::symlink_metadata(&target)
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "dangling symlink must be replaced by a regular file"
-        );
-        assert!(!is_dangling_symlink(&target));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 指向真实用户 dsh 的符号链接（目标仍存在）→ 视为用户文件，保留不动
-    #[test]
-    #[cfg(unix)]
-    fn write_shim_file_preserves_valid_user_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let dir = temp_dir("userlink");
-        let real = dir.join("real-dsh");
-        std::fs::write(&real, "#!/bin/sh\necho my real dsh\n").unwrap();
-        let target = dir.join("dsh");
-        symlink(&real, &target).unwrap();
-
-        write_shim_file(&target, "#!/bin/sh\ngenerated shim\n").unwrap();
-
-        assert!(
-            std::fs::symlink_metadata(&target)
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "valid user symlink must be preserved"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&real).unwrap(),
-            "#!/bin/sh\necho my real dsh\n"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 即使符号链接目标恰好是本应用生成的内容，也必须把链接本身视为用户路径。
-    #[test]
-    #[cfg(unix)]
-    fn generated_detection_preserves_user_symlink_to_generated_content() {
-        use std::os::unix::fs::symlink;
-
-        let dir = temp_dir("userlink-generated-target");
-        let real = dir.join("generated-dsh");
-        std::fs::write(
-            &real,
-            "#!/bin/sh\n# DeepSeek Harness Desktop - generated target\n",
-        )
-        .unwrap();
-        let target = dir.join("dsh");
-        symlink(&real, &target).unwrap();
-
-        assert!(!is_generated_shim(&target));
-        write_shim_file(&target, "#!/bin/sh\n# replacement\n").unwrap();
-        assert!(std::fs::symlink_metadata(&target)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(
-            std::fs::read_to_string(&real).unwrap(),
-            "#!/bin/sh\n# DeepSeek Harness Desktop - generated target\n"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 本应用生成的 shim → 覆盖自愈内容
-    #[test]
-    fn write_shim_file_overwrites_generated_shim() {
-        let dir = temp_dir("overwrite");
-        let target = dir.join("dsh");
-        std::fs::write(
-            &target,
-            "#!/bin/sh\n# DeepSeek Harness Desktop - old shim\n",
-        )
-        .unwrap();
-
-        write_shim_file(
-            &target,
-            "#!/bin/sh\n# DeepSeek Harness Desktop - new shim\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "#!/bin/sh\n# DeepSeek Harness Desktop - new shim\n"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

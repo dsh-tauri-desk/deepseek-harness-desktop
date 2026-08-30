@@ -22,7 +22,11 @@
 </p>
 
 <p align="center">
-  <samp><strong>English</strong> · <a href="./README.md">中文</a></samp>
+  <samp><strong>English</strong> · <a href="https://dshtauri.mintlify.site">Docs</a> · <a href="./README.md">中文</a></samp>
+</p>
+
+<p align="center">
+ <a href="https://trendshift.io/repositories/151676?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-151676" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/151676/daily?language=Rust" alt="dsh-tauri-desk%2Fdeepseek-harness-desktop | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
@@ -59,7 +63,6 @@ Plugins offered in the first-run wizard; select what you need and install on dem
 - [DSH Market](https://github.com/dsh-market/dsh-market) — browse, search, and one-click install community plugins (Recommended)
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — a VSCode-like right sidebar, isolated per session (Recommended)
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn completes
-- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH right-click menu: adds common actions for sessions, workspaces, the input box, and links
 
 > Want to add new presets? Modify [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) and submit a PR — once approved, it will be added as a preset in a future version.
 
@@ -72,6 +75,8 @@ First-party plugins bundled with the installer:
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — creates an isolated Git worktree per session, with checkout to a local branch or archive-and-abandon flows
 - [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — sidebar shell: compact logo row, a panel area (New Session + third-party panel items via `sidebar.panel.action`), and the `panel.protocol` service
 - [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills and MCP management with skill repository import
+- [DSH Tauri Session](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session) — replaces workspace deletion with archiving and adds an Archived Chats settings page with search, sorting, grouping, project filtering, and unarchive support
+- [DSH Tauri Rightclick](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick) — native-style right-click context menus for sessions, workspaces, conversation text, links, and inputs (derived from [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu))
 - More plugins coming soon...
 
 ## Quick Start
@@ -89,6 +94,17 @@ The first run downloads the Node runtime and Harness core (if `dsh` is already i
 **System requirements:** Windows 10+ · macOS 10.15+ · Linux (AppImage / .deb) · network on first launch
 
 > **Linux Wayland note (PikaOS / GNOME Wayland / Ubuntu 22.04+):** AppImage may crash or render black on Wayland due to WebKitGTK; the app auto-fixes the common case. <details><summary>If it still crashes / renders black:</summary><br>**Prefer `.deb`** (verified on PikaOS 4 Wayland), or manually run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`. If icons do not appear, copy the app's `hicolor` icons to `~/.local/share/icons` and run `update-desktop-database`.<br></details>
+
+## Community
+
+- [Join the Discord community](https://discord.gg/RT9As6Cj8B)
+
+<table>
+  <tr>
+    <td align="center"><strong>QQ Group</strong><br /><img src="./docs/images/community/qq-qrcode.jpg" width="360" alt="QQ group QR code" /></td>
+    <td align="center"><strong>WeChat Group</strong><br /><img src="./docs/images/community/wx-qrcode.png" width="360" alt="WeChat group QR code" /></td>
+  </tr>
+</table>
 
 ## Dev
 

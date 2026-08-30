@@ -57,6 +57,10 @@ pub struct HarnessCore {
     pub present: bool,
     /// 当前是否使用中的核心
     pub active: bool,
+    /// 是否预览版（GitHub Release 标记 Pre-release，或 tag 命名含预览标记，见
+    /// `download::is_preview_tag`）：预览版不参与自动更新提示，但可在核心列表
+    /// 手动下载安装，并以「预览版」标签展示。
+    pub preview: bool,
     pub error: Option<String>,
 }
 

@@ -21,8 +21,9 @@ import { PanelState } from './panel-state'
  *
  * - 列表来自 `useDshCores`（`get_cores` 查询 + `setting_updated` 事件刷新）：
  *   `local` = 用户通过 CLI 全局安装的本地核心（存在时优先使用，需求 3）；
- *   `app-<tag>` = deepseek-harness-pkg 各发布版本（GitHub tags 拉取失败时
- *   降级为磁盘扫描，仅显示已下载版本）。
+ *   `app-<tag>` = deepseek-harness-pkg 各发布版本（GitHub releases 拉取失败时
+ *   降级为 git tags / 磁盘扫描，仅显示已下载版本）。预览版（Pre-release label
+ *   或 tag 命名）照常列出、可下载安装，但带「预览版」标签、不参与更新提示。
  * - 切换核心：持久化后**自动重启**服务（需求 5），重启走 harness store 的
  *   restart 流程（停止 → 重新启动 → 健康检查）。
  * - 下载版本：拉指定 tag 的发布资产到历史槽位（不激活），随后可切换；
@@ -35,20 +36,22 @@ export function ConfigCore() {
   const [downloadDialogHolder, openDownloadDialog] = useOverlay(DownloadCoreDialog, { type: 'holder' })
 
   const { t } = useTranslation()
-  const { cores, loading, error, setActiveCore, updateLocalCore, downloadCore, removeCore, busy } = useDshCores()
+  const { cores, loading, error, setActiveCore, updateLocalCore, downloadCore, removeCore, refreshCores, busy } = useDshCores()
 
   /** 行内操作进行中的核心 id（该行的下载/卸载按钮显示 Spinner 并禁用重复点击） */
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
   // 本地核心未检测到时不渲染 local 行（保留 local_missing_hint 提示）
   const rows = cores.filter(core => !(core.source === 'local' && !core.present))
   const localCore = cores.find(c => c.source === 'local')
 
   // 本地核心是否有新版可更新：仅当存在更新的预打包发布时才显示「更新本地核心」。
-  // 版本行按 tags 最新在前，取第一个 app 版本作为"当前最新可用版本"（本地版本
-  // 已是最新时不再展示更新入口，避免"已最新仍提示更新"）。
+  // 版本行按 releases 最新在前，取第一个**非预览版** app 版本作为"当前最新可用
+  // 版本"（预览版不参与更新判定；本地版本已是最新时不再展示更新入口，避免
+  // "已最新仍提示更新"）。
   const localVersion = localCore?.version ?? ''
-  const latestVersion = cores.find(c => c.source === 'app')?.version ?? ''
+  const latestVersion = cores.find(c => c.source === 'app' && !c.preview)?.version ?? ''
   const hasLocalUpdate = !!(localCore?.present && localVersion && latestVersion && compareVersions(localVersion, latestVersion) < 0)
 
   /** 包裹行内操作：全局单例守卫 + 该行 busy 标记 */
@@ -160,6 +163,23 @@ export function ConfigCore() {
     }
   }
 
+  async function onRefresh() {
+    if (busy || refreshing)
+      return
+    setRefreshing(true)
+    try {
+      await refreshCores()
+      toast(t('core.refreshed_toast'), {})
+    }
+    catch (err) {
+      console.error('[ConfigCore] refresh failed:', err)
+      toast(t('core.refresh_failed'), {})
+    }
+    finally {
+      setRefreshing(false)
+    }
+  }
+
   async function onUpdateLocal() {
     if (busy)
       return
@@ -179,7 +199,23 @@ export function ConfigCore() {
 
   return (
     <div className="space-y-3">
-      <PanelHeader title={t('core.title')} description={t('core.tooltip')} />
+      <PanelHeader
+        title={t('core.title')}
+        description={t('core.tooltip')}
+        action={(
+          <Button
+            size="sm"
+            variant="tertiary"
+            className="h-7 shrink-0 rounded-md text-xs"
+            isDisabled={busy || refreshing}
+            aria-label={t('core.refresh')}
+            onPress={onRefresh}
+          >
+            <If cond={refreshing} then={<Spinner size="sm" color="current" />} else={<ArrowRotateRight className="size-3.5" />} />
+            {t('core.refresh')}
+          </Button>
+        )}
+      />
 
       {/* 加载 / 失败 / 列表 */}
       <PanelState loading={loading} error={error}>
@@ -201,6 +237,12 @@ export function ConfigCore() {
                   <If cond={core.source === 'app'}>
                     <Chip size="sm" variant="soft" color="default" className="shrink-0 font-medium">
                       {t('core.app')}
+                    </Chip>
+                  </If>
+                  {/* 预览版标记：Pre-release label 或 tag 命名判定的预览版，可下载安装但不参与更新提示 */}
+                  <If cond={core.preview}>
+                    <Chip size="sm" variant="soft" color="warning" className="shrink-0 font-medium">
+                      {t('core.preview')}
                     </Chip>
                   </If>
                   {/* 已下载：Chip 右侧的文件夹图标，点击打开所在目录 */}

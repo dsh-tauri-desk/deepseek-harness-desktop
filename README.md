@@ -22,8 +22,13 @@
 </p>
 
 <p align="center">
-  <samp><a href="./README.en.md">English</a> · <strong>中文</strong></samp>
+  <samp><a href="./README.en.md">English</a> · <a href="https://dshtauri.mintlify.site">文档</a> · <strong>中文</strong></samp>
 </p>
+
+<p align="center">
+ <a href="https://trendshift.io/repositories/151676?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-151676" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/151676/daily?language=Rust" alt="dsh-tauri-desk%2Fdeepseek-harness-desktop | Trendshift" width="250" height="55"/></a>
+</p>
+
 
 <p align="center">
   <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
@@ -53,9 +58,10 @@
 - [DSH Market](https://github.com/dsh-market/dsh-market) — 浏览、搜索并一键安装社区插件（推荐）
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — 类 VSCode 右侧栏，按会话隔离（推荐）
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时的桌面通知
-- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH 右键菜单：为会话、工作区、输入框和链接补充常用操作
 
-> 你想收录新的插件作为预设？修改 [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) 并提交 PR，通过后将在将来版本新增为预设插件。
+<!-- > 你想收录新的插件作为预设？修改 [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) 并提交 PR，通过后将在将来版本新增为预设插件。 -->
+
+> 为避免不稳定的预设插件导致软件异常，如需新增插件，请在 [dsh-tauri-plugins/issues](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/issues) 提起请求
 
 ## 内置插件
 
@@ -66,6 +72,8 @@
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
 - [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
 - [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills/MCP 管理与导入技能仓库
+- [DSH Tauri Session](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session) — 将删除工作区改为归档，并提供支持搜索、排序、分组、项目筛选和取消归档的「已归档聊天」设置页
+- [DSH Tauri Rightclick](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick) — 为会话、工作区、正文、链接和输入框补充常用操作（源自于 [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu)）
 - 更多即将引入的插件...
 
 ## 快速开始
@@ -86,7 +94,14 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 
 ## 交流
 
-<img width="360" height="566" alt="image" src="https://github.com/user-attachments/assets/598308b5-681d-4514-a8d7-a36810fa8636" />
+- [加入 Discord 社区](https://discord.gg/RT9As6Cj8B)
+
+<table>
+  <tr>
+    <td align="center"><strong>QQ 群</strong><br /><img src="./docs/images/community/qq-qrcode.jpg" width="360" alt="QQ 群二维码" /></td>
+    <td align="center"><strong>微信群</strong><br /><img src="./docs/images/community/wx-qrcode.png" width="360" alt="微信群二维码" /></td>
+  </tr>
+</table>
 
 
 ## 开发

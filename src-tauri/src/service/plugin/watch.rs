@@ -366,7 +366,6 @@ mod tests {
             win_only: false,
             package: None,
             internal: false,
-            deprecated: false,
         }]
     }
 
@@ -451,7 +450,6 @@ mod tests {
             win_only: false,
             package: None,
             internal: true,
-            deprecated: false,
         });
         let plugins = parse_plugins(&dir, &presets);
         assert_eq!(plugins.len(), 2);

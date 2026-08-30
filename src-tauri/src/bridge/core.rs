@@ -6,8 +6,9 @@
 use crate::service::core;
 use tauri::AppHandle;
 
-/// 核心列表：本地 CLI 核心 + 预打包各版本（含 active 标记与 cli path）。
-/// 版本行数据源为 GitHub tags，拉取失败时降级为磁盘扫描（离线/限流仍可用）。
+/// 核心列表：本地 CLI 核心 + 预打包各版本（含 active 标记、cli path 与
+/// preview 预览版标记）。版本行数据源为 GitHub releases（含 Pre-release label），
+/// 拉取失败时降级为 git tags / 磁盘扫描（离线/限流仍可用）。
 #[tauri::command]
 pub async fn get_cores(app_handle: AppHandle) -> Vec<core::HarnessCore> {
     core::list(&app_handle).await

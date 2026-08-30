@@ -5,8 +5,7 @@
     "integrity": "sha512-Hi7Waxv0q1r9hEeZXpLBpQrxn1Qz6gi2MV4Or+yyPATnwyXY8SZq9GR4LFexJvhqYKJixABVedGeA/Xjw8IF2Q==",
     "name": "DSH Tauri",
     "description": "Message bridge for the DeepSeek Harness desktop shell",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri",
-    "recommended": true
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri"
   },
   {
     "id": "dsh-tauri-ui",
@@ -14,8 +13,7 @@
     "integrity": "sha512-hRzH+ap1ozGFoA8cd1D7DG1gGFi1/umsXzXvjU9neIxpIR6ATsCf1vE4N415eTQ1I09xt9BamwRWKnMY1usImg==",
     "name": "DSH Tauri UI",
     "description": "Customized Tauri UI plugin for the DeepSeek Harness desktop shell (skeleton): registers the shell.overlay seat for the future desktop chrome",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-ui",
-    "recommended": true
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-ui"
   },
   {
     "id": "dsh-tauri-worktree",
@@ -23,8 +21,7 @@
     "integrity": "sha512-j9TQdhNObAMJUoXvziErCEWbZOt2vnD+TBQ+Md1xGGcpK8nq1AKgPgp/UrNTbvJQs3E6nDnDSpPl0hw5pnemSQ==",
     "name": "DSH Tauri Worktree",
     "description": "Per-session isolated Git Worktree for the desktop shell: switch a conversation to its own isolated worktree, then check changes back into a local dsh/ branch or discard them.",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-worktree",
-    "recommended": true
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-worktree"
   },
   {
     "id": "dsh-tauri-panel",
@@ -32,8 +29,7 @@
     "integrity": "sha512-xiJCSKlqXl9agvsLvQdrFJG6QRb6aQO1S8X2iQB/Qa9kEBqzHjHjVvNgTc45CQfghNzfRNlaYpHlUf5xEomolA==",
     "name": "DSH Tauri Panel",
     "description": "Sidebar shell for the desktop: compact logo row (32px), a panel area holding the New Session item plus third-party panel items (sidebar.panel.action slot), and the panel.protocol service (open/render/close panel content) consumed by dsh-tauri-panel-extension.",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel",
-    "recommended": true
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel"
   },
   {
     "id": "dsh-tauri-panel-extension",
@@ -41,7 +37,20 @@
     "integrity": "sha512-xRTxLRBZkwbZjNaAjTUE+rXsyD/SlVUGkxH09ew+Gr5zDtrlP+84w4mJoEG36CDxfbVdJ+klTvjzEOpXElbhmw==",
     "name": "DSH Tauri Panel Extension",
     "description": "Skills and MCP management in the DeepSeek Harness desktop extension panel.",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension",
-    "recommended": true
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension"
+  },
+  {
+    "id": "dsh-tauri-session",
+    "spec": "dsh-tauri-session",
+    "name": "DSH Tauri Session",
+    "description": "Session archive for the desktop: rewrites the workspace browser's 'delete workspace' action into 'archive workspace', and adds an 'Archived chats' settings page with search, sort, grouping, project filter and unarchive.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session"
+  },
+  {
+    "id": "dsh-tauri-rightclick",
+    "spec": "dsh-tauri-rightclick",
+    "name": "DSH Tauri Rightclick Menu",
+    "description": "Native-style right-click context menu for the desktop shell: quick actions for sessions, workspaces, conversation text, links, and inputs — in-house successor to the deprecated dsh-session-context-menu.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick"
   }
 ]

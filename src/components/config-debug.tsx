@@ -9,6 +9,7 @@ import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
+import { ConfigLaunchOnLogin } from './config-launch-on-login'
 import { Info } from './info'
 
 const ZOOM_OPTIONS = Array.from({ length: 16 }, (_, index) => Number((0.5 + index * 0.1).toFixed(1)))
@@ -281,6 +282,7 @@ export function ConfigDebug() {
       </div>
       <div className="border-t border-line/30" />
       <div className="space-y-1.5">
+        <ConfigLaunchOnLogin />
         <div>
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-ink">{t('ui.cli_link_enabled')}</span>

@@ -12,6 +12,7 @@
 use crate::config;
 use crate::service::fs_guard;
 use serde::Serialize;
+use serde_yaml::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -29,7 +30,7 @@ const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, a
 
 /// dsh `initProfile` 生成的 pnpm 设置（与官方一致）
 const PROFILE_PNPM_WORKSPACE: &str =
-    "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
+    "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n\n# The desktop runtime intentionally reviews this fresh transitive release.\nminimumReleaseAgeExclude:\n  - zod@4.4.3\n";
 
 /// 档案行（序列化 camelCase 给前端）
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +51,57 @@ pub fn profile_dir_of(app_handle: &AppHandle, id: &str) -> PathBuf {
     config::get_dsh_data_path(app_handle)
         .join("profiles")
         .join(id)
+}
+
+/// pnpm 11 的最小发布时间策略会在 registry 元数据短暂不可用时把已审查的
+/// lockfile 条目误判为违规。zod 是当前 Harness runtime closure 中的已审查条目，
+/// 仅豁免 lockfile 使用的精确版本，避免关闭整个 supply-chain policy。
+const PROFILE_MINIMUM_RELEASE_AGE_EXCLUDES: [&str; 1] = ["zod@4.4.3"];
+
+/// 确保现有档案也获得与新建档案相同的 pnpm 供应链策略例外。
+/// 使用 YAML 合并而不是文本追加，避免重复映射键破坏 pnpm-workspace.yaml。
+pub(crate) fn ensure_profile_pnpm_policy(app_handle: &AppHandle) -> Result<(), String> {
+    let path = profile_dir_of(app_handle, &active_profile(app_handle)).join("pnpm-workspace.yaml");
+    let existing = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            PROFILE_PNPM_WORKSPACE.to_string()
+        }
+        Err(error) => return Err(format!("PROFILE_WORKSPACE_READ: {error}")),
+    };
+    let mut document: Value = serde_yaml::from_str(&existing)
+        .map_err(|e| format!("PROFILE_WORKSPACE_INVALID_YAML: {e}"))?;
+    let mapping = document.as_mapping_mut().ok_or_else(|| {
+        "PROFILE_WORKSPACE_NOT_MAP: pnpm-workspace.yaml must be a mapping".to_string()
+    })?;
+    let key = Value::String("minimumReleaseAgeExclude".to_string());
+    let excludes = mapping
+        .entry(key)
+        .or_insert_with(|| Value::Sequence(Vec::new()));
+    let sequence = excludes.as_sequence_mut().ok_or_else(|| {
+        "PROFILE_WORKSPACE_POLICY_INVALID: minimumReleaseAgeExclude must be a sequence".to_string()
+    })?;
+    let mut changed = false;
+    for package in PROFILE_MINIMUM_RELEASE_AGE_EXCLUDES {
+        let value = Value::String(package.to_string());
+        if !sequence.iter().any(|item| item == &value) {
+            sequence.push(value);
+            changed = true;
+        }
+    }
+    if changed {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("PROFILE_WORKSPACE_MKDIR: {e}"))?;
+        }
+        let rendered = serde_yaml::to_string(&document)
+            .map_err(|e| format!("PROFILE_WORKSPACE_RENDER: {e}"))?;
+        fs::write(&path, rendered).map_err(|e| format!("PROFILE_WORKSPACE_WRITE: {e}"))?;
+        log::info!(
+            "Ensured profile pnpm release-age policy: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// 当前使用的档案 id。

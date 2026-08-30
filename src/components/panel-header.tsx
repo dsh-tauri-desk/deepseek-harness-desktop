@@ -11,12 +11,16 @@ export interface PanelHeaderProps {
   title: string | ReactNode
   description: string
   className?: string
+  action?: ReactNode
 }
 
-export function PanelHeader({ title, description, className }: PanelHeaderProps) {
+export function PanelHeader({ title, description, className, action }: PanelHeaderProps) {
   return (
     <div className={cn('space-y-2', className)}>
-      {typeof title === 'string' ? <Typography type="h4">{title}</Typography> : title}
+      <div className="flex items-center justify-between gap-3">
+        {typeof title === 'string' ? <Typography type="h4">{title}</Typography> : title}
+        {action}
+      </div>
       <Typography color="muted" type="body-sm">{description}</Typography>
     </div>
   )

@@ -494,6 +494,8 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::runtime_ready,
         crate::bridge::get_app_config,
         crate::bridge::update_app_config,
+        crate::bridge::get_launch_on_login,
+        crate::bridge::set_launch_on_login,
         crate::bridge::set_webview_zoom,
         crate::bridge::adjust_webview_zoom,
         crate::bridge::get_cli_link_status,
@@ -572,6 +574,12 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
     }));
 
     builder
+        // 官方跨平台登录启动实现：Windows HKCU Run、macOS LaunchAgent、Linux XDG。
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name(crate::desktop::autostart::app_name())
+                .build(),
+        )
         // Opener plugin
         .plugin(tauri_plugin_opener::init())
         // Notification plugin（Windows 上以 tauri-winrt-notification 实现点击回调，

@@ -1,10 +1,12 @@
 //! 插件清单：分别读取随安装包分发的 `resources/preset-plugins.json` 与
-//! `resources/internal-plugins.json`。
+//! `resources/internal-plugins.json`，弃用名单单独维护在
+//! `resources/deprecated-plugins.json`（只登记预设插件 id，不参与预设合并）。
 //!
 //! 社区预设与内部插件分开维护；运行时合并为统一结构供安装、展示与自愈逻辑使用。
 //! 资源缺失/损坏时报错并回落为空清单，不阻断启动。
 
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
@@ -14,6 +16,8 @@ use crate::config;
 const PRESET_PLUGINS_FILE: &str = "preset-plugins.json";
 /// 内部插件清单文件名
 const INTERNAL_PLUGINS_FILE: &str = "internal-plugins.json";
+/// 弃用插件清单文件名（只登记预设插件 id）
+const DEPRECATED_PLUGINS_FILE: &str = "deprecated-plugins.json";
 
 /// 插件静态信息，对应预设或内部插件清单中的条目
 #[derive(Debug, Clone, Deserialize)]
@@ -50,11 +54,6 @@ pub struct PreinstallPluginInfo {
     /// 仅 Windows 平台列出
     #[serde(default)]
     pub win_only: bool,
-    /// 弃用标记：带该字段的社区预设不再提供安装入口；若此前已安装，应用启动时
-    /// 自动卸载（见 [`super::install::uninstall_deprecated_plugins`]）。适用于社区
-    /// 预设（`preset-plugins.json`）；内部插件由启动自愈强制安装，不走弃用语义。
-    #[serde(default)]
-    pub deprecated: bool,
 }
 
 /// 在资源根目录下查找清单：先探测扁平布局（exe 同级），再探测
@@ -286,6 +285,46 @@ pub(crate) fn load_presets(app_handle: &AppHandle) -> Vec<PreinstallPluginInfo> 
     plugins
 }
 
+/// 解析弃用插件清单 JSON（纯字符串数组），返回 id 集合（重复 id 自动去重）。
+fn parse_deprecated_ids(json: &str) -> Result<HashSet<String>, String> {
+    let ids: Vec<String> = serde_json::from_str(json)
+        .map_err(|e| format!("DEPRECATED_PLUGINS_MANIFEST_INVALID_JSON: {e}"))?;
+    Ok(ids.into_iter().collect())
+}
+
+/// 读取弃用插件清单（`resources/deprecated-plugins.json`），返回已登记的预设
+/// 插件 id 集合。
+///
+/// 弃用是发布侧决策：某社区插件下架/被替换后，把它的 id 追加进该文件，桌面端
+/// 每次启动核对「已安装 → 自动卸载」（见
+/// [`super::install::uninstall_deprecated_plugins`]）。与 `preset-plugins.json`
+/// 分开维护：预设清单只描述「可安装项」，弃用清单只描述「不再提供安装入口的
+/// 预设 id」，调整弃用名单不会让既有用户重新进入首次引导。资源缺失/损坏时
+/// 记录错误并回落为空集合，不阻断启动（与其它清单同一降级策略）。
+pub(crate) fn load_deprecated_ids(app_handle: &AppHandle) -> HashSet<String> {
+    let Some(path) = plugins_manifest_path(app_handle, DEPRECATED_PLUGINS_FILE) else {
+        log::warn!("DEPRECATED_PLUGINS_MANIFEST_MISSING: {DEPRECATED_PLUGINS_FILE} not found in resource dir or source resources dir");
+        return HashSet::new();
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!(
+                "DEPRECATED_PLUGINS_MANIFEST_READ_FAILED: {}: {e}",
+                path.display()
+            );
+            return HashSet::new();
+        }
+    };
+    parse_deprecated_ids(&raw).unwrap_or_else(|e| {
+        log::error!(
+            "DEPRECATED_PLUGINS_MANIFEST_PARSE_FAILED: {}: {e}",
+            path.display()
+        );
+        HashSet::new()
+    })
+}
+
 /// 预装清单中某 id 对应的仓库地址
 pub fn repo_url_of(app_handle: &AppHandle, id: &str) -> Option<String> {
     load_presets(app_handle)
@@ -427,15 +466,33 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_flag_parses_and_defaults_to_false() {
-        // 显式 `deprecated: true` 被解析
-        let raw = r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u","deprecated":true}]"#;
-        let parsed = parse_plugins(raw, false).expect("preset manifest should parse");
-        assert!(parsed[0].deprecated);
-        // 未声明该字段时回落为 false（老清单向后兼容）
-        let raw = r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"}]"#;
-        let parsed = parse_plugins(raw, false).expect("preset manifest should parse");
-        assert!(!parsed[0].deprecated);
+    fn deprecated_ids_parse_into_set() {
+        // 字符串数组解析为 id 集合；重复 id 去重
+        let raw = r#"["dsh-a","dsh-b","dsh-a"]"#;
+        let ids = parse_deprecated_ids(raw).expect("deprecated manifest should parse");
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("dsh-a"));
+        assert!(ids.contains("dsh-b"));
+    }
+
+    #[test]
+    fn deprecated_ids_reject_non_string_entries() {
+        // 非法条目（非字符串）整体解析失败，调用方回落为空集合
+        let raw = r#"[42]"#;
+        assert!(parse_deprecated_ids(raw).is_err());
+        let raw = r#"{"id":"dsh-x"}"#;
+        assert!(parse_deprecated_ids(raw).is_err());
+    }
+
+    #[test]
+    fn deprecated_manifest_lists_session_context_menu() {
+        // 随包分发的弃用清单应登记 dsh-session-context-menu（已被内部插件替代）
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(DEPRECATED_PLUGINS_FILE);
+        let raw = std::fs::read_to_string(path).expect("deprecated manifest should exist");
+        let ids = parse_deprecated_ids(&raw).expect("deprecated manifest should be valid JSON");
+        assert!(ids.contains("dsh-session-context-menu"));
     }
 
     #[test]

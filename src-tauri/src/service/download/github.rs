@@ -16,6 +16,7 @@ use crate::config;
 const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/dsh-tauri-desk/deepseek-harness-pkg";
 /// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
 const DSH_PKG_REPO: &str = "https://github.com/dsh-tauri-desk/deepseek-harness-pkg";
+const GITHUB_RELEASES_PAGE_SIZE: usize = 100;
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -656,7 +657,7 @@ async fn fetch_dsh_pkg_releases_from_html(
     Ok(releases)
 }
 
-/// 拉取 pkg 仓库的 release 列表（最新在前），含 GitHub 的 Pre-release label。
+/// 拉取 pkg 仓库的完整 release 列表（最新在前），含 GitHub 的 Pre-release label。
 ///
 /// 核心面板的多版本列表以此作为远程数据源（替代 git tags）：git tags 不含
 /// Pre-release label，无法区分预览版；releases 列表还能天然排除 draft（未发布
@@ -664,42 +665,59 @@ async fn fetch_dsh_pkg_releases_from_html(
 /// 由调用方回退 git tags，预览标记按 tag 命名（[`is_preview_tag`]）兜底。
 pub async fn fetch_dsh_pkg_releases() -> Result<Vec<DshPkgReleaseMeta>, String> {
     let client = github_client()?;
-    match github_api_get(
-        &client,
-        &format!("{DSH_PKG_GITHUB_API}/releases?per_page=100"),
-    )
-    .await
-    {
-        Ok(response) => {
-            let releases: serde_json::Value = response
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse release list response: {e}"))?;
-            Ok(releases
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| {
-                    let tag = entry.get("tag_name")?.as_str()?.to_string();
-                    let prerelease = entry
-                        .get("prerelease")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    Some(DshPkgReleaseMeta { tag, prerelease })
-                })
-                .collect())
+    let mut all_releases = Vec::new();
+    let mut page = 1;
+    loop {
+        let response = match github_api_get(
+            &client,
+            &format!(
+                "{DSH_PKG_GITHUB_API}/releases?per_page={GITHUB_RELEASES_PAGE_SIZE}&page={page}"
+            ),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(api_error) => {
+                if page > 1 {
+                    return Err(format!(
+                        "DSH_RELEASE_LIST_INCOMPLETE: page {page} request failed before pagination completed: {api_error}"
+                    ));
+                }
+                log::warn!(
+                    "GitHub API release list unavailable ({}), falling back to Releases page",
+                    api_error
+                );
+                return fetch_dsh_pkg_releases_from_html(&client)
+                    .await
+                    .map_err(|page_error| {
+                        format!("Release list request failed: {api_error}; {page_error}")
+                    });
+            }
+        };
+        let releases: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse release list response: {e}"))?;
+        let entries = releases
+            .as_array()
+            .ok_or_else(|| "DSH_RELEASE_LIST_INVALID: response was not an array".to_string())?;
+        let last_page = entries.len() < GITHUB_RELEASES_PAGE_SIZE;
+        let page_releases = entries
+            .iter()
+            .filter_map(|entry| {
+                let tag = entry.get("tag_name")?.as_str()?.to_string();
+                let prerelease = entry
+                    .get("prerelease")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Some(DshPkgReleaseMeta { tag, prerelease })
+            })
+            .collect::<Vec<_>>();
+        all_releases.extend(page_releases);
+        if last_page {
+            return Ok(all_releases);
         }
-        Err(api_error) => {
-            log::warn!(
-                "GitHub API release list unavailable ({}), falling back to Releases page",
-                api_error
-            );
-            fetch_dsh_pkg_releases_from_html(&client)
-                .await
-                .map_err(|page_error| {
-                    format!("Release list request failed: {api_error}; {page_error}")
-                })
-        }
+        page += 1;
     }
 }
 

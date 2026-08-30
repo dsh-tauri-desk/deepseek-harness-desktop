@@ -92,6 +92,10 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         present: local.is_some(),
         active: source == CoreSource::Local,
         preview: false,
+        above_recommended: local
+            .as_ref()
+            .is_some_and(|c| config::is_dsh_version_above_recommended(app_handle, &c.version)),
+        recommended_version: config::recommended_dsh_version(app_handle),
         error: None,
     }];
 
@@ -149,6 +153,15 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         }
     }
 
+    // 按 SemVer 从新到旧排列；预发布版本也按主版本和预发布标识参与排序。
+    // 例如 0.1.2-alpha.1 应排在 0.1.1-rc.2 之前。
+    version_tags.sort_by(|(a, _, _), (b, _, _)| {
+        match (semver::Version::parse(a), semver::Version::parse(b)) {
+            (Ok(a), Ok(b)) => b.cmp(&a),
+            _ => b.cmp(a),
+        }
+    });
+
     // 激活行就地标记：按版本匹配激活核心（不置顶，作为普通版本行标 active）
     let mut active_rendered = false;
     for (version, tag, preview) in &version_tags {
@@ -184,6 +197,8 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
             present,
             active: is_active,
             preview: *preview,
+            above_recommended: config::is_dsh_version_above_recommended(app_handle, version),
+            recommended_version: config::recommended_dsh_version(app_handle),
             error: None,
         });
     }
@@ -206,6 +221,10 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
             active: source == CoreSource::App,
             // 无远程元数据（离线/限流）：预览标记按 tag 命名兜底
             preview: active_tag.as_deref().is_some_and(download::is_preview_tag),
+            above_recommended: installed_version
+                .as_deref()
+                .is_some_and(|v| config::is_dsh_version_above_recommended(app_handle, v)),
+            recommended_version: config::recommended_dsh_version(app_handle),
             error: None,
         });
     }
@@ -251,7 +270,7 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
             rows.push(HarnessCore {
                 id: format!("app-{tag}"),
                 source: CoreSource::App,
-                version,
+                version: version.clone(),
                 tag: tag.clone(),
                 path: dir.to_string_lossy().into_owned(),
                 dir: dir.to_string_lossy().into_owned(),
@@ -259,6 +278,8 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
                 active: false,
                 // 无远程元数据（离线/限流）：预览标记按 tag 命名兜底
                 preview: download::is_preview_tag(&tag),
+                above_recommended: config::is_dsh_version_above_recommended(app_handle, &version),
+                recommended_version: config::recommended_dsh_version(app_handle),
                 error: None,
             });
         }
@@ -513,6 +534,9 @@ fn row_for_tag(app_handle: &AppHandle, tag: &str, dir: &Path) -> HarnessCore {
         present: true,
         active,
         preview: download::is_preview_tag(tag),
+        above_recommended: download::parse_version_from_tag(tag)
+            .is_some_and(|version| config::is_dsh_version_above_recommended(app_handle, &version)),
+        recommended_version: config::recommended_dsh_version(app_handle),
         error: None,
     }
 }

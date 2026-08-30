@@ -4,7 +4,7 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use super::is_actionable_plugin_ref;
+use super::is_package_name;
 
 /// 插件引用提取模式（编译一次复用，避免每次 `detect` 都重新编译正则）。
 static PLUGIN_REF_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -43,7 +43,7 @@ pub(super) fn extract_plugin_refs(text: &str) -> Vec<String> {
         for cap in re.captures_iter(text) {
             if let Some(m) = cap.get(1) {
                 let cand = m.as_str().trim();
-                if is_actionable_plugin_ref(cand) {
+                if is_package_name(cand) {
                     refs.insert(cand.to_string());
                 }
             }
@@ -54,7 +54,7 @@ pub(super) fn extract_plugin_refs(text: &str) -> Vec<String> {
         let rest = &text[m.end()..];
         for line in rest.lines().take(12) {
             let cand = line.trim().trim_end_matches(['.', ',', ' ']);
-            if is_actionable_plugin_ref(cand) {
+            if is_package_name(cand) {
                 refs.insert(cand.to_string());
             }
         }
@@ -128,6 +128,36 @@ mod tests {
         let refs = extract_plugin_refs(log);
         assert!(refs.contains(&"@omdsh-dev/dsh-better-sidebar".to_string()));
         assert!(refs.contains(&"dsh-web-ui-all".to_string()));
+    }
+
+    #[test]
+    fn extract_refs_keeps_valid_official_leaf() {
+        let log = r#"failed to import loader entry dshClientUi (@deepseek-ai/dsh-client-ui-chat)"#;
+        let refs = extract_plugin_refs(log);
+
+        assert_eq!(refs, vec!["@deepseek-ai/dsh-client-ui-chat"]);
+    }
+
+    #[test]
+    fn extract_boot_card_keeps_valid_official_leaf() {
+        let log = "Failed to load plugins\n@deepseek-ai/dsh-client-ui-chat\n";
+        let refs = extract_plugin_refs(log);
+
+        assert_eq!(refs, vec!["@deepseek-ai/dsh-client-ui-chat"]);
+    }
+
+    #[test]
+    fn extract_refs_rejects_malformed_log_candidates() {
+        let log = r#"
+failed to apply loader entry badTraversal (foo/../../target)
+cannot resolve profile bundle "@scope/pkg/extra"
+profile bundle "@scope/.." declares no dsh.bundle
+Failed to load plugins
+@scope/.hidden
+foo bar
+"#;
+
+        assert!(extract_plugin_refs(log).is_empty());
     }
 
     #[test]

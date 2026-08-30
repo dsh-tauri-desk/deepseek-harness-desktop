@@ -225,9 +225,16 @@ mod tests {
         assert!(!is_package_name("@scope/foo."));
         assert!(is_package_name("foo.bar"));
         assert!(is_package_name("@scope/pkg.name"));
-        assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
         // dshmarket 是第三方市场插件，可卸载（不应被当作核心保护包）
         assert!(is_actionable_plugin_ref("dshmarket"));
         assert!(is_actionable_plugin_ref("dsh-better-sidebar"));
+    }
+
+    #[test]
+    fn official_packages_remain_non_actionable() {
+        assert!(is_package_name("@deepseek-ai/dsh-base"));
+        assert!(is_package_name("@deepseek-ai/dsh-client-ui-chat"));
+        assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
+        assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-client-ui-chat"));
     }
 }

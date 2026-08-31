@@ -31,7 +31,7 @@ export function compat(ctx: ClientContext): ClientContext {
   const alphaSessions = safeLookup('sessions') as RuntimeObject | undefined
   const isAlpha
     = (alphaSessions?.list !== undefined && typeof alphaSessions.getSnapshot !== 'function')
-    || safeLookup('uiWorkspace') !== undefined
+      || safeLookup('uiWorkspace') !== undefined
 
   if (!isAlpha)
     return ctx

@@ -1,4 +1,5 @@
-/* eslint-disable ts/explicit-function-return-type */
+import type { UserConfig } from 'tsdown'
+
 export interface DshConfig {
   /**
    * Package-level publint toggle (defaults to `true`). Turn it off for packages
@@ -11,4 +12,4 @@ export interface DshConfig {
   client?: UserConfig
 }
 
-export const defineDshConfig = (options?: DshConfig) => any
+export function defineDshConfig(options?: DshConfig): UserConfig[]

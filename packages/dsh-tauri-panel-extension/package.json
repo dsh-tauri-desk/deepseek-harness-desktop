@@ -66,11 +66,11 @@
     "yaml": "catalog:testing"
   },
   "devDependencies": {
-    "dompurify": "catalog:ui",
-    "marked": "catalog:ui",
-    "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
     "@deepseek-ai/cordis": "catalog:dsh",
+    "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
+    "dompurify": "catalog:ui",
     "dsh-tauri-tsdown": "workspace:*",
+    "marked": "catalog:ui",
     "tsdown": "catalog:cli"
   }
 }

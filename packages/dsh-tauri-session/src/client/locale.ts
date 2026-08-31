@@ -2,7 +2,7 @@
  * locale.ts — 本插件自有文案（归档设置页 / 归档工作区按钮）。
  * 走 locale 服务的非类型化注册面（register(ns, locale, dict)），zh/en 双语齐备。
  */
-import type { Context } from '@deepseek-ai/cordis'
+import type { ClientContext } from 'dsh-tauri/client'
 import type { LocaleKey } from './types'
 import { createExternalStore } from 'dsh-tauri/client'
 import { useSyncExternalStore } from 'react'
@@ -107,7 +107,7 @@ export const localeRev = createExternalStore({ rev: 0 })
  * 在 apply 里安装：注册双语字典，并桥接 locale 变更到 rev。
  * @param ctx - 客户端根上下文（须已注入 locale 服务）。
  */
-export function installLocale(ctx: Context): void {
+export function installLocale(ctx: ClientContext): void {
   activeLocale = ctx.locale.getLocale().active
   ctx.locale.register(NS, 'zh', DICT_ZH)
   ctx.locale.register(NS, 'en', DICT_EN)

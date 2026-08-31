@@ -14,10 +14,3 @@
 
 - [`dsh-tauri-ui`](../dsh-tauri-ui)：桌面化 UI。
 - [`dsh-tauri-worktree`](../dsh-tauri-worktree)：会话级 Git worktree。
-
-## 许可证
-
-[MIT](../../LICENSE.md) © [Hairyf](https://github.com/hairyf)
-
-[license-src]: https://img.shields.io/github/license/dsh-tauri-desk/plugins-workspace.svg?style=flat&colorA=080f12&colorB=1fa669
-[license-href]: https://github.com/dsh-tauri-desk/plugins-workspace/blob/main/LICENSE.md

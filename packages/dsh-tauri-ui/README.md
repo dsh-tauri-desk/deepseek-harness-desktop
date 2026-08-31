@@ -14,10 +14,3 @@
 ## 兼容性
 
 设置侧边栏需要 renderer 提供通用 `SlotOutlet`。在旧版核心或缺少 renderer patch 的环境中，插件会安全降级，不会阻塞官方设置功能。
-
-## 许可证
-
-[MIT](../../LICENSE.md) © [Hairyf](https://github.com/hairyf)
-
-[license-src]: https://img.shields.io/github/license/dsh-tauri-desk/plugins-workspace.svg?style=flat&colorA=080f12&colorB=1fa669
-[license-href]: https://github.com/dsh-tauri-desk/plugins-workspace/blob/main/LICENSE.md

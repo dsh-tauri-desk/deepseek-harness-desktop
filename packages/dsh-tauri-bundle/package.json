@@ -4,12 +4,12 @@
   "private": true,
   "dependencies": {
     "dsh-tauri": "workspace:*",
-    "dsh-tauri-ui": "workspace:*",
-    "dsh-tauri-worktree": "workspace:*",
     "dsh-tauri-panel": "workspace:*",
     "dsh-tauri-panel-extension": "workspace:*",
     "dsh-tauri-panel-placeholder": "workspace:*",
+    "dsh-tauri-rightclick": "workspace:*",
     "dsh-tauri-session": "workspace:*",
-    "dsh-tauri-rightclick": "workspace:*"
+    "dsh-tauri-ui": "workspace:*",
+    "dsh-tauri-worktree": "workspace:*"
   }
 }

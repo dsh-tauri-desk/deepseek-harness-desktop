@@ -47,15 +47,15 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "dependencies": {
-    "dsh-tauri": "workspace:*"
-  },
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
     "prepublishOnly": "nr build",
     "start": "tsx src/index.ts",
     "typecheck": "tsc"
+  },
+  "dependencies": {
+    "dsh-tauri": "workspace:*"
   },
   "devDependencies": {
     "dsh-tauri-tsdown": "workspace:*",

@@ -4,8 +4,11 @@
  * （随 `bundle.resources` 随安装包分发）。两种来源：
  *
  * - `github:owner/repo`：从上游仓库克隆、安装依赖并构建（源码形态的插件）；
- * - npm 包名（`name[@version]`）：从 npm registry 拉取已发布产物，跳过构建
- *   （发布包自带 lib/，如 dsh-tauri@0.2.0）。
+ * - npm 包名（`name[@version]`）：从 npm registry 拉取已发布产物，并在隔离 staging
+ *   中安装 production 依赖后一起搬运（发布包自带 lib/，如 dsh-tauri@0.2.0）。
+ *
+ * 可通过 `DSH_RESOURCE_PLUGINS_DIR` 指定输出根目录，便于发布前独立验证资源包；未设置时
+ * 默认输出到桌面端 Tauri resources 目录。
  *
  * 由 `pnpm build` 的 prebuild 生命周期自动触发（tauri 的 `beforeBuildCommand` 为
  * `pnpm build`，pnpm 先执行 `prebuild` 脚本）。应用启动时（service::plugin::internal）
@@ -23,6 +26,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -37,7 +41,7 @@ interface InternalPlugin {
 
 const REPO_ROOT = resolve(import.meta.dirname, '..')
 const INTERNAL_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins.json')
-const BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins')
+const BUNDLE_ROOT = resolve(process.env.DSH_RESOURCE_PLUGINS_DIR ?? join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins'))
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
 
 function die(message: string): never {
@@ -97,11 +101,11 @@ function fetchNpmPackage(preset: InternalPlugin, temp: string): string {
 
 /**
  * 拷贝构建产物：优先 `files` 白名单（只发运行必需：lib/、patch 文件、README），
- * 缺失白名单时拷贝整目录但排除 node_modules/.git 等开发噪声；
- * `package.json` 恒在（它是 `pnpm add file:<dir>` 的包名/入口来源）。
+ * 缺失白名单时拷贝整目录但排除 `.git` 等开发噪声；依赖不从构建 workspace
+ * 复制，而是在 bundle staging 内重新生成 production 闭包。`package.json` 恒在
+ * （它是 `pnpm add link:<dir>` 的包名/入口来源）。
  */
-function collectBundle(preset: InternalPlugin, clone: string): void {
-  const dest = join(BUNDLE_ROOT, preset.id)
+function collectBundle(preset: InternalPlugin, clone: string, dest: string): void {
   mkdirSync(dest, { recursive: true })
 
   const manifest = JSON.parse(readFileSync(join(clone, 'package.json'), 'utf8')) as Record<string, unknown>
@@ -109,7 +113,7 @@ function collectBundle(preset: InternalPlugin, clone: string): void {
   const files = Array.isArray(rawFiles)
     ? rawFiles.filter((f): f is string => typeof f === 'string')
     : undefined
-  const skip = new Set(['node_modules', '.git', '.gitignore', '.npmrc'])
+  const skip = new Set(['.git', '.gitignore', '.npmrc'])
   const entries = files !== undefined && files.length > 0
     ? files
     : readdirSync(clone).filter(name => !skip.has(name) && !name.endsWith('.tsbuildinfo'))
@@ -119,10 +123,71 @@ function collectBundle(preset: InternalPlugin, clone: string): void {
     if (!existsSync(src)) {
       die(`${preset.id}: 白名单产物缺失 ${src}`)
     }
-    cpSync(src, join(dest, name), { recursive: true })
+    cpSync(src, join(dest, name), { recursive: true, dereference: true })
   }
   // 拷贝后置，确保即使白名单里没有 package.json 它也一定存在
-  cpSync(join(clone, 'package.json'), join(dest, 'package.json'))
+  cpSync(join(clone, 'package.json'), join(dest, 'package.json'), { dereference: true })
+}
+
+/** 检查依赖闭包未携带指向临时目录、store 或 checkout 的外部链接。 */
+/** 在 bundle 自身目录安装生产依赖；不复用构建 workspace，避免带入 dev 依赖。 */
+function installRuntimeDependencies(preset: InternalPlugin, dest: string): void {
+  const manifest = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')) as Record<string, unknown>
+  // peerDependencies 是宿主 ABI 契约（例如 Cordis），不能在 bundle 内复制第二份实例。
+  const sections = ['dependencies', 'optionalDependencies']
+  const hasDependencies = sections.some((section) => {
+    const value = manifest[section]
+    return value !== undefined && typeof value === 'object' && value !== null && Object.keys(value).length > 0
+  })
+  if (!hasDependencies) {
+    return
+  }
+  run('pnpm', ['install', '--prod', '--ignore-scripts', '--ignore-workspace', '--no-lockfile', '--config.node-linker=hoisted'], dest)
+}
+
+function verifyPortableBundle(preset: InternalPlugin, dest: string): void {
+  const packageFile = join(dest, 'package.json')
+  if (!existsSync(packageFile)) {
+    die(`${preset.id}: bundle 缺少 package.json`)
+  }
+  const manifest = JSON.parse(readFileSync(packageFile, 'utf8')) as Record<string, unknown>
+  const dependencySections = ['dependencies', 'optionalDependencies', 'peerDependencies']
+  for (const section of dependencySections) {
+    const deps = manifest[section]
+    if (deps !== undefined && typeof deps !== 'object') {
+      die(`${preset.id}: package.json 的 ${section} 不是对象`)
+    }
+  }
+  const entry = typeof manifest.main === 'string' ? manifest.main : undefined
+  if (entry !== undefined && !existsSync(join(dest, entry))) {
+    die(`${preset.id}: 入口不存在 ${entry}`)
+  }
+  for (const section of dependencySections) {
+    const deps = manifest[section]
+    if (deps !== undefined && typeof deps === 'object' && deps !== null) {
+      for (const [name, spec] of Object.entries(deps)) {
+        if (typeof spec === 'string' && (spec.startsWith('workspace:') || spec.startsWith('catalog:'))) {
+          die(`${preset.id}: 最终 package.json 仍包含不可搬运依赖协议 ${name}=${spec}`)
+        }
+      }
+    }
+  }
+  const walk = (dir: string): void => {
+    for (const item of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, item.name)
+      if (item.isSymbolicLink()) {
+        const target = realpathSync(path)
+        const root = realpathSync(dest)
+        if (target !== root && !target.startsWith(`${root}/`) && !target.startsWith(`${root}\\`)) {
+          die(`${preset.id}: 依赖链接越出 bundle 根目录 ${path} -> ${target}`)
+        }
+      }
+      else if (item.isDirectory()) {
+        walk(path)
+      }
+    }
+  }
+  walk(dest)
 }
 
 /** 构建单个 internal 插件：git 来源（克隆 → 装依赖 → 构建）或 npm 来源（拉产物）。 */
@@ -156,8 +221,21 @@ function buildPlugin(preset: InternalPlugin): void {
     source = fetchNpmPackage(preset, temp)
   }
 
-  collectBundle(preset, source)
-  rmSync(temp, { recursive: true, force: true })
+  const staging = join(BUNDLE_ROOT, `${preset.id}.staging`)
+  rmSync(staging, { recursive: true, force: true })
+  try {
+    collectBundle(preset, source, staging)
+    // 只在 manifest 声明运行依赖时安装；没有依赖的插件不会产生空 node_modules。
+    installRuntimeDependencies(preset, staging)
+    verifyPortableBundle(preset, staging)
+    rmSync(dest, { recursive: true, force: true })
+    // staging 已完成验证后再发布，避免构建失败留下半成品资源。
+    cpSync(staging, dest, { recursive: true, dereference: true })
+  }
+  finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(temp, { recursive: true, force: true })
+  }
   console.log(`[prebuild] ${preset.id}: 产物已就绪 → ${dest}`)
 }
 

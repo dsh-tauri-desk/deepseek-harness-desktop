@@ -239,10 +239,11 @@ importers:
         version: link:../dsh-tauri-worktree
 
   packages/dsh-tauri-panel:
-    devDependencies:
+    dependencies:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -252,6 +253,9 @@ importers:
 
   packages/dsh-tauri-panel-extension:
     dependencies:
+      dsh-tauri:
+        specifier: workspace:*
+        version: link:../dsh-tauri
       smol-toml:
         specifier: catalog:utils
         version: 1.8.0
@@ -268,9 +272,6 @@ importers:
       dompurify:
         specifier: catalog:ui
         version: 3.4.14
-      dsh-tauri:
-        specifier: workspace:*
-        version: link:../dsh-tauri
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -282,10 +283,11 @@ importers:
         version: 0.17.4(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(oxc-resolver@11.24.2)(publint@0.3.24)(synckit@0.11.13)(typescript@5.8.3)
 
   packages/dsh-tauri-panel-placeholder:
-    devDependencies:
+    dependencies:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -294,10 +296,11 @@ importers:
         version: 0.17.4(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(oxc-resolver@11.24.2)(publint@0.3.24)(synckit@0.11.13)(typescript@5.8.3)
 
   packages/dsh-tauri-rightclick:
-    devDependencies:
+    dependencies:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -306,10 +309,11 @@ importers:
         version: 0.17.4(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(oxc-resolver@11.24.2)(publint@0.3.24)(synckit@0.11.13)(typescript@5.8.3)
 
   packages/dsh-tauri-session:
-    devDependencies:
+    dependencies:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -327,10 +331,11 @@ importers:
         version: 5.8.3
 
   packages/dsh-tauri-ui:
-    devDependencies:
+    dependencies:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -339,10 +344,11 @@ importers:
         version: 0.17.4(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(oxc-resolver@11.24.2)(publint@0.3.24)(synckit@0.11.13)(typescript@5.8.3)
 
   packages/dsh-tauri-worktree:
-    devDependencies:
+    dependencies:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown

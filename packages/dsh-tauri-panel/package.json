@@ -47,6 +47,9 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "dependencies": {
+    "dsh-tauri": "workspace:*"
+  },
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
@@ -55,7 +58,6 @@
     "typecheck": "tsc"
   },
   "devDependencies": {
-    "dsh-tauri": "workspace:*",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli"
   }

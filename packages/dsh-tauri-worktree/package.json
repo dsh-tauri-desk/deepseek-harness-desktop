@@ -54,8 +54,10 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc"
   },
+  "dependencies": {
+    "dsh-tauri": "workspace:*"
+  },
   "devDependencies": {
-    "dsh-tauri": "workspace:*",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli"
   }

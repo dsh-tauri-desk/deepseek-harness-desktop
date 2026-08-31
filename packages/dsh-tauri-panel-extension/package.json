@@ -61,6 +61,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "dsh-tauri": "workspace:*",
     "smol-toml": "catalog:utils",
     "yaml": "catalog:testing"
   },
@@ -69,7 +70,6 @@
     "marked": "catalog:ui",
     "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
     "@deepseek-ai/cordis": "catalog:dsh",
-    "dsh-tauri": "workspace:*",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli"
   }

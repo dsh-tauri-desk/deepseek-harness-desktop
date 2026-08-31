@@ -31,7 +31,7 @@ export function compat(ctx: ClientContext): ClientContext {
   const alphaSessions = safeLookup('sessions') as RuntimeObject | undefined
   const isAlpha
     = (alphaSessions?.list !== undefined && typeof alphaSessions.getSnapshot !== 'function')
-      || safeLookup('uiWorkspace') !== undefined
+    || safeLookup('uiWorkspace') !== undefined
 
   if (!isAlpha)
     return ctx
@@ -114,6 +114,19 @@ export function compat(ctx: ClientContext): ClientContext {
  * never make a plugin fail merely because that optional bridge is absent.
  */
 function provideInfo(sessions: RuntimeObject, id: string, uiSession: RuntimeObject | undefined): unknown {
+  // Some desktop runtimes expose the complete per-session projection on the
+  // sessions service even though their list shape still looks like Alpha.
+  // Preserve that native path first; the adapter fallback below is only for
+  // runtimes that genuinely lack sessions.provideInfo().
+  const nativeProvideInfo = sessions.provideInfo
+  if (typeof nativeProvideInfo === 'function') {
+    try {
+      return nativeProvideInfo.call(sessions, id)
+    }
+    catch {
+      // The session may still be materializing; try the compatibility path.
+    }
+  }
   const bindingFn = sessions.binding
   const binding = typeof bindingFn === 'function' ? bindingFn.call(sessions, id) : undefined
   if (!binding)

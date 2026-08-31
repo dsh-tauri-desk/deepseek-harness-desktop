@@ -7,7 +7,7 @@
   "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
   "scripts": {
     "dev": "vite",
-    "dev:plugins": "pnpm --filter \"./packages/*\" --filter !dsh-tauri-bundle --filter !dsh-tauri-tsdown -r --parallel run dev",
+    "dev:plugins": "pnpm --filter \"./packages/*\" -r --parallel run dev",
     "build:plugins": "tsx scripts/build-plugins.ts",
     "prebuild": "pnpm build:plugins",
     "build": "tsc && vite build",

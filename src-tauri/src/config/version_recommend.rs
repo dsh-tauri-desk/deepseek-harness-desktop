@@ -1,6 +1,6 @@
 //! DSH 核心推荐版本配置读取。
 //!
-//! 配置随应用资源分发，开发构建回落到源码 resources 目录；读取失败时不限制
+//! 配置随应用资源分发，开发构建优先使用源码 resources 目录；读取失败时不限制
 //! 版本，避免配置损坏阻断核心管理。
 
 use serde::Deserialize;
@@ -14,7 +14,7 @@ struct VersionRecommend {
     dsh: Option<String>,
 }
 
-/// 查找推荐版本清单，兼容 Tauri 资源目录的扁平与 resources/ 嵌套布局。
+/// 解析推荐版本清单内容。
 fn parse_recommended_version(content: &str) -> Option<String> {
     let config: VersionRecommend = serde_json::from_str(content).ok()?;
     let version = config.dsh?.trim().to_string();
@@ -31,18 +31,29 @@ fn is_version_above(version: &str, recommended: &str) -> bool {
     }
 }
 
-fn manifest_path(app_handle: &AppHandle) -> Option<PathBuf> {
-    if let Ok(root) = app_handle.path().resource_dir() {
-        for path in [root.join(FILE_NAME), root.join("resources").join(FILE_NAME)] {
-            if path.is_file() {
-                return Some(path);
-            }
-        }
+fn manifest_candidates(source: PathBuf, resource_root: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    // 开发版的 resource_dir 可能来自旧的构建产物；首次安装必须以当前 checkout
+    // 中的清单为准，否则会用过期版本的摘要校验当前下载内容，稳定触发 mismatch。
+    if cfg!(debug_assertions) {
+        paths.push(source.clone());
     }
+    if let Some(root) = resource_root {
+        paths.extend([root.join(FILE_NAME), root.join("resources").join(FILE_NAME)]);
+    }
+    if !cfg!(debug_assertions) {
+        paths.push(source);
+    }
+    paths
+}
+
+fn manifest_path(app_handle: &AppHandle) -> Option<PathBuf> {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join(FILE_NAME);
-    source.is_file().then_some(source)
+    manifest_candidates(source, app_handle.path().resource_dir().ok())
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
 /// 返回配置中的推荐 DSH 版本。
@@ -62,7 +73,21 @@ pub fn is_above_recommended(app_handle: &AppHandle, version: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_version_above, parse_recommended_version};
+    use super::{is_version_above, manifest_candidates, parse_recommended_version};
+    use std::path::PathBuf;
+
+    #[test]
+    fn development_manifest_candidates_prioritize_source_resources() {
+        let source = PathBuf::from(r"checkout\src-tauri\resources\version-recommend.json");
+        let bundled = PathBuf::from(r"target\debug\resources");
+        let candidates = manifest_candidates(source.clone(), Some(bundled));
+
+        if cfg!(debug_assertions) {
+            assert_eq!(candidates.first(), Some(&source));
+        } else {
+            assert_ne!(candidates.first(), Some(&source));
+        }
+    }
 
     #[test]
     fn parses_valid_recommendation_and_trims_whitespace() {

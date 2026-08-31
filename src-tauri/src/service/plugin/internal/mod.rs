@@ -586,16 +586,31 @@ async fn ensure_inner(
 
     // 必须等全部检查完成后再删除旧入口：多个 internal id 可能映射到同一 npm 包，
     // 边遍历边删除会让后续原本健康的别名被误判缺失。统一去重后只删一次。
+    //
+    // 幂等跳过：仅删除「真的损坏/缺失」的入口。依赖声明缺失（dep_ok=false）但链接本身
+    // 健康（link_ok=true）时仍会进入 need，此时绝不要 delete + recreate——Windows 下
+    // 重建 junction/reparse point 后立即回读会随机 `-4094 [UNKNOWN] unknown error`
+    // （issue #264），一处失败即令整个安装放弃、`link:` 依赖不落盘，下次启动又判定
+    // dep_ok=false 再装，形成不可恢复的启动死循环。保留健康链接，交给本轮 `dsh plugin
+    // add` 重写依赖声明即可（pnpm 处理 link: 依赖时会自行覆盖旧入口）。
     let mut entries = HashSet::new();
     for (_, _, entry) in &need {
-        if entries.insert(entry.clone()) {
-            remove_stale_plugin_entry(entry).map_err(|e| {
-                format!(
-                    "INTERNAL_PLUGIN_STALE_ENTRY_REMOVE_FAILED: {}: {e}",
-                    entry.display()
-                )
-            })?;
+        if !entries.insert(entry.clone()) {
+            continue;
         }
+        if internal_plugin_entry_is_ready(entry) {
+            log::info!(
+                "INTERNAL_PLUGIN_ENTRY_HEALTHY: keeping intact link {} (no delete + recreate)",
+                entry.display()
+            );
+            continue;
+        }
+        remove_stale_plugin_entry(entry).map_err(|e| {
+            format!(
+                "INTERNAL_PLUGIN_STALE_ENTRY_REMOVE_FAILED: {}: {e}",
+                entry.display()
+            )
+        })?;
     }
     // 复用常规安装编排（环境准备/补齐 pnpm/`dsh plugin add file:<dir>`）；
     // 启动阶段无持有进程，install 内部不会停服务。失败同样交给调用方告警。

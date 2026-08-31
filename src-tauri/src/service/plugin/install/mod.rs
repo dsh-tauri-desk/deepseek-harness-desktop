@@ -82,6 +82,17 @@ use spec::{bundled_dir_of, normalize_git_spec, preset_spec_for_install, shell_qu
 /// 传递构建包名），多个 git 插件 / 多个原生依赖各占一次，上限封顶防死循环。
 const MAX_ALLOW_LIST_RETRIES: usize = 8;
 
+/// 瞬时文件系统错误的重试上限。Windows 下 `dsh plugin add` 重建内置插件的
+/// 链接（junction / reparse point）后立即回读其 `package.json` 会随机失败：
+/// libuv 报 `UV_UNKNOWN`（退出码 -4094，输出含 `[UNKNOWN] unknown error, open ...`），
+/// 一次随机失败就让整个安装放弃——`link:` 依赖没有写入 profile `package.json`，
+/// 下次启动又判定 `dep_ok=false` 而重装，形成不可恢复的启动死循环（issue #264）。
+/// 该失败是「刚重建的 reparse point 落定 / 实时杀软扫刚写入路径」的瞬时态，重跑
+/// 同一 `dsh plugin add`（间隔 [`TRANSIENT_FS_RETRY_DELAY`]）即可越过。
+const TRANSIENT_FS_RETRIES: usize = 3;
+/// 瞬时文件系统错误的重试间隔：等待 reparse point 落定、杀软结束扫描后再重试。
+const TRANSIENT_FS_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
 pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), String> {
     install_with_cancel(app_handle, ids, None, new_process_owner()).await
 }
@@ -203,7 +214,7 @@ async fn install_with_cancel(
     // 失败时解析输出里印出的 `allowBuilds` 键写回 profile 的 pnpm-workspace.yaml
     // 后重试，直至成功或再无键可加（升级路径同样依赖该重试，见
     // [`run_plugin_with_allow_build_retry`]）。
-    let (exit_code, last_output) = run_plugin_with_allow_build_retry(
+    let (exit_code, last_output) = run_plugin_install_with_transient_retry(
         app_handle,
         &node,
         &args,
@@ -379,6 +390,70 @@ async fn run_plugin_with_allow_build_retry(
     Ok((exit_code, all_output))
 }
 
+/// 以带瞬时文件系统错误重试的方式运行 `dsh plugin <action>`（`add` 专用路径）。
+///
+/// [`run_plugin_with_allow_build_retry`] 只处理 pnpm 的 allowBuilds 门禁重试；这里再包
+/// 一层针对「reparse point 刚重建即被回读」的瞬时失败（issue #264）：Windows 下 pnpm
+/// 重建内置插件链接后立即读回 `package.json`，libuv 会随机报 `UV_UNKNOWN`（退出码
+/// -4094）、输出含 `[UNKNOWN] unknown error, open ...`。一次随机失败就放弃安装，会让
+/// `link:` 依赖没有落盘，下次启动又判 `dep_ok=false` 再装 → 启动死循环。
+///
+/// 识别到瞬时失败后再跑一次完整命令（有界，见 [`TRANSIENT_FS_RETRIES`]），每次重试前
+/// 短暂休眠等 reparse point 落定 / 杀软扫完；该失败是概率性的，重试即大概率越过。
+async fn run_plugin_install_with_transient_retry(
+    app_handle: &AppHandle,
+    node: &Path,
+    args: &[OsString],
+    cwd: &Path,
+    envs: &HashMap<String, String>,
+    window: &WebviewWindow,
+    action: &str,
+    cancel: Option<&tokio::sync::watch::Receiver<bool>>,
+    owner: ProcessOwner,
+) -> Result<(i32, String), String> {
+    let mut attempt = 0usize;
+    loop {
+        let (exit_code, output) = run_plugin_with_allow_build_retry(
+            app_handle, node, args, cwd, envs, window, action, cancel, owner,
+        )
+        .await?;
+        if exit_code != 0
+            && attempt < TRANSIENT_FS_RETRIES
+            && is_transient_fs_install_failure(exit_code, &output)
+        {
+            attempt += 1;
+            log::warn!(
+                "dsh plugin {action} hit a transient filesystem error (exit code {exit_code}); \
+                 retrying ({attempt}/{TRANSIENT_FS_RETRIES})"
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!(
+                        "[harness] 插件安装遇到瞬时文件系统错误，正在重试（{attempt}/{TRANSIENT_FS_RETRIES}）…"
+                    ),
+                },
+            );
+            tokio::time::sleep(TRANSIENT_FS_RETRY_DELAY).await;
+            continue;
+        }
+        return Ok((exit_code, output));
+    }
+}
+
+/// 判断 `dsh plugin` 失败是否为「刚重建的链接被立即回读」的瞬时文件系统错误。
+///
+/// 特征：退出码 `-4094`（libuv `UV_UNKNOWN`），或输出含 Node 对该错误的通用描述
+/// `[UNKNOWN] unknown error`（fs.open 等对 reparse point 的读取）。非 Windows 命中
+/// 同名错误也一并重试（幂等无害：重试上限有界，最坏只是多等一小段再如实失败）。
+fn is_transient_fs_install_failure(exit_code: i32, output: &str) -> bool {
+    if exit_code == -4094 {
+        return true;
+    }
+    let lower = output.to_ascii_lowercase();
+    lower.contains("[unknown]") || lower.contains("unknown error")
+}
+
 /// 合并单次命令输出，并在相邻尝试之间补换行，保证后续错误解析不会粘连两段日志。
 pub(super) fn append_command_output(all_output: &mut String, captured: &str) {
     if captured.is_empty() {
@@ -401,5 +476,38 @@ mod tests {
         append_command_output(&mut output, "");
 
         assert_eq!(output, "ERR_PNPM_IGNORED_BUILDS");
+    }
+
+    #[test]
+    fn transient_fs_failure_detects_uv_unknown_exit_code() {
+        assert!(is_transient_fs_install_failure(-4094, ""));
+        assert!(is_transient_fs_install_failure(-4094, "some unrelated output"));
+    }
+
+    #[test]
+    fn transient_fs_failure_detects_unknown_error_open_message() {
+        // 与 issue #264 报告中一致的特征串：Node fs.open 通过刚重建的 junction
+        // 读回 package.json 时随机 `UV_UNKNOWN`。
+        let output = "[UNKNOWN] unknown error, open 'C:\\Users\\x\\.dsh\\profiles\\web\\node_modules\\dsh-tauri\\package.json'";
+        assert!(is_transient_fs_install_failure(1, output));
+        // `[unknown]` / `unknown error` 大小写不敏感
+        assert!(is_transient_fs_install_failure(1, &output.to_ascii_lowercase()));
+    }
+
+    #[test]
+    fn transient_fs_failure_rejects_ordinary_failures() {
+        assert!(!is_transient_fs_install_failure(1, "ERR_PNPM_SPEC_NOT_SUPPORTED"));
+        assert!(!is_transient_fs_install_failure(254, "ENOENT: no such file"));
+        assert!(!is_transient_fs_install_failure(
+            3,
+            "ERR_PNPM_FETCH_404 registry error"
+        ));
+    }
+
+    #[test]
+    fn transient_fs_failure_treats_exit_zero_output_as_transient_detection_only() {
+        // 检测函数只看输出特征；是否为「失败」由调用方用 exit_code != 0 判定。
+        // 假成功（exit 0）场景交由产物核验分支处理，不会因这里返回真而误重试。
+        assert!(is_transient_fs_install_failure(0, "unknown error, open"));
     }
 }

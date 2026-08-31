@@ -1,7 +1,7 @@
 /**
  * prebuild：把 `src-tauri/resources/internal-plugins.json` 中声明的内部插件
- * 制备为随包产物，拷入 `src-tauri/resources/internal-plugins/<id>/`
- * （随 `bundle.resources` 随安装包分发）。两种来源：
+ * 制备为 production workspace，并通过 `pnpm deploy` 输出到
+ * `resources/node_modules/<package-name>/`（随 `bundle.resources` 随安装包分发）。两种来源：
  *
  * - `github:owner/repo`：从上游仓库克隆、安装依赖并构建（源码形态的插件）；
  * - npm 包名（`name[@version]`）：从 npm registry 拉取已发布产物，并在隔离 staging
@@ -41,7 +41,8 @@ interface InternalPlugin {
 
 const REPO_ROOT = resolve(import.meta.dirname, '..')
 const INTERNAL_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins.json')
-const BUNDLE_ROOT = resolve(process.env.DSH_RESOURCE_PLUGINS_DIR ?? join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins'))
+const RESOURCE_ROOT = resolve(process.env.DSH_RESOURCE_PLUGINS_DIR ?? join(REPO_ROOT, 'src-tauri', 'resources'))
+const BUNDLE_ROOT = join(RESOURCE_ROOT, 'node_modules')
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
 
 function die(message: string): never {
@@ -131,20 +132,6 @@ function collectBundle(preset: InternalPlugin, clone: string, dest: string): voi
 
 /** 检查依赖闭包未携带指向临时目录、store 或 checkout 的外部链接。 */
 /** 在 bundle 自身目录安装生产依赖；不复用构建 workspace，避免带入 dev 依赖。 */
-function installRuntimeDependencies(preset: InternalPlugin, dest: string): void {
-  const manifest = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')) as Record<string, unknown>
-  // peerDependencies 是宿主 ABI 契约（例如 Cordis），不能在 bundle 内复制第二份实例。
-  const sections = ['dependencies', 'optionalDependencies']
-  const hasDependencies = sections.some((section) => {
-    const value = manifest[section]
-    return value !== undefined && typeof value === 'object' && value !== null && Object.keys(value).length > 0
-  })
-  if (!hasDependencies) {
-    return
-  }
-  run('pnpm', ['install', '--prod', '--ignore-scripts', '--ignore-workspace', '--no-lockfile', '--config.node-linker=hoisted'], dest)
-}
-
 function verifyPortableBundle(preset: InternalPlugin, dest: string): void {
   const packageFile = join(dest, 'package.json')
   if (!existsSync(packageFile)) {
@@ -191,11 +178,9 @@ function verifyPortableBundle(preset: InternalPlugin, dest: string): void {
 }
 
 /** 构建单个 internal 插件：git 来源（克隆 → 装依赖 → 构建）或 npm 来源（拉产物）。 */
-function buildPlugin(preset: InternalPlugin): void {
-  const dest = join(BUNDLE_ROOT, preset.id)
-  rmSync(dest, { recursive: true, force: true })
-
-  const temp = mkdtempSync(join(tmpdir(), `dsh-internal-${preset.id}-`))
+function buildPlugin(preset: InternalPlugin, tempRoot: string): string {
+  const temp = join(tempRoot, preset.id)
+  mkdirSync(temp, { recursive: true })
   let source: string
   if (preset.spec.startsWith('github:')) {
     const clone = join(temp, preset.id)
@@ -221,22 +206,20 @@ function buildPlugin(preset: InternalPlugin): void {
     source = fetchNpmPackage(preset, temp)
   }
 
-  const staging = join(BUNDLE_ROOT, `${preset.id}.staging`)
-  rmSync(staging, { recursive: true, force: true })
-  try {
-    collectBundle(preset, source, staging)
-    // 只在 manifest 声明运行依赖时安装；没有依赖的插件不会产生空 node_modules。
-    installRuntimeDependencies(preset, staging)
-    verifyPortableBundle(preset, staging)
-    rmSync(dest, { recursive: true, force: true })
-    // staging 已完成验证后再发布，避免构建失败留下半成品资源。
-    cpSync(staging, dest, { recursive: true, dereference: true })
+  const staging = join(temp, 'bundle')
+  collectBundle(preset, source, staging)
+  verifyPortableBundle(preset, staging)
+  console.log(`[prebuild] ${preset.id}: 产物已就绪 → ${staging}`)
+  return staging
+}
+
+function verifyDeployedPlugins(internal: InternalPlugin[]): void {
+  for (const plugin of internal) {
+    const packageDir = join(BUNDLE_ROOT, npmPackageName(plugin.spec))
+    if (!existsSync(join(packageDir, 'package.json'))) {
+      die(`${plugin.id}: deploy 产物缺失 ${packageDir}`)
+    }
   }
-  finally {
-    rmSync(staging, { recursive: true, force: true })
-    rmSync(temp, { recursive: true, force: true })
-  }
-  console.log(`[prebuild] ${preset.id}: 产物已就绪 → ${dest}`)
 }
 
 function main(): void {
@@ -249,10 +232,33 @@ function main(): void {
     return
   }
   console.log(`[prebuild] 拉取 ${internal.length} 个 internal 插件: ${internal.map(p => p.id).join(', ')}`)
-  for (const plugin of internal) {
-    buildPlugin(plugin)
+  const tempRoot = mkdtempSync(join(tmpdir(), 'dsh-internal-plugins-'))
+  const workspace = join(tempRoot, 'workspace')
+  mkdirSync(workspace, { recursive: true })
+  const dependencies: Record<string, string> = {}
+  try {
+    for (const plugin of internal) {
+      const bundle = buildPlugin(plugin, workspace)
+      const manifest = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8')) as { name?: string, version?: string }
+      if (typeof manifest.name !== 'string' || typeof manifest.version !== 'string') {
+        die(`${plugin.id}: package.json 缺少 name/version`)
+      }
+      dependencies[manifest.name] = `file:${bundle.replace(/\\/g, '/')}`
+    }
+    writeFileSync(join(workspace, 'package.json'), JSON.stringify({ private: true, dependencies }, null, 2))
+    run('pnpm', ['install', '--ignore-scripts'], workspace)
+    rmSync(BUNDLE_ROOT, { recursive: true, force: true })
+    mkdirSync(RESOURCE_ROOT, { recursive: true })
+    const deployTarget = 'deploy'
+    run('pnpm', ['--filter', '.', 'deploy', '--prod', '--legacy', deployTarget], workspace)
+    cpSync(join(workspace, deployTarget, 'node_modules'), BUNDLE_ROOT, { recursive: true, dereference: true })
+    rmSync(join(workspace, deployTarget), { recursive: true, force: true })
+    verifyDeployedPlugins(internal)
+    console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}`)
   }
-  console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}`)
+  finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
 }
 
 main()

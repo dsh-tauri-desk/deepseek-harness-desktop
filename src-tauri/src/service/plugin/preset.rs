@@ -89,20 +89,31 @@ fn preset_plugins_path(app_handle: &AppHandle) -> Option<PathBuf> {
     plugins_manifest_path(app_handle, PRESET_PLUGINS_FILE)
 }
 
-/// 内置插件资源目录名（相对资源根的固定前缀）
+/// 旧版内置插件资源目录名，仅用于兼容旧布局
 const BUNDLED_PLUGINS_DIR: &str = "internal-plugins";
 /// 旧版内置插件资源目录名，仅用于启动迁移清理
 const LEGACY_BUNDLED_PLUGINS_DIR: &str = "preset-plugins";
 
-/// 在资源根目录下定位某内置插件的捆绑目录：与 [`find_manifest_in_resource_root`] 相同的
-/// 布局探测——先 `resources/` 子目录（安装包/开发产物按 `bundle.resources` 前缀
-/// 落盘），再扁平布局；以目录内存在 `package.json` 判定产物有效（prebuild 恒写入）。
+/// 在资源根目录下定位某内置插件：pnpm deploy 将包放在 `node_modules/<name>`，
+/// 旧版 `internal-plugins/<id>` 布局仅作为兼容回退。
 fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
     let probe = |base: &std::path::Path| {
-        let dir = base.join(BUNDLED_PLUGINS_DIR).join(id);
-        dir.join("package.json").exists().then_some(dir)
+        let resources = base.join("resources");
+        let deployed = resources.join("node_modules").join(id);
+        if deployed.join("package.json").exists() {
+            return Some(deployed);
+        }
+        let legacy = resources.join(BUNDLED_PLUGINS_DIR).join(id);
+        if legacy.join("package.json").exists() {
+            return Some(legacy);
+        }
+        let flat_legacy = base.join(BUNDLED_PLUGINS_DIR).join(id);
+        flat_legacy.join("package.json").exists().then_some(flat_legacy)
     };
-    probe(&root.join("resources")).or_else(|| probe(root))
+    probe(root).or_else(|| {
+        let deployed = root.join("node_modules").join(id);
+        deployed.join("package.json").exists().then_some(deployed)
+    })
 }
 
 /// 定位内置插件捆绑目录：优先随安装包分发的资源目录，回落到源码
@@ -125,11 +136,13 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
             return Some(candidate);
         }
     }
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join(BUNDLED_PLUGINS_DIR)
-        .join(id);
-    source.join("package.json").exists().then_some(source)
+    let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+    let deployed = resources.join("node_modules").join(id);
+    if deployed.join("package.json").exists() {
+        return Some(deployed);
+    }
+    let legacy = resources.join(BUNDLED_PLUGINS_DIR).join(id);
+    legacy.join("package.json").exists().then_some(legacy)
 }
 
 /// 删除旧版随包资源目录 `resources/preset-plugins`，避免升级安装保留不再使用的

@@ -1,0 +1,76 @@
+{
+  "name": "dsh-tauri-panel-extension",
+  "type": "module",
+  "version": "0.6.7",
+  "description": "Skills and MCP management in the DSH Tauri extension panel.",
+  "author": "Hairyf <wwu710632@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsh-tauri-desk/dsh-tauri-plugins.git"
+  },
+  "bugs": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/issues",
+  "keywords": [
+    "dsh",
+    "plugin",
+    "dsh-plugin",
+    "skills",
+    "mcp",
+    "tauri",
+    "deepseek-harness"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client.cjs",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "cordis.patch.yml",
+    "dist",
+    "skills"
+  ],
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "dsh-tauri"
+      ],
+      "external": [
+        "dsh-tauri/client"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "prepublishOnly": "nr build",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "smol-toml": "catalog:utils",
+    "yaml": "catalog:testing"
+  },
+  "devDependencies": {
+    "dompurify": "catalog:ui",
+    "marked": "catalog:ui",
+    "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
+    "@deepseek-ai/cordis": "catalog:dsh",
+    "dsh-tauri": "workspace:*",
+    "dsh-tauri-tsdown": "workspace:*",
+    "tsdown": "catalog:cli"
+  }
+}

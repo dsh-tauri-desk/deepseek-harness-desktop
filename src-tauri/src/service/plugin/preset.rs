@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 use crate::config;
@@ -27,16 +27,13 @@ pub struct PreinstallPluginInfo {
     pub id: String,
     /// 传给 `dsh plugin add` 的依赖形式（npm 包名或 git 依赖形式）
     pub spec: String,
-    /// 内置插件：条目来自 `resources/internal-plugins.json`，产物由构建期
-    /// `scripts/prebuild.ts` 从上游仓库拉取到 `resources/internal-plugins/<id>/`
-    /// 随安装包分发，安装固定走 `link:` 本地
-    /// 依赖；启动时强制核对「已安装 + 路径指向当前捆绑目录」，不满足即自动
-    /// 重装（用户卸载后重启应用同样恢复），因此不出现在首次引导的勾选清单里。
+    /// 内置插件：条目来自发布清单，或 debug 下仓库根 `packages/*` 中带有
+    /// 有效 `dsh` 对象的 workspace 包。内置插件固定从本地捆绑目录安装，启动时
+    /// 强制核对「已安装 + 路径指向当前捆绑目录」，因此不出现在首次引导清单里。
     #[serde(default)]
     pub internal: bool,
     /// 安装进 profile 后实际出现在 `dependencies`/`bundles` 里的包名。
-    /// 默认与 `id` 相同；仅当 npm 包名与预设 id 不一致时（如 scoped 包
-    /// `@scope/name`）才需要显式指定，供“已安装”检测使用。
+    /// 默认与 `id` 相同；scoped 包或 id 与包名不同时显式指定。
     #[serde(default)]
     pub package: Option<String>,
     pub name: String,
@@ -54,6 +51,190 @@ pub struct PreinstallPluginInfo {
     /// 仅 Windows 平台列出
     #[serde(default)]
     pub win_only: bool,
+}
+
+/// debug workspace 插件 package.json 中用于生成内置元数据的字段。
+#[cfg(debug_assertions)]
+#[derive(Clone, Deserialize, Default)]
+struct DevPluginPackageJson {
+    #[serde(default)]
+    name: Option<String>,
+    /// `private: true` 的包（bundler、工具包与演示占位插件）不参与内置插件发现
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    homepage: Option<String>,
+    #[serde(default)]
+    repository: Option<serde_json::Value>,
+    #[serde(default)]
+    dsh: Option<serde_json::Value>,
+}
+
+#[cfg(debug_assertions)]
+struct DevPluginCandidate {
+    info: PreinstallPluginInfo,
+    directory: PathBuf,
+}
+
+#[cfg(debug_assertions)]
+fn dev_plugins_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("packages")
+}
+
+#[cfg(debug_assertions)]
+fn normalize_dev_repo_url(value: &str) -> String {
+    let mut url = value.trim().to_string();
+    if let Some(rest) = url.strip_prefix("git+") {
+        url = rest.to_string();
+    }
+    if let Some(rest) = url.strip_prefix("git://") {
+        url = format!("https://{rest}");
+    }
+    if let Some(rest) = url.strip_suffix(".git") {
+        url = rest.to_string();
+    }
+    url
+}
+
+#[cfg(debug_assertions)]
+fn dev_repo_url(manifest: &DevPluginPackageJson) -> String {
+    let repository = manifest.repository.as_ref().and_then(|repository| {
+        repository
+            .as_str()
+            .or_else(|| repository.get("url").and_then(serde_json::Value::as_str))
+    });
+    repository
+        .or(manifest.homepage.as_deref())
+        .map(normalize_dev_repo_url)
+        .unwrap_or_default()
+}
+
+/// 扫描指定 workspace 根目录下的开发插件。
+///
+/// 只有 package.json 可解析、非私有（无 `private: true`）、name 非空且 `dsh` 是
+/// 对象的目录才是内置插件；扫描失败只跳过当前目录，不阻断桌面端启动。目录名不
+/// 参与插件身份判定，因此 package.name 与目录名不一致时仍使用真实 npm 包名作为
+/// id、依赖键和 node_modules 路径。`private: true` 的包（bundler、工具包与演示
+/// 占位插件）不是可发布的内置插件，即使含 `dsh` 也一并忽略。
+#[cfg(debug_assertions)]
+fn discover_dev_internal_plugins_at(root: &Path) -> Vec<DevPluginCandidate> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(|file_type| file_type.is_dir())
+                .map(|_| entry)
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut seen = HashSet::new();
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let directory = entry.path();
+            let manifest_path = directory.join("package.json");
+            let raw = std::fs::read_to_string(&manifest_path).ok()?;
+            let manifest = match serde_json::from_str::<DevPluginPackageJson>(&raw) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    log::warn!(
+                        "DEV_INTERNAL_PLUGIN_MANIFEST_INVALID: {}: {error}",
+                        manifest_path.display()
+                    );
+                    return None;
+                }
+            };
+            if manifest.private {
+                return None;
+            }
+            if !manifest
+                .dsh
+                .as_ref()
+                .is_some_and(serde_json::Value::is_object)
+            {
+                return None;
+            }
+            // 先借出 repository/homepage 计算 repo_url，再消费 name / description：
+            // 三者都来自同一 manifest，顺序错开会在部分移动后再借用。
+            let repo_url = dev_repo_url(&manifest);
+            let name = manifest.name.filter(|name| !name.trim().is_empty())?;
+            if !seen.insert(name.clone()) {
+                log::warn!("DEV_INTERNAL_PLUGIN_DUPLICATE: {name}");
+                return None;
+            }
+            let info = PreinstallPluginInfo {
+                id: name.clone(),
+                spec: name.clone(),
+                internal: true,
+                package: Some(name.clone()),
+                name: name.clone(),
+                description: manifest.description.unwrap_or_default(),
+                repo_url,
+                recommended: false,
+                fix: false,
+                default_checked: false,
+                win_only: false,
+            };
+            Some(DevPluginCandidate { info, directory })
+        })
+        .collect()
+}
+
+#[cfg(debug_assertions)]
+fn discover_dev_internal_plugins() -> Vec<DevPluginCandidate> {
+    discover_dev_internal_plugins_at(&dev_plugins_root())
+}
+
+/// 按 id 定位仓库根 `packages/<name>` 下的开发插件源码目录（debug 专用）。
+///
+/// 返回整个扫描结果再按 id 匹配：发现的候选已由 package.json 校验过，因此命中即
+/// 目录有效。重扫描是磁盘开销，但仅 debug 构建、且目录数很少，安全。
+#[cfg(debug_assertions)]
+fn dev_plugin_dir(id: &str) -> Option<PathBuf> {
+    discover_dev_internal_plugins()
+        .into_iter()
+        .find(|candidate| candidate.info.id == id)
+        .map(|candidate| candidate.directory)
+}
+
+/// 把仓库根 `packages/*` 发现的内置插件合并进静态 `internal-plugins.json` 清单。
+///
+/// 同名 dev 候选覆盖静态条目（开发时以仓库源码为准，安装目标指到 `packages/`）；
+/// 未在静态清单中出现的 dev 插件会被追加，保证 debug 观察到的内置插件集合
+/// 以仓库源码为准，与 release（只认随包分发的静态清单）共用同一套安装/自愈逻辑。
+#[cfg(debug_assertions)]
+fn merge_dev_internal_plugins(internal: Vec<PreinstallPluginInfo>) -> Vec<PreinstallPluginInfo> {
+    merge_dev_internal_plugins_at(&dev_plugins_root(), internal)
+}
+
+/// [`merge_dev_internal_plugins`] 的根目录参数化版本，便于单测注入临时扫描根。
+#[cfg(debug_assertions)]
+fn merge_dev_internal_plugins_at(
+    root: &Path,
+    mut internal: Vec<PreinstallPluginInfo>,
+) -> Vec<PreinstallPluginInfo> {
+    let mut by_id: std::collections::HashMap<String, DevPluginCandidate> =
+        discover_dev_internal_plugins_at(root)
+            .into_iter()
+            .map(|candidate| (candidate.info.id.clone(), candidate))
+            .collect();
+    for plugin in internal.iter_mut() {
+        if let Some(candidate) = by_id.remove(&plugin.id) {
+            *plugin = candidate.info;
+        }
+    }
+    internal.extend(by_id.into_values().map(|candidate| candidate.info));
+    internal
 }
 
 /// 在资源根目录下查找清单：先探测扁平布局（exe 同级），再探测
@@ -108,7 +289,10 @@ fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
             return Some(legacy);
         }
         let flat_legacy = base.join(BUNDLED_PLUGINS_DIR).join(id);
-        flat_legacy.join("package.json").exists().then_some(flat_legacy)
+        flat_legacy
+            .join("package.json")
+            .exists()
+            .then_some(flat_legacy)
     };
     probe(root).or_else(|| {
         let deployed = root.join("node_modules").join(id);
@@ -116,20 +300,21 @@ fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
     })
 }
 
-/// 定位内置插件捆绑目录：优先随安装包分发的资源目录，回落到源码
-/// `resources/internal-plugins/<id>`（开发机未跑 prebuild 时作为源码兜底）。
+/// 定位内置插件捆绑目录：debug 优先命中仓库根 `packages/*` 源码目录；
+/// release/兜底按 `resources/node_modules/<name>`（构建期 `pnpm deploy` 产物）查找，
+/// 旧版 `resources/internal-plugins/<id>` 仅作兼容回退。
 ///
-/// 用于安装（`install.rs` 生成 `file:` 依赖）与启动自愈（`internal.rs` 核对路径）。
+/// 用于安装（`install.rs` 生成 `link:` 依赖）与启动自愈（`internal.rs` 核对路径）。
 ///
-/// **开发覆盖（仅 debug 构建）**：仓库根 `.env` 声明 `DEV_INTERNAL_PLUGINS_DIR=<dir>`
-/// 时，`<dir>/<id>` 命中即以本地插件源码目录为安装目标——pnpm `file:` 依赖是
-/// junction（目录联接），改源码 + 重启服务即热更新，无需提交子插件 git、无需
-/// prebuild；设置但缺该 id 返回 None（跳过，不回落随包目录），让开发者显式感知。
+/// **开发覆盖（仅 debug 构建）**：仓库根 `packages/*` 中非私有且含 `dsh` 对象的
+/// 包自动成为内置插件，本函数对 id 命中即返回其源码目录 `packages/<dir>`——pnpm
+/// `link:` 依赖是目录联接（junction），改源码 + 重启服务即热更新，无需提交子插件
+/// git、无需构建期打包；仓库里不存在该 id 时回落随包目录，让开发与发布共用一套
+/// 兜底逻辑。
 pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
-    if let Some(root) = dev_internal_plugins_dir() {
-        let dev = root.join(id);
-        return dev.join("package.json").exists().then_some(dev);
+    if let Some(dir) = dev_plugin_dir(id) {
+        return Some(dir);
     }
     if let Ok(dir) = app_handle.path().resource_dir() {
         if let Some(candidate) = find_bundled_in_root(&dir, id) {
@@ -193,45 +378,6 @@ fn remove_legacy_candidates(
     }
 }
 
-/// 开发模式内置插件源码根目录：读取 `<仓库根>/.env` 的 `DEV_INTERNAL_PLUGINS_DIR`。
-/// 仅 debug 构建生效（release 恒用随包目录，不受构建机环境影响）。
-///
-/// `.env` 属于本地个人配置，不入库（见仓库 `.gitignore`）；`<仓库根>` 由编译期
-/// `CARGO_MANIFEST_DIR`（即 `src-tauri`）的上层目录得到，只在开发机成立。
-#[cfg(debug_assertions)]
-fn dev_internal_plugins_dir() -> Option<PathBuf> {
-    let env_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(".env");
-    let content = std::fs::read_to_string(env_file).ok()?;
-    parse_dev_internal_dir(&content)
-}
-
-/// 从 `.env` 文本解析 `DEV_INTERNAL_PLUGINS_DIR`（纯函数，便于单测）：
-/// 支持 `KEY=VALUE` / `KEY = VALUE`（键值两侧空白容忍）、值可选单/双引号包裹；
-/// `#` 起始行与空行跳过；显式置空（`KEY=`）视为未设置；缺键返回 None。
-#[cfg(debug_assertions)]
-fn parse_dev_internal_dir(content: &str) -> Option<PathBuf> {
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "DEV_INTERNAL_PLUGINS_DIR" {
-            continue;
-        }
-        let value = value.trim().trim_matches('"').trim_matches('\'');
-        if value.is_empty() {
-            return None;
-        }
-        return Some(PathBuf::from(value));
-    }
-    None
-}
-
 /// 内置插件的安装依赖形式：`link:<绝对路径>`（正斜杠、去尾部斜杠）。
 ///
 /// 用 `link:` 而非 `file:`：pnpm 会把 `file:D:/...`（Windows 盘符冒号）当相对
@@ -292,9 +438,16 @@ fn load_manifest(
 }
 
 /// 读取预设与内部插件清单并合并；内部属性由文件归属决定，不依赖 JSON 字段。
+///
+/// **开发覆盖（仅 debug 构建）**：仓库根 `packages/*` 中非私有且含 `dsh` 对象的
+/// workspace 包会按 id 覆盖静态内部清单条目，未登记的新插件一并追加，因此开发时
+/// 观察到的内置插件集合以仓库源码为准，与 release（只认随包清单）逻辑一致。
 pub(crate) fn load_presets(app_handle: &AppHandle) -> Vec<PreinstallPluginInfo> {
     let mut plugins = load_manifest(app_handle, PRESET_PLUGINS_FILE, false);
-    plugins.extend(load_manifest(app_handle, INTERNAL_PLUGINS_FILE, true));
+    let internal = load_manifest(app_handle, INTERNAL_PLUGINS_FILE, true);
+    #[cfg(debug_assertions)]
+    let internal = merge_dev_internal_plugins(internal);
+    plugins.extend(internal);
     plugins
 }
 
@@ -551,7 +704,7 @@ mod tests {
 
     #[test]
     fn bundled_dir_discovers_nested_layout() {
-        // 与 internal 文件一致：先探测 {root}/resources/internal-plugins/<id>
+        // 兼容布局：{root}/resources/internal-plugins/<id>（旧版捆绑目录）仍应命中
         let dir = std::env::temp_dir().join(format!("dsh-bundled-nested-{}", std::process::id()));
         let nested = dir
             .join("resources")
@@ -583,7 +736,7 @@ mod tests {
 
     #[test]
     fn bundled_dir_requires_package_json() {
-        // 无 package.json 的目录不是有效产物（prebuild 未执行）
+        // 无 package.json 的目录不是有效产物（build:plugins 未执行）
         let dir = std::env::temp_dir().join(format!("dsh-bundled-empty-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(BUNDLED_PLUGINS_DIR).join("dsh-tauri"))
             .expect("create empty dir");
@@ -620,47 +773,6 @@ mod tests {
             bundled_dep_spec(dir),
             "link:G:/Deepseek Harness Desktop/resources/internal-plugins/dsh-tauri"
         );
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_internal_dir_parses_plain_and_quoted_values() {
-        assert_eq!(
-            parse_dev_internal_dir("DEV_INTERNAL_PLUGINS_DIR=C:/dev/plugins\n"),
-            Some(PathBuf::from("C:/dev/plugins"))
-        );
-        // 键值两侧空白 + 引号包裹
-        assert_eq!(
-            parse_dev_internal_dir("DEV_INTERNAL_PLUGINS_DIR = \"C:/my plugins\"\n"),
-            Some(PathBuf::from("C:/my plugins"))
-        );
-        assert_eq!(
-            parse_dev_internal_dir("DEV_INTERNAL_PLUGINS_DIR='D:/dev/plugins'\r\n"),
-            Some(PathBuf::from("D:/dev/plugins"))
-        );
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_internal_dir_skips_comment_and_other_keys() {
-        let content = "# comment\n\nVITE_FOO=1\nDEV_INTERNAL_PLUGINS_DIR=E:/plugins\n";
-        assert_eq!(
-            parse_dev_internal_dir(content),
-            Some(PathBuf::from("E:/plugins"))
-        );
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_internal_dir_unset_when_missing_key_or_empty_value() {
-        // 其它键或注释：视为未设置
-        assert_eq!(parse_dev_internal_dir("FOO=bar\n"), None);
-        assert_eq!(
-            parse_dev_internal_dir("# DEV_INTERNAL_PLUGINS_DIR=C:/x\n"),
-            None
-        );
-        // 显式置空：同样视为未设置（关闭覆盖）
-        assert_eq!(parse_dev_internal_dir("DEV_INTERNAL_PLUGINS_DIR=\n"), None);
     }
 
     #[test]
@@ -709,5 +821,196 @@ mod tests {
             (Some(prev), Some(cur)) => prev != cur,
             _ => false,
         }
+    }
+
+    /// 写入一个带 `dsh` 对象的开发包 manifest。
+    #[cfg(debug_assertions)]
+    fn write_dev_manifest(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).expect("create dev package dir");
+        let manifest = serde_json::json!({
+            "name": name,
+            "description": "desc",
+            "dsh": {"client": {"inject": ["x"]}},
+        });
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::to_string(&manifest).expect("serialize dev manifest"),
+        )
+        .expect("write dev manifest");
+    }
+
+    #[cfg(debug_assertions)]
+    fn temp_dev_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("dsh-dev-{label}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("create temp dev root");
+        root
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_empty_root_returns_none() {
+        let root = temp_dev_root("empty");
+        assert!(discover_dev_internal_plugins_at(&root).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_skips_invalid_manifest() {
+        let root = temp_dev_root("invalid");
+        let dir = root.join("bad");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join("package.json"), "{ not json").expect("write bad manifest");
+        assert!(discover_dev_internal_plugins_at(&root).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_skips_when_missing_or_invalid_dsh_value() {
+        let root = temp_dev_root("dsh");
+        // 无 dsh 字段
+        std::fs::create_dir_all(root.join("no-dsh")).expect("create dir");
+        std::fs::write(
+            root.join("no-dsh").join("package.json"),
+            r#"{"name":"no-dsh","description":"x"}"#,
+        )
+        .expect("write manifest");
+        // dsh 非对象：字符串 / 数组 / null
+        for (name, dsh) in [
+            ("str-dsh", r#""x""#),
+            ("arr-dsh", "[]"),
+            ("null-dsh", "null"),
+        ] {
+            std::fs::create_dir_all(root.join(name)).expect("create dir");
+            std::fs::write(
+                root.join(name).join("package.json"),
+                format!(r#"{{"name":"{name}","dsh":{dsh}}}"#),
+            )
+            .expect("write manifest");
+        }
+        assert!(discover_dev_internal_plugins_at(&root).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_skips_private_manifest() {
+        let root = temp_dev_root("private");
+        // private: true 的包（bundler / 工具包 / 演示占位插件）即使含 dsh 也忽略
+        std::fs::create_dir_all(root.join("placeholder")).expect("create dir");
+        std::fs::write(
+            root.join("placeholder").join("package.json"),
+            r#"{"name":"placeholder","private":true,"dsh":{"client":{"inject":["x"]}}}"#,
+        )
+        .expect("write manifest");
+        assert!(discover_dev_internal_plugins_at(&root).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_discovers_real_package_name_regardless_of_dirname() {
+        let root = temp_dev_root("name");
+        // 目录名与真实 npm 包名不同：id/依赖键以 package.name 为准
+        write_dev_manifest(&root.join("some-dir"), "@scope/dsh-plugin");
+        let found = discover_dev_internal_plugins_at(&root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].info.id, "@scope/dsh-plugin");
+        assert_eq!(found[0].info.spec, "@scope/dsh-plugin");
+        assert_eq!(found[0].info.package.as_deref(), Some("@scope/dsh-plugin"));
+        assert!(found[0].info.internal);
+        assert!(found[0].directory.ends_with("some-dir"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_dedups_by_package_name() {
+        let root = temp_dev_root("dedup");
+        // 两个目录声明同名包：后者被跳过（DEV_INTERNAL_PLUGIN_DUPLICATE）
+        write_dev_manifest(&root.join("a"), "dsh-tauri");
+        write_dev_manifest(&root.join("b"), "dsh-tauri");
+        let found = discover_dev_internal_plugins_at(&root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].info.id, "dsh-tauri");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_sorts_by_directory_name() {
+        let root = temp_dev_root("sort");
+        write_dev_manifest(&root.join("b-plugin"), "b");
+        write_dev_manifest(&root.join("a-plugin"), "a");
+        let found = discover_dev_internal_plugins_at(&root);
+        let ids: Vec<&str> = found.iter().map(|c| c.info.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_sets_repo_url_from_repository_object() {
+        let root = temp_dev_root("repo");
+        let dir = root.join("repo-plugin");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"repo-plugin","repository":{"url":"git+https://github.com/x/repo.git"},"dsh":{"client":{"inject":["x"]}}}"#,
+        )
+        .expect("write manifest");
+        let found = discover_dev_internal_plugins_at(&root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].info.repo_url, "https://github.com/x/repo");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn dev_discovery_merge_overrides_static_entry_and_appends_new() {
+        let root = temp_dev_root("merge");
+        // 静态清单：dsh-tauri（待被 dev 覆盖） + 缺失 dev 的 keep-static
+        // dev 候选：dsh-tauri（覆盖） + brand-new（追加）
+        write_dev_manifest(&root.join("dsh-tauri"), "dsh-tauri");
+        write_dev_manifest(&root.join("brand-new"), "brand-new");
+        let static_internal = vec![
+            PreinstallPluginInfo {
+                id: "dsh-tauri".into(),
+                spec: "dsh-tauri".into(),
+                internal: true,
+                package: Some("dsh-tauri".into()),
+                name: "dsh-tauri".into(),
+                description: "static desc".into(),
+                repo_url: "static".into(),
+                recommended: false,
+                fix: false,
+                default_checked: false,
+                win_only: false,
+            },
+            PreinstallPluginInfo {
+                id: "keep-static".into(),
+                spec: "keep-static".into(),
+                internal: true,
+                package: Some("keep-static".into()),
+                name: "keep-static".into(),
+                description: String::new(),
+                repo_url: String::new(),
+                recommended: false,
+                fix: false,
+                default_checked: false,
+                win_only: false,
+            },
+        ];
+        // 把 dev 扫描根临时指向临时目录，借助 discover 函数合并
+        let merged = merge_dev_internal_plugins_at(&root, static_internal);
+        let ids: std::collections::HashSet<&str> = merged.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
+        let dsh = merged.iter().find(|p| p.id == "dsh-tauri").unwrap();
+        assert_eq!(dsh.description, "desc"); // dev 覆盖静态
+        assert!(merged.iter().any(|p| p.id == "brand-new")); // 追加上去
+        assert!(merged.iter().any(|p| p.id == "keep-static")); // 静态未覆盖项保留
+        std::fs::remove_dir_all(&root).ok();
     }
 }

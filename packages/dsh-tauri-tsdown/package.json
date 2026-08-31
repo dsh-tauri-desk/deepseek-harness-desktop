@@ -1,0 +1,22 @@
+{
+  "name": "dsh-tauri-tsdown",
+  "type": "module",
+  "version": "0.6.7",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.mjs"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsdown": "catalog:cli",
+    "typescript": "catalog:cli"
+  }
+}

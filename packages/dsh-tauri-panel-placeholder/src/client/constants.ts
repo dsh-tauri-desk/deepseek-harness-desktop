@@ -1,0 +1,11 @@
+export const PLUGIN_ID = 'dsh-tauri-panel-placeholder'
+export const LOCALE_NAMESPACE = 'placeholder'
+export const PANEL_LOCALE_KEY = 'panel.placeholder'
+export const PANEL_ID = 'placeholder'
+export const PANEL_SLOT_NAME = 'sidebar.panel.action'
+export const PANEL_PROTOCOL_NAME = 'panel.protocol'
+export const PANEL_ORDER = 10
+export const PANEL_PRIORITY = 0
+export const STYLE_ID = 'dsh-tauri-panel-placeholder-styles'
+export const PLACEHOLDER_CENTER_CLASS = 'dshp-placeholderCenter'
+export const PLACEHOLDER_TEXT_CLASS = 'dshp-placeholderText'

@@ -25,8 +25,8 @@ pub(super) fn bundled_dir_of(
 /// 路径正确性由 [`crate::service::plugin::internal::ensure`] 启动自愈核对）；
 /// 普通插件沿用清单声明。
 ///
-/// 捆绑目录缺失时返回错误：内置插件缺失意味着构建期 prebuild 未执行或产物被
-/// 删，属发布缺陷而非用户侧的普通安装失败，错误前缀便于区分。
+/// 捆绑目录缺失时返回错误：内置插件缺失意味着构建期 build:plugins 未执行或产物
+/// 被删，属发布缺陷而非用户侧的普通安装失败，错误前缀便于区分。
 pub(super) fn preset_spec_for_install(
     preset: &PreinstallPluginInfo,
     bundled_dir: Option<PathBuf>,
@@ -36,7 +36,7 @@ pub(super) fn preset_spec_for_install(
     }
     let dir = bundled_dir.ok_or_else(|| {
         format!(
-            "BUNDLED_PLUGIN_MISSING: no bundled dir for internal plugin {} (run scripts/prebuild.ts at build time)",
+            "BUNDLED_PLUGIN_MISSING: no bundled dir for internal plugin {} (run pnpm build:plugins at build time)",
             preset.id
         )
     })?;
@@ -78,7 +78,7 @@ pub(super) fn normalize_git_spec(spec: &str) -> String {
 /// - Windows：`shell:true` 时 Node 只把参数按空格拼接、不做引号转义（官方文档
 ///   DEP0190：arguments are not escaped, only concatenated）。内置插件的依赖是
 ///   `link:<应用安装目录>`，而 Windows 安装目录常含空格（如
-///   `G:\Deepseek Harness Desktop\resources\internal-plugins\dsh-tauri`），拼进
+///   `G:\Deepseek Harness Desktop\resources\node_modules\dsh-tauri`），拼进
 ///   shell 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED` / 装成
 ///   错误依赖，导致启动自愈每轮都重装（死循环）。包一层双引号让 cmd 把整条
 ///   spec 视为一个参数；pnpm 解析后自行剥离引号，落盘 `package.json` 的值仍是

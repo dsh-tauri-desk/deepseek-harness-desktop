@@ -1,11 +1,12 @@
 //! 内置插件启动自愈：随安装包分发的内置插件（条目位于
-//! `internal-plugins.json`，产物目录 `resources/internal-plugins/<id>` 由构建期
-//! `scripts/prebuild.ts` 拉取）在服务启动前核对「是否已安装 + 安装路径是否仍
-//! 指向当前捆绑目录」：未安装 / 路径不正确 / 用户卸载后残留缺失 → 一律走常规
-//! 安装流程强制重装，保证桌面外壳依赖的桥接层（如 dsh-tauri）随包可用。
+//! `internal-plugins.json`，产物目录 `resources/node_modules/<name>` 由构建期
+//! `scripts/build-plugins.ts` 的 `pnpm deploy` 打包）在服务启动前核对
+//! 「是否已安装 + 安装路径是否仍指向当前捆绑目录」：未安装 / 路径不正确 / 用户
+//! 卸载后残留缺失 → 一律走常规安装流程强制重装，保证桌面外壳依赖的桥接层
+//! （如 dsh-tauri）随包可用。
 //!
-//! debug 构建可用仓库根 `.env` 的 `DEV_INTERNAL_PLUGINS_DIR` 把安装目标指到
-//! 本地插件源码（热更新迭代，见 [`super::preset::bundled_plugin_dir`]）。
+//! debug 构建会自动发现仓库根 `packages/*` 中非私有且含 `dsh` 对象的包，把安装
+//! 目标指到本地插件源码（热更新迭代，见 [`super::preset::bundled_plugin_dir`]）。
 //!
 //! 为什么放在启动而非安装流程：安装是用户主动行为，内置插件是应用自身的完整性
 //! 要求——用户怎么卸载、何时卸载都不影响下次启动自动恢复，无需任何用户操作。
@@ -35,7 +36,7 @@ mod manifest;
 /// 核对并强制安装缺失/路径不正确/被卸载的内置插件，在服务进程启动前调用。
 ///
 /// 最佳努力：任何失败只记告警（调用方不阻断启动）；捆绑目录缺失（开发环境未跑
-/// prebuild）时跳过，交由常规引导流程处理；批量待装列表为空则不触发任何安装。
+/// build:plugins）时跳过，交由常规引导流程处理；批量待装列表为空则不触发任何安装。
 /// 内置插件阶段事件载荷：除开始/结束外定期发送 heartbeat，令前端只在安装确实
 /// 无进展时触发 inactivity deadline，同时仍受绝对上限约束。
 #[derive(serde::Serialize, Clone)]
@@ -529,11 +530,11 @@ async fn ensure_inner(
     let mut need: Vec<(String, String, PathBuf)> = Vec::new();
     for preset in internal {
         let Some(bundled) = bundled_plugin_dir(app_handle, &preset.id) else {
-            // 未找到内置插件目录：release 说明构建期 prebuild 未拉取（发布缺陷，
-            // 由 prebuild 响亮失败）；debug 可用 .env 的 DEV_INTERNAL_PLUGINS_DIR
-            // 指向本地源码目录，未配置/缺 id 时跳过（「找不到则不装」）。
+            // 未找到内置插件目录：release 说明构建期 build:plugins 未打包（发布
+            // 缺陷，由 build:plugins 响亮失败）；debug 自动发现 packages/* 中非私有
+            // 且含 dsh 对象的包，未命中时跳过（「找不到则不装」）。
             log::warn!(
-                "INTERNAL_PLUGIN_BUNDLE_MISSING: {}（release 需构建期 prebuild；debug 可配 .env DEV_INTERNAL_PLUGINS_DIR）",
+                "INTERNAL_PLUGIN_BUNDLE_MISSING: {}（release 需构建期 build:plugins；debug 无匹配的 packages/* 包）",
                 preset.id
             );
             continue;

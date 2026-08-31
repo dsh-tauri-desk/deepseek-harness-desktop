@@ -1,5 +1,6 @@
 node_modules
 dist
+.build-plugins-tmp
 src-tauri/target
 src-tauri/gen
 src-tauri/resources/node

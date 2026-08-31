@@ -204,6 +204,45 @@ pub async fn restart(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 把 active profile 的 `cordis.yml` 重置为官方空根。
+///
+/// dsh 的 Loader 在插件 dispose 时会把组合后的整棵 entry 树回写进
+/// `cordis.yml`（dsh-app-boot：plugin self-disposing persists the current
+/// tree）。上一轮被杀/崩溃的 dsh 若留下组合行，新 boot 会读到已含 bundle 行的
+/// 文件，再叠加同一批 patch → `duplicate loader entry`。spawn 前与「早期退出
+/// 重试」各调用一次，把竞态窗口关闭到最小；文件已是空根时静默跳过。
+fn reset_active_profile_root(app_handle: &tauri::AppHandle) {
+    let profile_root = crate::service::profile::profile_dir_of(
+        app_handle,
+        &crate::service::profile::active_profile(app_handle),
+    );
+    if !profile_root.is_dir() {
+        return;
+    }
+    let root_config = profile_root.join("cordis.yml");
+    const PROFILE_ROOT_EMPTY: &str = "# dsh profile root — an empty entry list. The tree is composed as patches:\n# each bundle in package.json's dsh.profile.bundles, then cordis.patch.yml, then any\n# --patch overlays. Edit cordis.patch.yml, not this file.\n[]\n";
+    if std::fs::read_to_string(&root_config).ok().as_deref() != Some(PROFILE_ROOT_EMPTY) {
+        if let Err(e) = std::fs::write(&root_config, PROFILE_ROOT_EMPTY) {
+            log::warn!("PROFILE_ROOT_RESET_FAILED: {}: {e}", root_config.display());
+        } else {
+            log::info!(
+                "Reset stale profile root before spawn: {}",
+                root_config.display()
+            );
+        }
+    }
+}
+
+/// 判断 dsh 早期退出是否命中「duplicate loader entry」竞态签名。
+///
+/// 竞态特征：exit code 1 且 stderr 含 `duplicate loader entry`（dsh-app-boot
+/// 的 Include 把重复 bundle 行叠加进根树时抛出的 TypeError 文本，实测
+/// `duplicate loader entry id: dsh-tauri-worktree`）。
+#[cfg(windows)]
+fn is_duplicate_loader_exit(exit_code: u32, stderr: &str) -> bool {
+    exit_code == 1 && stderr.contains("duplicate loader entry")
+}
+
 /// 启动 Harness 服务进程
 pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
@@ -459,6 +498,16 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     log::info!("Starting Harness process");
 
+    // dsh 的 Loader 在插件 dispose 时会把组合后的整棵 entry 树回写进
+    // `cordis.yml`（dsh-app-boot：plugin self-disposing persists the current
+    // tree）。上一轮被杀/崩溃的 dsh 若在「新进程 prepareProfile 重置之后、
+    // Include 读取之前」完成回写，新 boot 会读到已含 bundle 组合行的文件，
+    // 再叠加同一批 patch → duplicate loader entry（本会话实测特征
+    // `duplicate loader entry id: dsh-tauri-worktree`）。spawn 前最后一刻重置
+    // profile 根关闭常见窗口；回写恰好落在探测窗口内的残余竞态由下方
+    // Windows 分支的「早期退出重试」兜底。
+    reset_active_profile_root(&app_handle);
+
     // Windows 打包版是 GUI 进程（没有控制台）。直接以 CREATE_NO_WINDOW 启动
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
@@ -466,6 +515,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let spawn_result = {
         #[cfg(windows)]
         {
+            use std::io::{BufReader, Read};
+            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+            use windows_sys::Win32::System::Threading::{
+                GetExitCodeProcess, WaitForSingleObject, INFINITE,
+            };
+
             let mut args: Vec<OsString> = vec![
                 dsh_binary_path.as_os_str().to_os_string(),
                 OsString::from("--profile"),
@@ -478,23 +533,83 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             if no_open {
                 args.push(OsString::from("--no-open"));
             }
-            super::win_spawn::spawn_with_hidden_console_owned(
-                &node_binary_path,
-                &args,
-                Some(&config::get_dsh_install_path(&app_handle)),
-                &envs,
-            )
-            .map(|(stdout, stderr, pid, handle)| {
+
+            // 只负责 spawn 并返回管道/PID/句柄：探测与重试期间不登记、不挂
+            // 监视线程——只有最终采用的那个进程才登记，否则旧监视线程会通过
+            // `on_owned_process_exit` 把刚启动的新进程误当作已退出而回落状态。
+            let spawn_harness =
+                || -> std::io::Result<(std::fs::File, std::fs::File, u32, HANDLE)> {
+                    super::win_spawn::spawn_with_hidden_console_owned(
+                        &node_binary_path,
+                        &args,
+                        Some(&config::get_dsh_install_path(&app_handle)),
+                        &envs,
+                    )
+                };
+
+            // 早期退出重试：崩溃的上一轮 dsh 回写 `cordis.yml` 落在「新进程
+            // prepareProfile 重置之后、Include 读取之前」时，新 boot 会把已含
+            // bundle 组合行的 root 再叠加同一批 patch → `duplicate loader
+            // entry`（实测 exit code 1）。spawn 前重置只覆盖常见窗口，这里在
+            // spawn 后探测 ≤2.5s：命中签名则丢弃实例、重置 profile 根并重试
+            //（最多 3 次，第二次 boot 基于干净状态必然成功）；仍在运行则视为
+            // 健康立即放行登记。探测期间最长阻塞 2.5s，之后才返回给调用方。
+            let mut attempt = 0u32;
+            let mut outcome = spawn_harness();
+            loop {
+                attempt += 1;
+                let (stdout, stderr, pid, handle) = match outcome {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        // spawn 自身失败（非竞态）：保持 Err 交给下方 map 传播
+                        outcome = Err(error);
+                        break;
+                    }
+                };
+                let wait = unsafe { WaitForSingleObject(handle, 2500) };
+                if wait == WAIT_TIMEOUT {
+                    // 健康：进程仍在运行，交给下方登记 + 监视线程。
+                    outcome = Ok((stdout, stderr, pid, handle));
+                    break;
+                }
+                // 已提前退出：读 stderr 判断是否命中竞态签名。
+                let mut exit_code: u32 = 0;
+                let got_exit_code = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+                let mut stderr_text = String::new();
+                let mut stderr_reader = BufReader::new(stderr);
+                let _ = Read::read_to_string(&mut stderr_reader, &mut stderr_text);
+                let hit_duplicate =
+                    got_exit_code && is_duplicate_loader_exit(exit_code, &stderr_text);
+                if hit_duplicate && attempt < 3 {
+                    // 丢弃首个失败实例：从未登记，句柄由本分支关闭（此时没有
+                    // 监视线程，不存在重复 close）。
+                    drop(stdout);
+                    unsafe { CloseHandle(handle) };
+                    log::warn!(
+                        "DUPLICATE_LOADER_ENTRY: dsh exited early with duplicate loader entry \
+                         (pid={pid}, code={exit_code}); resetting profile root and relaunching \
+                         (attempt {attempt}/3)"
+                    );
+                    reset_active_profile_root(&app_handle);
+                    outcome = spawn_harness();
+                    continue;
+                }
+                // 非签名提前退出或重试耗尽：走正常路径——已捕获的 stderr 补写
+                // 日志避免失败原因丢失，句柄保持有效交给监视线程等待并关闭。
+                for line in stderr_text.lines() {
+                    log::warn!(target: "dsh", "{}", line);
+                }
+                outcome = Ok((stdout, stderr_reader.into_inner(), pid, handle));
+                break;
+            }
+
+            outcome.map(|(stdout, stderr, pid, handle)| {
                 // PID 与句柄作为整体一次登记，与退出清理（take 一并取出）配对
                 let handle_value = handle as usize;
                 set_owned_process_with_handle(pid, handle_value);
                 let exit_app_handle = app_handle.clone();
                 std::thread::spawn(move || unsafe {
-                    use windows_sys::Win32::Foundation::CloseHandle;
-                    use windows_sys::Win32::System::Threading::{
-                        GetExitCodeProcess, WaitForSingleObject, INFINITE,
-                    };
-                    let process_handle = handle_value as windows_sys::Win32::Foundation::HANDLE;
+                    let process_handle = handle_value as HANDLE;
                     WaitForSingleObject(process_handle, INFINITE);
                     // 进程确已退出：清空持有 PID 并把 Status 从 Running 回落为
                     // Stopped（原有实现只清 PID、状态永远停留在 Running）。
@@ -503,13 +618,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     // terminate_owned_process 重复 close——进程已 exit，
                     // 通常是本线程取走）。
                     let owned = on_owned_process_exit(&exit_app_handle, pid, |owned| {
-                        let handle = owned.handle as windows_sys::Win32::Foundation::HANDLE;
+                        let handle = owned.handle as HANDLE;
                         let mut exit_code: u32 = 0;
                         (GetExitCodeProcess(handle, &mut exit_code) != 0)
                             .then_some(i64::from(exit_code))
                     });
                     if let Some(owned) = owned {
-                        let h = owned.handle as windows_sys::Win32::Foundation::HANDLE;
+                        let h = owned.handle as HANDLE;
                         CloseHandle(h);
                     }
                 });
@@ -657,6 +772,25 @@ mod tests {
         assert!(!version_supports_no_open("0.1"));
         assert!(!version_supports_no_open("v0.1.0"));
         assert!(!version_supports_no_open("not-a-version"));
+    }
+
+    /// 「duplicate loader entry」竞态签名的判定：只认 exit code 1 + stderr 含
+    /// 该文本（实测失败日志：
+    /// `Error: dsh: plugin tree failed to load: failed to apply loader entry
+    /// include (cordis:include): duplicate loader entry id: dsh-tauri-worktree`）。
+    #[cfg(windows)]
+    #[test]
+    fn duplicate_loader_exit_signature_matches_observed_error() {
+        let stderr = "Error: dsh: plugin tree failed to load: failed to apply loader entry include (cordis:include): duplicate loader entry id: dsh-tauri-worktree\nTypeError: duplicate loader entry id: dsh-tauri-worktree\n    at EntryGroup.update (...)";
+        assert!(is_duplicate_loader_exit(1, stderr));
+        // 其他退出码、无关错误或没有该文本的启动失败不命中
+        assert!(!is_duplicate_loader_exit(0, stderr));
+        assert!(!is_duplicate_loader_exit(2, stderr));
+        assert!(!is_duplicate_loader_exit(
+            1,
+            "Error: EADDRINUSE: address already in use"
+        ));
+        assert!(!is_duplicate_loader_exit(1, ""));
     }
 
     /// 端口自愈（issue #91）：自动避让递增遗留的非默认端口，在回落目标空闲时

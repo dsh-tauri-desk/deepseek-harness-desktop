@@ -410,20 +410,20 @@ fn user_home_dir() -> Option<PathBuf> {
 /// Harness 用户数据目录（$DSH_HOME）。
 ///
 /// 与官方 dsh（`${DSH_HOME:-$HOME/.dsh}`）保持一致：
-/// - 环境变量 `DSH_HOME` 非空时优先使用（用户显式指定优先于构建差异）；
-/// - 否则 release 构建默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`，Unix
-///   `$HOME/.dsh`，与官方 node 安装共用同一份数据）；
-/// - debug 构建默认 `~/.dsh.dev`：开发版与生产版同时运行时，会话、档案、
-///   插件与主题等数据互不干扰，也不会互相污染对方的会话。
+/// - release 构建使用非空环境变量 `DSH_HOME`，否则默认 `~/.dsh`；
+/// - debug 构建始终使用 `~/.dsh.dev`，忽略从旧 desktop checkout、终端或 release
+///   shim 继承的 `DSH_HOME`，避免两个构建误用同一 profile 并发改写；
+/// - debug 子进程由 launch 显式收到同一个 `~/.dsh.dev`，开发版与生产版的会话、档案、
+///   插件与主题因此互不干扰。
 pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
-    if let Some(home) = std::env::var_os("DSH_HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home);
-        }
-    }
     let dir_name = if cfg!(debug_assertions) {
         DSH_HOME_DEV_DIR_NAME
     } else {
+        if let Some(home) = std::env::var_os("DSH_HOME") {
+            if !home.is_empty() {
+                return PathBuf::from(home);
+            }
+        }
         DSH_HOME_DIR_NAME
     };
     user_home_dir()

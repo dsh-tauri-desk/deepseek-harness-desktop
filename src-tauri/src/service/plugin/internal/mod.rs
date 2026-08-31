@@ -22,9 +22,11 @@ use super::install::install_internal;
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
 use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
 use super::process::{new_process_owner, ProcessOwner};
+use crate::config;
 
 use manifest::{
-    dep_matches_spec, internal_plugin_entry_is_ready, remove_internal_plugins_from_manifest,
+    dedupe_profile_bundles, dep_matches_spec, internal_plugin_entry_is_ready,
+    remove_duplicate_bundle_entries_from_patch, remove_internal_plugins_from_manifest,
     remove_stale_plugin_entry, write_profile_manifest,
 };
 
@@ -158,6 +160,83 @@ fn ensure_lock() -> &'static tokio::sync::Mutex<EnsureCoordinator> {
     ENSURE_LOCK.get_or_init(|| tokio::sync::Mutex::new(EnsureCoordinator::default()))
 }
 
+/// 在启动 Harness 前修复旧桌面目录遗留的 profile loader 状态。
+///
+/// 这一步必须发生在启动 dsh 子进程之前：dsh 会同时合并 bundle patch、profile
+/// patch、home patch；如果旧 checkout 曾把内置插件 patch 写入其中，单纯重装
+/// `node_modules` 无法消除重复 loader entry。只清理桌面端明确拥有的内置 id，
+/// 绝不触碰用户插件。
+pub(crate) fn repair_loader_state(app_handle: &AppHandle) -> Result<(), String> {
+    let internal: Vec<_> = load_presets(app_handle)
+        .into_iter()
+        .filter(|preset| preset.internal)
+        .collect();
+    let bundle_ids: HashSet<&str> = internal.iter().map(|preset| preset.id.as_str()).collect();
+    let profile = profile_dir(app_handle);
+    let profile_manifest = profile.join("package.json");
+    let mut changed_manifest = false;
+    if let Ok(raw) = std::fs::read_to_string(&profile_manifest) {
+        let mut manifest = serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|e| format!("INTERNAL_PLUGIN_MANIFEST_PARSE_FAILED: {e}"))?;
+        changed_manifest = dedupe_profile_bundles(&mut manifest);
+        if changed_manifest {
+            write_profile_manifest(&profile_manifest, &manifest)?;
+        }
+    }
+
+    for patch_path in [
+        profile.join("cordis.patch.yml"),
+        config::get_dsh_data_path(app_handle).join("cordis.patch.yml"),
+    ] {
+        let Ok(raw) = std::fs::read_to_string(&patch_path) else {
+            continue;
+        };
+        let mut patch = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|e| {
+            format!(
+                "INTERNAL_PLUGIN_PATCH_PARSE_FAILED: {}: {e}",
+                patch_path.display()
+            )
+        })?;
+        if remove_duplicate_bundle_entries_from_patch(&mut patch, &bundle_ids) {
+            let rendered = serde_yaml::to_string(&patch)
+                .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_RENDER_FAILED: {e}"))?;
+            std::fs::write(&patch_path, rendered).map_err(|e| {
+                format!(
+                    "INTERNAL_PLUGIN_PATCH_WRITE_FAILED: {}: {e}",
+                    patch_path.display()
+                )
+            })?;
+            log::warn!(
+                "INTERNAL_PLUGIN_PROFILE_MIGRATED: removed stale internal loader entries from {}",
+                patch_path.display()
+            );
+        }
+    }
+
+    // dsh 会把运行时组合结果写回 cordis.yml；旧版本留下的组合结果会在下一次
+    // 启动时与新 patch 再合并，必须恢复官方约定的空根配置。
+    let root = profile.join("cordis.yml");
+    const EMPTY_ROOT: &str = "# dsh profile root — an empty entry list. The tree is composed as patches:\n# each bundle in package.json's dsh.profile.bundles, then cordis.patch.yml, then any\n# --patch overlays. Edit cordis.patch.yml, not this file.\n[]\n";
+    if std::fs::read_to_string(&root).ok().as_deref() != Some(EMPTY_ROOT) {
+        if profile.is_dir() {
+            std::fs::write(&root, EMPTY_ROOT).map_err(|e| {
+                format!("INTERNAL_PLUGIN_ROOT_WRITE_FAILED: {}: {e}", root.display())
+            })?;
+            log::warn!(
+                "INTERNAL_PLUGIN_PROFILE_MIGRATED: reset stale profile root {}",
+                root.display()
+            );
+        }
+    }
+    if changed_manifest {
+        log::warn!(
+            "INTERNAL_PLUGIN_PROFILE_MIGRATED: deduplicated profile bundles in {}",
+            profile_manifest.display()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
     let presets = load_presets(app_handle);
     let internal: Vec<_> = presets.into_iter().filter(|p| p.internal).collect();
@@ -165,6 +244,7 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    repair_loader_state(app_handle)?;
     receive_current_or_next_flight(|| subscribe_or_start(app_handle, &internal)).await
 }
 
@@ -414,6 +494,37 @@ async fn ensure_inner(
         }
         None => HashMap::new(),
     };
+
+    // 旧工作目录留下的 profile 可能含重复 bundle；先做幂等迁移，避免在
+    // 检查依赖正常时直接进入 Cordis 并触发 duplicate loader entry。
+    let mut migrated = false;
+    if let Some(value) = manifest.as_mut() {
+        migrated = dedupe_profile_bundles(value);
+    }
+
+    let bundle_ids: HashSet<&str> = internal.iter().map(|preset| preset.id.as_str()).collect();
+    let patch_path = profile.join("cordis.patch.yml");
+    let mut patch = std::fs::read_to_string(&patch_path)
+        .ok()
+        .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok());
+    if let Some(value) = patch.as_mut() {
+        if remove_duplicate_bundle_entries_from_patch(value, &bundle_ids) {
+            let rendered = serde_yaml::to_string(value)
+                .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_RENDER_FAILED: {e}"))?;
+            std::fs::write(&patch_path, rendered)
+                .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_WRITE_FAILED: {e}"))?;
+            migrated = true;
+            log::warn!(
+                "INTERNAL_PLUGIN_PROFILE_MIGRATED: removed duplicate bundle entries from {}",
+                patch_path.display()
+            );
+        }
+    }
+    if migrated {
+        if let Some(value) = manifest.as_ref() {
+            write_profile_manifest(&manifest_path, value)?;
+        }
+    }
 
     let mut need: Vec<(String, String, PathBuf)> = Vec::new();
     for preset in internal {

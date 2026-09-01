@@ -4,12 +4,20 @@ import {
 } from './constants'
 
 interface SettingsObstructionState {
+  displayPriority: string
+  displayValue: string
   element: HTMLElement
-  inert: boolean
-  hadInlineOpacity: boolean
-  opacityPriority: string
-  opacityValue: string
+  widthPriority: string
+  widthValue: string
 }
+
+interface SidebarWidthState {
+  hadInlineValue: boolean
+  priority: string
+  value: string
+}
+
+const SIDEBAR_WIDTH_PROPERTY = '--dsh-sidebar-width'
 
 /**
  * Finds host surfaces that could remain above or show through the settings overlay.
@@ -33,34 +41,43 @@ export function getSettingsObstructionTargets(root: ParentNode): HTMLElement[] {
 }
 
 /**
- * Temporarily conceals and disables every surface below the docked settings page.
- * Newly mounted plugin surfaces are reconciled while settings remains open. The
- * disposer stops observation and restores every surface's exact inline state.
+ * Hides the underlying layout while the docked settings page is open.
+ * better-sidebar reserves space through --dsh-sidebar-width, so both the
+ * panel and that layout push must be removed for settings to use the full width.
  */
 export function concealSettingsObstructions(root: ParentNode = document): () => void {
+  const documentRoot = document.documentElement
+  const sidebarWidth = documentRoot.style.getPropertyValue(SIDEBAR_WIDTH_PROPERTY)
+  const previousSidebarWidth: SidebarWidthState = {
+    hadInlineValue: sidebarWidth !== '',
+    priority: documentRoot.style.getPropertyPriority(SIDEBAR_WIDTH_PROPERTY),
+    value: sidebarWidth,
+  }
   const previous = new Map<HTMLElement, SettingsObstructionState>()
   let restored = false
+
+  documentRoot.style.setProperty(SIDEBAR_WIDTH_PROPERTY, '0', 'important')
 
   const reconcile = (): void => {
     if (restored)
       return
 
+    // Reapply this because better-sidebar may update its layout variable while
+    // the settings page remains open.
+    documentRoot.style.setProperty(SIDEBAR_WIDTH_PROPERTY, '0', 'important')
+
     for (const element of getSettingsObstructionTargets(root)) {
       if (!previous.has(element)) {
-        const opacityValue = element.style.getPropertyValue('opacity')
         previous.set(element, {
+          displayPriority: element.style.getPropertyPriority('display'),
+          displayValue: element.style.getPropertyValue('display'),
           element,
-          inert: element.inert,
-          hadInlineOpacity: opacityValue !== '',
-          opacityPriority: element.style.getPropertyPriority('opacity'),
-          opacityValue,
+          widthPriority: element.style.getPropertyPriority('width'),
+          widthValue: element.style.getPropertyValue('width'),
         })
       }
-
-      // Inline !important keeps independently mounted overlays concealed even
-      // when they supplied their own important opacity declaration.
-      element.style.setProperty('opacity', '0', 'important')
-      element.inert = true
+      element.style.setProperty('display', 'none', 'important')
+      element.style.setProperty('width', '0', 'important')
     }
   }
 
@@ -89,17 +106,31 @@ export function concealSettingsObstructions(root: ParentNode = document): () => 
     observer.disconnect()
 
     for (const {
+      displayPriority,
+      displayValue,
       element,
-      hadInlineOpacity,
-      inert,
-      opacityPriority,
-      opacityValue,
+      widthPriority,
+      widthValue,
     } of previous.values()) {
-      if (hadInlineOpacity)
-        element.style.setProperty('opacity', opacityValue, opacityPriority)
+      if (displayValue !== '')
+        element.style.setProperty('display', displayValue, displayPriority)
       else
-        element.style.removeProperty('opacity')
-      element.inert = inert
+        element.style.removeProperty('display')
+      if (widthValue !== '')
+        element.style.setProperty('width', widthValue, widthPriority)
+      else
+        element.style.removeProperty('width')
+    }
+
+    if (previousSidebarWidth.hadInlineValue) {
+      documentRoot.style.setProperty(
+        SIDEBAR_WIDTH_PROPERTY,
+        previousSidebarWidth.value,
+        previousSidebarWidth.priority,
+      )
+    }
+    else {
+      documentRoot.style.removeProperty(SIDEBAR_WIDTH_PROPERTY)
     }
 
     previous.clear()

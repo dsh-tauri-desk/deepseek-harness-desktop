@@ -29,7 +29,7 @@ export function mountPanelExtensionRoutes(host: PanelExtensionHost, config: Pane
   })
 
   const disposers = [
-    ...registerSkillRoutes(register, host),
+    ...registerSkillRoutes(register, host, { remountProvider: config.remountProvider }),
     ...registerMcpRoutes(register, { profileDirPath: config.profileDirPath }),
     ...registerRepositoryRoutes(register, { remountProvider: config.remountProvider }),
     ...registerRestartRoute(register),

@@ -104,9 +104,23 @@ interface SkillDeleteBody { name?: unknown }
 interface SkillPolicyBody { name?: unknown, enabled?: unknown }
 interface SkillOpenBody { target?: unknown, name?: unknown, id?: unknown }
 
+/** Skill route module 的配置片：显式「刷新」时重挂宿主 provider 再重新列出。 */
+export interface SkillRoutesConfig {
+  /** Remount the host-plane filesystem skill provider to rescan all roots. */
+  remountProvider: () => Promise<void>
+}
+
+/** Collect the current catalog from the registry and shape it into rows. */
+async function listSkillRows(host: PanelExtensionHost, dshHome: string | undefined): Promise<SkillRow[]> {
+  const skills = await host.skills.list()
+  const entries = loadState(dshHome).skillRoots
+  return sortSkillRows(skills.map(skill => toSkillRow(skill, entries, dshHome)))
+}
+
 export function registerSkillRoutes(
   register: RouteRegistrar,
   host: PanelExtensionHost,
+  config: SkillRoutesConfig,
 ): Array<() => void> {
   const disposers: Array<() => void> = []
   const dshHome = process.env.DSH_HOME
@@ -121,10 +135,35 @@ export function registerSkillRoutes(
         return
       }
       try {
-        const skills = await host.skills.list()
-        const entries = loadState(dshHome).skillRoots
-        const rows = skills.map(skill => toSkillRow(skill, entries, dshHome))
-        sendJson(response, 200, { skills: sortSkillRows(rows) })
+        sendJson(response, 200, { skills: await listSkillRows(host, dshHome) })
+      }
+      catch (error) {
+        sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }))
+
+  // Explicit rescan: remounting the host-plane provider re-runs discovery
+  // over every root (packaged, registered repositories, ~/.claude|.codex,
+  // and the provider's own default roots like ~/.dsh/skills and
+  // ~/.agents/skills). The remount invalidates the registry's collect cache,
+  // so the list that follows reflects newly added skills without a restart.
+  disposers.push(register({
+    kind: 'exact',
+    path: `${API_PREFIX}/skills/refresh`,
+    handler: async (request: IncomingMessage, response: ServerResponse) => {
+      if (request.method !== 'POST') {
+        response.writeHead(405, { allow: 'POST' })
+        response.end()
+        return
+      }
+      if (!sameOrigin(request)) {
+        sendJson(response, 403, { error: 'untrusted origin' })
+        return
+      }
+      try {
+        await config.remountProvider()
+        sendJson(response, 200, { skills: await listSkillRows(host, dshHome) })
       }
       catch (error) {
         sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })

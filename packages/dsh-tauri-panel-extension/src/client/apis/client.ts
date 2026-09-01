@@ -30,6 +30,7 @@ function post<T>(path: string, body: unknown): Promise<T> {
 export function createSkillsInjected(): SkillsInjected {
   return {
     list: () => fetchJson<{ skills: SkillRowView[] }>('/skills'),
+    refresh: () => post<{ skills: SkillRowView[] }>('/skills/refresh', {}),
     get: name => fetchJson(`/skill?name=${encodeURIComponent(name)}`),
     save: input => post('/skill/save', input),
     remove: name => post('/skill/delete', { name }),

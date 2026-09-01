@@ -50,6 +50,21 @@ export function SkillsTab({ t, injected, createSkill }: SkillsTabProps): ReactEl
     }
   }, [injected, reload, t])
 
+  const doRefresh = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const body = await injected.refresh()
+      setSkills(body.skills)
+      setOutcome({ ok: true, text: t('refreshed') })
+    }
+    catch {
+      // A transient rescan failure (e.g. a locked provider) should still let
+      // the user see the last-good catalog without restarting the page.
+      setReload(value => value + 1)
+    }
+    finally { setBusy(false) }
+  }
+
   const refreshUntil = (predicate: (rows: SkillRowView[]) => boolean): void => {
     const deadline = Date.now() + SKILL_REFRESH_TIMEOUT_MS
     const tick = (): void => {
@@ -215,7 +230,7 @@ export function SkillsTab({ t, injected, createSkill }: SkillsTabProps): ReactEl
         )}
         <span className="dpte-spacer" />
         <input className="dpte-search" type="search" placeholder={t('searchSkills')} aria-label={t('searchSkills')} value={query} onChange={event => setQuery(event.target.value)} />
-        <button type="button" className="dpte-refresh" aria-label={t('refresh')} title={t('refresh')} disabled={busy} onClick={() => setReload(value => value + 1)}><IconRefresh /></button>
+        <button type="button" className="dpte-refresh" aria-label={t('refresh')} title={t('refresh')} disabled={busy} onClick={() => void doRefresh()}><IconRefresh /></button>
       </div>
       {sources.length > 1 && <div className="dpte-chips" role="group" aria-label={t('source')}>{[{ id: 'all', label: t('filterAll') }, ...sources.map(source => ({ id: source, label: t(SOURCE_LOCALE_KEYS[source] ?? 'sourceCustom') }))].map(chip => <button key={chip.id} type="button" className="dpte-chip" data-active={sourceFilter === chip.id ? 'true' : undefined} onClick={() => setSourceFilter(chip.id)}>{chip.label}</button>)}</div>}
       {skills === null && <p className="dpte-empty">{t('loading')}</p>}

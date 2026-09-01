@@ -36,6 +36,8 @@ export type OpenTarget = { target: 'user-skills' } | { target: 'skill', name: st
 
 export interface SkillsInjected {
   list: () => Promise<{ skills: SkillRowView[] }>
+  /** Force a host-side rescan of all skill roots, returning the refreshed list. */
+  refresh: () => Promise<{ skills: SkillRowView[] }>
   get: (name: string) => Promise<{ content: string }>
   save: (input: Record<string, unknown>) => Promise<{ ok: boolean }>
   remove: (name: string) => Promise<{ ok: boolean }>

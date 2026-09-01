@@ -270,9 +270,10 @@ fn preset_plugins_path(app_handle: &AppHandle) -> Option<PathBuf> {
     plugins_manifest_path(app_handle, PRESET_PLUGINS_FILE)
 }
 
-/// 旧版内置插件资源目录名，仅用于兼容旧布局
+/// 旧版内置插件资源目录名。作为查找回退保留（已装旧布局插件的自愈仍能命中），
+/// 同时由 [`remove_legacy_bundled_plugins`] 在启动时清理升级残留的整目录副本。
 const BUNDLED_PLUGINS_DIR: &str = "internal-plugins";
-/// 旧版内置插件资源目录名，仅用于启动迁移清理
+/// 旧版预装插件资源目录名，仅用于启动迁移清理
 const LEGACY_BUNDLED_PLUGINS_DIR: &str = "preset-plugins";
 
 /// 在资源根目录下定位某内置插件：pnpm deploy 将包放在 `node_modules/<name>`，
@@ -330,9 +331,10 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
     legacy.join("package.json").exists().then_some(legacy)
 }
 
-/// 删除旧版随包资源目录 `resources/preset-plugins`，避免升级安装保留不再使用的
-/// 内部插件副本。仅处理 Tauri 运行时资源根下的目录，绝不删除源码 checkout；逐个
-/// 尝试所有布局后再汇总错误，避免一个被占用的旧目录阻碍其余目录清理。
+/// 删除旧版随包资源目录 `resources/preset-plugins` 与 `resources/internal-plugins`，
+/// 避免升级安装保留不再使用/已迁至 `resources/node_modules/<name>` 的内置插件副本。
+/// 仅处理 Tauri 运行时资源根下的目录，绝不删除源码 checkout；逐个尝试所有布局后
+/// 再汇总错误，避免一个被占用的旧目录阻碍其余目录清理。
 pub(crate) fn remove_legacy_bundled_plugins(app_handle: &AppHandle) -> Result<(), String> {
     let Ok(root) = app_handle.path().resource_dir() else {
         return Ok(());
@@ -340,7 +342,13 @@ pub(crate) fn remove_legacy_bundled_plugins(app_handle: &AppHandle) -> Result<()
     let candidates = vec![
         root.join(LEGACY_BUNDLED_PLUGINS_DIR),
         root.join("resources").join(LEGACY_BUNDLED_PLUGINS_DIR),
+        root.join(BUNDLED_PLUGINS_DIR),
+        root.join("resources").join(BUNDLED_PLUGINS_DIR),
     ];
+    // resource_dir() 在不同平台可能返回安装根或 resources 根；若 root 本身即
+    // resources，则上面的 `root/resources` 会误拼一个不存在的嵌套资源根，这里
+    // 只删真正存在且含旧布局的目录（remove_legacy_candidates 本身也会跳过
+    // 不存在的目录）。
     remove_legacy_candidates(candidates, |path| std::fs::remove_dir_all(path))
 }
 

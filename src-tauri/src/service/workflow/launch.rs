@@ -719,10 +719,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                     for line in stderr_text.lines() {
                                         log::warn!(target: "dsh", "{}", line);
                                     }
-                                    return Err(std::io::Error::new(
-                                        std::io::ErrorKind::Other,
-                                        format!("Harness exited early: {exit}"),
-                                    ));
+                                    return Err(format!("Harness exited early: {exit}"));
                                 }
                                 Ok(None) if std::time::Instant::now() >= deadline => break,
                                 Ok(None) => {

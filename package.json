@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desktop",
   "type": "module",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "private": true,
   "packageManager": "pnpm@10.28.2",
   "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",

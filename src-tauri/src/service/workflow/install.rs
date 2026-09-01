@@ -3,6 +3,7 @@
 
 use crate::config;
 use crate::service::download;
+use crate::service::download::Installable;
 use tauri::Manager;
 
 use super::process::{has_owned_process, stop, terminate_stale_harness_processes};
@@ -51,6 +52,41 @@ pub async fn install(
         Box::new(download::Dsh),
         Box::new(download::Pnpm),
     ];
+    // 必须在下载前解析 release 元数据：下载地址和摘要必须属于同一固定 tag。
+    // 若先下载 latest、再因 API 限流从 Atom/HTML 解析 tag，latest 在两次请求间
+    // 发生切换就会把另一份资产拿来匹配摘要，最终触发 INTEGRITY_CHECK_FAILED。
+    let dsh_missing = !download::Dsh.check_installed(app_handle);
+    if dsh_latest.is_none() && dsh_missing {
+        for attempt in 0..3 {
+            let metadata = match config::recommended_dsh_version(app_handle) {
+                Some(version) => download::fetch_dsh_pkg_version(&version).await,
+                None => download::fetch_latest_dsh_pkg_info().await,
+            };
+            match metadata {
+                Ok(info) => {
+                    dsh_latest = Some(info);
+                    break;
+                }
+                Err(e) if attempt < 2 => {
+                    log::warn!(
+                        "Retrying dsh release metadata fetch ({}/3), will retry: {}",
+                        attempt + 1,
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        500 * (attempt as u64 + 1),
+                    ))
+                    .await;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "DSH_INTEGRITY_UNAVAILABLE: 无法获取 Harness 发行版的完整性校验信息（{}），请检查网络后重试",
+                        e
+                    ));
+                }
+            }
+        }
+    }
     // Windows Sandbox 等空白环境没有 Git；仅 Windows 加入第 4 项，若系统 Git
     // 可真实执行则 Installable 会跳过，不重复下载也不修改系统 PATH。
     #[cfg(windows)]
@@ -142,41 +178,7 @@ pub async fn install(
                 download::fetch_node_sha256(task.get_download_url()?.as_str()).await?
             }
             download::InstallKind::Dsh => {
-                // dsh 的 SHA-256 digest 只能来自 GitHub release asset 元数据
-                // （安全设计，见 dsh_INTEGRITY_UNAVAILABLE）。首次安装时该元数据
-                // 可能因 api.github.com 限流/网络抖动而缺失（mac 首次启动常见，
-                // issue #31），这里带退避重取，避免启动被瞬时失败卡死。
-                if dsh_latest.is_none() {
-                    for attempt in 0..3 {
-                        let metadata = match config::recommended_dsh_version(app_handle) {
-                            Some(version) => download::fetch_dsh_pkg_version(&version).await,
-                            None => download::fetch_latest_dsh_pkg_info().await,
-                        };
-                        match metadata {
-                            Ok(info) => {
-                                dsh_latest = Some(info);
-                                break;
-                            }
-                            Err(e) if attempt < 2 => {
-                                log::warn!(
-                                    "Retrying dsh release metadata fetch ({}/3), will retry: {}",
-                                    attempt + 1,
-                                    e
-                                );
-                                tokio::time::sleep(std::time::Duration::from_millis(
-                                    500 * (attempt as u64 + 1),
-                                ))
-                                .await;
-                            }
-                            Err(e) => {
-                                return Err(format!(
-                                    "DSH_INTEGRITY_UNAVAILABLE: 无法获取 Harness 发行版的完整性校验信息（{}），请检查网络后重试",
-                                    e
-                                ));
-                            }
-                        }
-                    }
-                }
+                // 元数据已在安装任务开始前获取，确保下载地址与摘要来自同一 release。
                 dsh_latest
                     .as_ref()
                     .and_then(|info| info.digest.clone())

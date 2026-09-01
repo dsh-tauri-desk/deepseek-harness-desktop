@@ -1,13 +1,15 @@
 import type {
   ISessions,
-  IWorkspaces,
   SessionListState,
   SessionSummary,
-  SlotRegistry,
+} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {
+  IWorkspaces,
   WorkspaceId,
-} from '@deepseek-ai/dsh-client-runtime/client'
+} from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 
-/** Real runtime slot registry contract. */
+/** Real runtime slot registry contract (alpha: ui-renderer owns the Service layer). */
 export type { SlotRegistry }
 /** Real runtime session list state and summary contracts. */
 export type { SessionListState, SessionSummary }

@@ -38,7 +38,6 @@
   "dsh": {
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout"
       ],
       "platform": "web"
@@ -60,6 +59,10 @@
     "unstorage": "catalog:utils"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-api-session-controller": "catalog:dsh",
+    "@deepseek-ai/dsh-api-workspace-controller": "catalog:dsh",
+    "@deepseek-ai/dsh-client-ui-renderer": "catalog:dsh",
+    "@deepseek-ai/dsh-client-ui-slots": "catalog:dsh",
     "css-render": "catalog:ui",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli"

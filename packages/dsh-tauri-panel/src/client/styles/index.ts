@@ -113,8 +113,45 @@ const panelStyle = c([
   c('.dshp-footerActions', { display: 'flex' }),
   c('.dshp-collapsed .dshp-footArea', { alignItems: 'center' }),
   c('.dshp-collapsed .dshp-settingsArea,.dshp-collapsed .dshp-footerActions', { justifyContent: 'center', width: 'auto', display: 'flex' }),
-  c('.dshp-panelView', { height: '100%', boxSizing: 'border-box', minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }),
+  c('.dshp-panelView', {
+    'height': '100%',
+    'boxSizing': 'border-box',
+    'minWidth': 0,
+    'overflowY': 'auto',
+    'scrollbarGutter': 'stable',
+    'position': 'relative',
+    // 内容宽度派生（自给自足镜像 alpha）：有拖拽偏好用偏好，否则自适应
+    // clamp(680px, col*0.64, 920px)；列宽与偏好由 width 控制器发布。
+    '--dsh-chat-content-width': 'var(--dsh-chat-user-width, clamp(680px, calc(var(--dsh-conversation-column-width, 0px) * .64), 920px))',
+  }),
   c('.dshp-panelViewColumn', { maxWidth: 'var(--dsh-chat-content-width,780px)', minHeight: '100%', width: '100%', margin: '0 auto', flexDirection: 'column', gap: '16px', display: 'flex' }),
+  // 内容宽度拖拽手柄（镜像 alpha WidthHandle）：绝对定位在内容列两侧 24px 外，
+  // 宽度自适应（列宽 − 内容宽的一半再减两个 24px inset，最多 40px）；
+  // hover/拖动时发光条跟随指针 Y（--dsh-width-handle-pointer-y）。
+  c('.dshp-widthHandle', {
+    zIndex: 8,
+    width: 'min(40px, calc((100% - var(--dsh-chat-content-width)) / 2 - 24px - 24px))',
+    cursor: 'col-resize',
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+  }),
+  c('.dshp-widthHandle[data-side="left"]', { right: 'calc(50% + var(--dsh-chat-content-width) / 2 + 24px)' }),
+  c('.dshp-widthHandle[data-side="right"]', { left: 'calc(50% + var(--dsh-chat-content-width) / 2 + 24px)' }),
+  c('.dshp-widthHandle:after', {
+    content: '""',
+    background: 'linear-gradient(to bottom, transparent calc(var(--dsh-width-handle-pointer-y, 50%) - 52px), var(--dsw-alias-scrollbar-hover-l1) calc(var(--dsh-width-handle-pointer-y, 50%) - 12px), var(--dsw-alias-scrollbar-hover-l1) calc(var(--dsh-width-handle-pointer-y, 50%) + 12px), transparent calc(var(--dsh-width-handle-pointer-y, 50%) + 52px))',
+    opacity: 0,
+    pointerEvents: 'none',
+    borderRadius: '3px',
+    width: '3px',
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+  }),
+  c('.dshp-widthHandle[data-side="left"]:after', { right: '16px' }),
+  c('.dshp-widthHandle[data-side="right"]:after', { left: '16px' }),
+  c('.dshp-widthHandle:hover:after,.dshp-widthHandle[data-dragging]:after', { opacity: 1 }),
   // 面板激活期间，侧栏工作区单项撤销 hover 底色（仅非选中行；选中行保留
   // 自己的选中态，避免点按目标不可辨）。语义选择器按官方 aria 状态匹配，
   // 不依赖 css-module hash。

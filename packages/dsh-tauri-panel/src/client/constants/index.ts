@@ -1,4 +1,6 @@
 /** Stable client-side identifiers shared by the panel implementation. */
+export { PANEL_CONTENT_ADAPTIVE_MAX, PANEL_CONTENT_ADAPTIVE_MIN, PANEL_CONTENT_DEFAULT, PANEL_CONTENT_EDGE_BUDGET, PANEL_CONTENT_MIN, PANEL_WIDTH_PREF_KEY, PANEL_WIDTH_VARS } from './width'
+
 export const PANEL_PROTOCOL_SERVICE = 'panel.protocol'
 export const PANEL_VIEW_SLOT = 'conversation'
 export const PANEL_VIEW_COMPONENT_ID = 'dsh-tauri-panel-conversation-seat'
@@ -43,6 +45,7 @@ export const PANEL_CLASSES = {
   settingsArea: 'dshp-settingsArea',
   panelView: 'dshp-panelView',
   panelViewColumn: 'dshp-panelViewColumn',
+  widthHandle: 'dshp-widthHandle',
 } as const
 
 export const PANEL_DATA_ATTRIBUTES = {
@@ -50,4 +53,5 @@ export const PANEL_DATA_ATTRIBUTES = {
   active: 'data-dshp-panel-active',
   action: 'data-dshp-panel-action',
   view: 'data-dshp-panel-view',
+  widthHandle: 'data-width-handle',
 } as const

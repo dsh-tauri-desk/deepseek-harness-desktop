@@ -22,6 +22,12 @@ export interface PanelContentSpec {
   render: ComponentType<{ t?: (key: string) => string }>
   /** 视图文案命名空间（可选，默认宿主 'panel'；视图可声明自己的 NS）。 */
   locale?: string
+  /**
+   * 承载侧（可选，缺省 conversation）：方案 B 预留字段。
+   * 当前实现只处理 conversation（会话区替换）；`details`（右侧可拖拽列）
+   * 为二期能力，本期不渲染，消费方调用时按 conversation 处理。
+   */
+  side?: 'conversation' | 'details'
 }
 
 /** panel.protocol 的稳定服务面。 */
@@ -32,6 +38,19 @@ export interface PanelProtocol {
   renderPanelContent: (spec: PanelContentSpec) => void
   /** 显式恢复官方会话区；用于面板内需要跳转到会话的动作。 */
   closePanelContent: () => void
+  /**
+   * 程序化设置内容宽度（clamp 到契约范围并持久化）。（可选：老版本协议
+   * 对象无此字段，消费方一律 `?.()` 探测调用。）
+   */
+  setPanelWidth?: (px: number) => void
+  /** 清除宽度偏好，恢复自适应宽度。（可选，同上。） */
+  resetPanelWidth?: () => void
+  /** 当前内容宽度（含偏好；无面板挂载时返回偏好或 null）。（可选，同上。） */
+  getPanelWidth?: () => number | null
+  /** 透传 ctx.layout.openDetails：打开右侧 details 列。（可选，同上。） */
+  openDetails?: () => void
+  /** 透传 ctx.layout.closeDetails：关闭右侧 details 列。（可选，同上。） */
+  closeDetails?: () => void
 }
 
 /** ActionItem 合成 props：id + 图标 + 点击行为 + 文字（子插件只填这些）。 */

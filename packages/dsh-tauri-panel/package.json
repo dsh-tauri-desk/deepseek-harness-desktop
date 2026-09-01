@@ -59,6 +59,7 @@
   },
   "devDependencies": {
     "dsh-tauri-tsdown": "workspace:*",
-    "tsdown": "catalog:cli"
+    "tsdown": "catalog:cli",
+    "vitest": "catalog:testing"
   }
 }

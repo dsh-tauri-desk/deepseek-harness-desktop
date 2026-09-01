@@ -44,11 +44,11 @@ export function installExtensionPanel(ctx: ClientContext, t: Translate, skills: 
         if (!sessionId)
           throw new Error(t('workspaceUnavailable'))
         pendingPrefills.add(sessionId)
-        protocol.closePanelContent()
+        protocol.closePanelContent?.()
         runtime.sessions.open(sessionId)
       }
       const Content = (): ReactElement => <ExtensionPanel t={t} skills={skills} mcp={mcp} createSkill={createSkill} />
-      const Action = (): ReactElement => <protocol.ActionItem id={PANEL_ID} icon={<IconExtension />} onClick={() => protocol.renderPanelContent({ id: PANEL_ID, render: Content, locale: LOCALE_NAMESPACE })}>{t('extension')}</protocol.ActionItem>
+      const Action = (): ReactElement => <protocol.ActionItem id={PANEL_ID} icon={<IconExtension />} onClick={() => protocol.renderPanelContent?.({ id: PANEL_ID, render: Content, locale: LOCALE_NAMESPACE })}>{t('extension')}</protocol.ActionItem>
       registration = ctx.slots.register({ name: PANEL_SLOT_NAME, id: PANEL_ACTION_ID, registrant: PLUGIN_ID, order: PANEL_ACTION_ORDER, priority: PANEL_ACTION_PRIORITY, locale: LOCALE_NAMESPACE, inject: () => ({}) } as never, Action)
       if (retryTimer !== undefined) {
         window.clearInterval(retryTimer)

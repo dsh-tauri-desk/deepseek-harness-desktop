@@ -9,12 +9,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ReactElement } from 'react'
 import type { PanelContentSpec } from '../types'
+import type { PanelWidthController } from './width'
 import { createHooks } from 'dsh-tauri/client'
 import { ConversationSeat } from '../components/conversation-seat'
 import { PANEL_VIEW_COMPONENT_ID, PANEL_VIEW_SLOT } from '../constants'
 import { setSidebarPanelActive, shouldClosePanelForSidebarTarget } from '../dom/panel'
 import { NS } from '../locales'
 import { panelViewStore } from '../store'
+import { createPanelWidthController } from './width'
 
 /** 会话区替换控制器的对外形状（panel.protocol 的机制侧）。 */
 export interface PanelConversationController {
@@ -22,6 +24,8 @@ export interface PanelConversationController {
   close: () => void
   toggle: (ctx: Context, spec: PanelContentSpec) => void
   viewId: () => { id: string } | null
+  /** 内容宽度控制器（方案 A：attach/handle；方案 C：setWidth/resetWidth/getWidth）。 */
+  width: PanelWidthController
 }
 
 /** 会话区替换的生命周期钩子（hookable：open/close 事件轴）。 */
@@ -33,6 +37,7 @@ export interface ConversationLifecycleHooks {
 /** 创建会话区替换控制器。 */
 export function createPanelConversationController(): PanelConversationController {
   const hooks = createHooks<ConversationLifecycleHooks>()
+  const width = createPanelWidthController()
   let conversationSeat: (() => void) | undefined
   let currentSpec: PanelContentSpec | undefined
   let onPointerDownCapture: ((event: PointerEvent) => void) | undefined
@@ -54,7 +59,7 @@ export function createPanelConversationController(): PanelConversationController
           locale: spec.locale ?? NS,
         } as never,
         // spec 经渲染期快照传入：close() 置空后条目已注销，组件自然卸载。
-        (props: { t: (key: string) => string }): ReactElement => <ConversationSeat t={props.t} spec={currentSpec} />,
+        (props: { t: (key: string) => string }): ReactElement => <ConversationSeat t={props.t} spec={currentSpec} width={width} />,
       ))
     onPointerDownCapture = (event: PointerEvent): void => {
       if (shouldClosePanelForSidebarTarget(event.target instanceof Element ? event.target : null))
@@ -89,5 +94,6 @@ export function createPanelConversationController(): PanelConversationController
         open(ctx, spec)
     },
     viewId: () => panelViewStore.getSnapshot(),
+    width,
   }
 }

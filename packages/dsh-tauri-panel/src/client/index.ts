@@ -17,13 +17,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
  */
 import type { ClientContext } from 'dsh-tauri/client'
 import { SlotOutlet } from '@deepseek-ai/dsh-client-ui-renderer'
-import { installPanelLocale } from './locale'
-import { installPanelService } from './service'
-import { installSidebarRoot } from './sidebar'
+import { installPanelLocale } from './locales'
+import { installPanelService } from './register/panel-service'
+import { installSidebarRoot } from './register/sidebar'
 import { mountPanelStyles } from './styles'
 
+export type { IconProps } from './components/icons'
 export { PANEL_PROTOCOL_SERVICE } from './constants'
-export type { IconProps } from './icons'
 export type { PanelActionItemProps, PanelContentSpec, SidebarRootProps } from './types'
 
 /** 插件显示名（诊断元数据）。 */

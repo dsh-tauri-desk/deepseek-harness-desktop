@@ -15,8 +15,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
  */
 import type { ClientContext } from 'dsh-tauri/client'
 import { PLUGIN_ID } from './constants'
-import { installPanelLocale } from './locale'
-import { installPanel } from './panel'
+import { installPanelLocale } from './locales'
+import { installPanel } from './register/panel'
 import { mountPlaceholderStyles } from './styles'
 
 /** 插件显示名（诊断元数据）。 */

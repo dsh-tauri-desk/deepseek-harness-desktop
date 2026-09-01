@@ -4,13 +4,13 @@
  * 由 archive.ts 在业务操作内触发，见 host/hooks.ts。
  */
 
-import type { HostContext, PluginConfig } from './types.js'
+import type { HostContext, PluginConfig } from './types/index.js'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { SESSION_PLUGIN_NAME } from '../shared/constants.js'
-import { migrateLegacyArchive } from './archive.js'
-import { buildRoutes } from './route.js'
+import { buildRoutes } from './routes/index.js'
+import { migrateLegacyArchive } from './service/archive.js'
 
 function resolveDshHome(config: PluginConfig): string {
   return typeof config.dshHome === 'string' && config.dshHome ? config.dshHome : process.env.DSH_HOME ?? join(homedir(), '.dsh')

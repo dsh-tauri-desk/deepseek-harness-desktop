@@ -40,10 +40,10 @@ export const inject = ['tools', 'systemPrompt', 'webServer', 'sessions', 'worksp
 export const API_PREFIX = WORKTREE_API_PREFIX
 
 export { apply } from './host/apply.js'
-export { checkoutToLocalAndHandback, completeWorktreeHandoff } from './host/handoff.js'
-export { createWorktreeHooks } from './host/hooks.js'
-export type { WorktreeLifecycleHooks } from './host/hooks.js'
-export { computeHash, worktreeKey, worktreePath } from './host/operation.js'
-export { checkoutToLocal, discardWorktree, ensureWorktree } from './host/operation.js'
-export { buildRoutes } from './host/route.js'
-export { createToolSet } from './host/tools.js'
+export { createWorktreeHooks } from './host/hooks/index.js'
+export type { WorktreeLifecycleHooks } from './host/hooks/index.js'
+export { buildRoutes } from './host/routes/index.js'
+export { checkoutToLocalAndHandback, completeWorktreeHandoff } from './host/service/handoff.js'
+export { computeHash, worktreeKey, worktreePath } from './host/service/operation.js'
+export { checkoutToLocal, discardWorktree, ensureWorktree } from './host/service/operation.js'
+export { createToolSet } from './host/tools/index.js'

@@ -28,7 +28,7 @@
 - 技能仓库 UI 从上游完整的仓库管理区（本地/GitHub roots 添加移除、来源分组展示）收敛为“导入仓库”按钮 + 对话框；导入的仓库技能排序优先，并展示可点击的 GitHub 图标链接（仓库地址由宿主端从注册的 root 派生，客户端不持有）。
 - 仓库导入沿用上游的 GitHub codeload tarball 方案（不依赖 git 可执行文件），新增 `parseGitHubSource` 支持 `owner/repo`、完整 URL、`.git` 后缀及 `#ref`/`/tree/<ref>` 分支定位，并探测单技能/扁平/嵌套三种仓库结构。
 - API 前缀与状态目录改为 `/dsh-tauri-panel-extension/*` 与 `$DSH_HOME/dsh-tauri-panel-extension`，与上游插件同时安装时不冲突；路由与方法授权机制与上游一致。
-- 客户端实现遵循本仓库工程约束：上游 raw CSS 字符串整树迁移为 css-render 结构化节点（仅在 `apply()` effect 中挂载）、共享类型与常量集中到 `src/client/types.ts`/`constants.ts`、图标仅取 gravity-ui。
+- 客户端实现遵循本仓库工程约束：上游 raw CSS 字符串整树迁移为 css-render 结构化节点（仅在 `apply()` effect 中挂载）、共享类型与常量集中到 `src/client/types/`/`constants/`、图标仅取 gravity-ui。
 - MCP 管理与上游保持一致（增删改、启停、从 Claude Code/Codex 导入、重启提示），新增 JSON/表单双模式编辑器作为增量。
 
 ## 许可证

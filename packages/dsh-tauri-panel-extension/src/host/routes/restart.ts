@@ -6,10 +6,10 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { RouteRegistrar } from '../types.ts'
+import type { RouteRegistrar } from '../types/index.ts'
 import { sendJson } from 'dsh-tauri'
 import { API_PREFIX } from '../../shared/constants.ts'
-import { dshLaunch, restartOwnedByShell, scheduleRestart, trustedRestartRequest } from '../restart.ts'
+import { dshLaunch, restartOwnedByShell, scheduleRestart, trustedRestartRequest } from '../service/restart.ts'
 
 export function registerRestartRoute(register: RouteRegistrar): Array<() => void> {
   return [

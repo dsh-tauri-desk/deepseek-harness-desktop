@@ -13,23 +13,37 @@ packages/<plugin>/
 │  │  └─ constants.ts          # 插件名 / API 前缀 / 分区顺序（两端共同引用，防硬编码漂移）
 │  ├─ host/                    # Node half：宿主能力、工具、HTTP 路由、系统上下文
 │  │  ├─ apply.ts              # 插件装配入口（apply）
-│  │  ├─ types.ts              # 宿主侧类型定义
-│  │  ├─ constants.ts          # 宿主侧私有常量
-│  │  ├─ hooks.ts              # hookable 生命周期钩子（有事件轴时才建）
-│  │  ├─ <domain>.ts           # 领域单文件（git / storage / operation / session / route …）
-│  │  └─ <domain>/             # 多文件领域才用子目录（routes/skills.ts、routes/mcp.ts 等）
+│  │  ├─ constants/            # 宿主侧私有常量（index.ts barrel，多领域再拆文件）
+│  │  ├─ types/                # 宿主侧类型（index.ts barrel，多领域再拆文件）
+│  │  ├─ hooks/                # hookable 生命周期钩子（index.ts barrel，有事件轴时才建）
+│  │  ├─ routes/               # HTTP 路由（index.ts barrel；多路由再拆 routes/*.ts）
+│  │  ├─ storage/              # 持久化 / 状态（index.ts barrel）
+│  │  ├─ service/              # 领域服务单文件（git / operation / session / archive / agents / mcp …）
+│  │  └─ tools/                # 宿主工具能力（index.ts barrel，多能力再拆 tools/*.ts）
 │  └─ client/                  # Browser half：插件、slot 组件、DOM 集成
 │     ├─ index.ts              # 客户端 barrel + apply 装配
-│     ├─ rpc.ts                # ofetch 客户端（createJsonClient 绑定 API 前缀）
-│     ├─ store.ts              # 共享状态（createExternalStore）
-│     ├─ controller.ts         # 生命周期控制器（有 observer/timer/listener 收敛需求时）
-│     ├─ types.ts              # 客户端共享类型唯一集中位置
-│     ├─ constants.ts          # 客户端共享常量唯一集中位置
-│     ├─ icons.tsx             # 客户端共享图标唯一集中位置（github.com/gravity-ui/icons）
-│     ├─ styles.ts             # css-render 样式树与样式挂载函数
-│     └─ features/             # 多 UI 特性时才按特性拆子目录（mode-select.tsx 等）
+│     ├─ constants/            # 客户端共享常量（index.ts barrel，多领域再拆文件）
+│     ├─ types/                # 客户端共享类型（index.ts barrel，多领域再拆文件）
+│     ├─ locales/              # 双语字典 + installLocale（index.ts barrel）
+│     ├─ apis/                 # ofetch 客户端（client.ts 绑定 API 前缀；index.ts barrel 聚合）
+│     ├─ styles/               # css-render 样式树（index.ts barrel，多主题再拆文件）
+│     ├─ components/           # 纯 UI 组件 + 共享图标（每组件一文件：icons.tsx / dialog.tsx …）
+│     ├─ register/             # 安装器 / 槽位注册（install*/register*，与组件分离）
+│     ├─ store/                # 共享状态（index.ts barrel，多领域再拆文件）
+│     ├─ config/               # 客户端配置 / 初始化状态（index.ts barrel）
+│     ├─ service/              # 客户端领域逻辑 / 控制器（handoff.ts / actions.ts / menu.ts …）
+│     ├─ utils/                # 纯函数：解析/格式化/归一化（editable.ts / sort.ts / clipboard.ts …）
+│     ├─ hooks/                # React hooks（跨组件逻辑、轮询、提交拦截）
+│     └─ dom/                  # DOM 补丁 / 定位（MutationObserver + capture + 稳定选择器）
 └─ tsconfig.json               # 每包都有：extends ../../tsconfig.json + include src/** 与 ../../types/**/*.d.ts
 ```
+
+目录规律：**单一职责文件 → 同名目录（index.ts barrel 聚合）**。`constants.ts`→`constants/index.ts`、
+`types.ts`→`types/index.ts`、`locale.ts`→`locales/index.ts`、`rpc.ts`→`apis/client.ts`+`apis/index.ts`、
+`styles.ts`→`styles/index.ts`、`store.ts`→`store/index.ts`、`lib/`→`utils/`、`features/`→`components/`、
+`state.ts`（client）→`config/index.ts`、安装器→`register/`、宿主领域单文件→`service/`、
+`state.ts`/`storage.ts`（host）→`storage/index.ts`、`route.ts`/`routes.ts`→`routes/index.ts`、
+`tools.ts`→`tools/index.ts`、`hooks.ts`→`hooks/index.ts`。
 
 依赖方向单向：`shared ← host/client`；`host` 与 `client` 互不导入；`shared` 不导入任何实现。
 `src/index.ts` 只做组合与 re-export，不放状态、监听、初始化或路由 handler。
@@ -40,7 +54,7 @@ packages/<plugin>/
 
 - **宿主侧直接引用包**：host 代码用什么就声明为当前包的 `dependencies`（运行时按该插件 node_modules 解析）：
   - `pathe`：宿主全部路径处理，**不用 `node:path`**（git/storage/operation/route 等）。
-  - `hookable`：宿主钩子轴（host/hooks.ts）。
+  - `hookable`：宿主钩子轴（host/hooks/）。
   - `ofetch`：宿主二进制下载（如 GitHub tarball 走 `$fetch.raw`）。
 - **客户端依赖统一由 `dsh-tauri` 承载**：`unstorage` / `hookable` / `ofetch` 只被 `dsh-tauri` 的 client bundle 加载并内联；**其他插件 client 禁止直接 import 这三个包**，一律从 `dsh-tauri/client` 导入：
   - `createHooks`（hookable 命名钩子）
@@ -67,10 +81,10 @@ packages/<plugin>/
 
 ## 客户端类型集中规则
 
-每个插件的客户端共享类型统一放在该插件的 `src/client/types.ts`：
+每个插件的客户端共享类型统一放在该插件的 `src/client/types/`（`types/index.ts` 作 barrel 聚合，多领域拆 `types/<domain>.ts`）：
 
 ```ts
-// src/client/types.ts
+// src/client/types/index.ts
 export interface SettingsSidebarProps {
   // ...
 }
@@ -81,20 +95,20 @@ export type SelectorHook<T> = <S>(selector: (state: T) => S) => S
 组件、服务和工具文件不得重复声明跨文件使用的 `interface` 或 `type`。使用 type-only import：
 
 ```ts
-import type { SelectorHook, SettingsSidebarProps } from './types'
+import type { SelectorHook, SettingsSidebarProps } from '../types'
 ```
 
 仅在为了兼容既有公开 API 时，才允许从原文件 re-export 类型：
 
 ```ts
-export type { NavBridgeHandlers } from './types'
+export type { NavBridgeHandlers } from '../types'
 ```
 
-纯组件内部且绝不跨文件使用的极小类型可以保留在组件文件中，但新增类型默认应先考虑放入 `types.ts`。
+纯组件内部且绝不跨文件使用的极小类型可以保留在组件文件中，但新增类型默认应先考虑放入 `types/`。
 
 ## 客户端常量集中规则
 
-每个插件的客户端共享常量统一放在该插件的 `src/client/constants.ts`：
+每个插件的客户端共享常量统一放在该插件的 `src/client/constants/`（`constants/index.ts` 作 barrel 聚合，多领域拆 `constants/<domain>.ts`）：
 
 - slot 名称、注册 id、registrant、order 和 priority
 - CSS style id、class name、CSS custom property 名称
@@ -105,14 +119,14 @@ export type { NavBridgeHandlers } from './types'
 示例：
 
 ```ts
-// src/client/constants.ts
+// src/client/constants/index.ts
 export const PANEL_PROTOCOL_SERVICE = 'panel.protocol'
 export const PANEL_ACTION_SLOT = 'sidebar.panel.action'
 export const PANEL_STYLE_ID = 'dsh-tauri-panel-styles'
 ```
 
 组件文件只消费常量，不重复写共享字符串或数字。真正只使用一次且不表达协议的局部值可以保留在实现文件中。
-跨 half 共享的协议常量（插件名 / API 前缀 / 分区顺序）放 `src/shared/constants.ts`，host/constants.ts 与 client/constants.ts 从那里 re-export，不再各自硬编码。
+跨 half 共享的协议常量（插件名 / API 前缀 / 分区顺序）放 `src/shared/constants.ts`，host/constants/ 与 client/constants/ 从那里 re-export，不再各自硬编码。
 
 ## 样式与 css-render 规则
 
@@ -173,7 +187,7 @@ export function mountPanelStyles(): () => void {
 - `dispose()` 幂等，一次性清理全部资源；`isDisposed()` 用于异步续接守护，业务代码不再各自维护 `disposed` 标志。
 - `dispose` 本身是命名钩子（hookable），保留扩展点。
 
-宿主侧若存在真实事件/状态机轴，建 `host/hooks.ts`（hookable 命名钩子），事件在业务状态**落定后**触发（如归档 `archive:added`、provider `provider:after-remount`、会话 `session:turn-end`）；钩子实例在 apply 内创建或作为插件级单例导出。
+宿主侧若存在真实事件/状态机轴，建 `host/hooks/`（hookable 命名钩子），事件在业务状态**落定后**触发（如归档 `archive:added`、provider `provider:after-remount`、会话 `session:turn-end`）；钩子实例在 apply 内创建或作为插件级单例导出。
 
 每个 effect / 控制器必须拥有对应清理逻辑：
 
@@ -202,8 +216,8 @@ ctx.slots.register(
 )
 ```
 
-- `name`、`id`、`registrant` 使用 `constants.ts` 中的稳定常量。
-- props 结构在 `types.ts` 中定义，不在多个组件间复制。
+- `name`、`id`、`registrant` 使用 `constants/` 中的稳定常量。
+- props 结构在 `types/` 中定义，不在多个组件间复制。
 - 组件协议的 public props 必须有可访问名称和明确类型。
 - 缺少可选 renderer patch 时必须 graceful fallback，不得白屏。
 - 不得依赖生成的 CSS module hash；优先使用稳定 slot、ARIA 属性和插件前缀 class。
@@ -253,8 +267,8 @@ pnpm run build
 
 ## 交付检查清单
 
-- [ ] 新增共享类型已放入对应 `src/client/types.ts`（宿主类型放 `src/host/types.ts`）。
-- [ ] 新增共享常量已放入对应 `src/client/constants.ts`（跨 half 协议常量放 `src/shared/constants.ts`）。
+- [ ] 新增共享类型已放入对应 `src/client/types/`（宿主类型放 `src/host/types/`）。
+- [ ] 新增共享常量已放入对应 `src/client/constants/`（跨 half 协议常量放 `src/shared/constants.ts`）。
 - [ ] 客户端新增依赖一律经 `dsh-tauri/client` 导入，未直接 import `unstorage` / `hookable` / `ofetch`。
 - [ ] 宿主路径处理使用 `pathe`，未新增 `node:path` 用法。
 - [ ] 样式全部由 css-render 对象节点生成。

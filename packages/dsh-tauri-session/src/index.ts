@@ -37,8 +37,8 @@ export const inject = ['webServer', 'sessions', 'workspaceRegistry', 'connection
 export const API_PREFIX = SESSION_API_PREFIX
 
 export { apply } from './host/apply.js'
-export { archiveHooks } from './host/hooks.js'
-export type { ArchiveLifecycleHooks } from './host/hooks.js'
-export { updateRegistryArchiveSet } from './host/registry.js'
-export { buildRoutes } from './host/route.js'
-export { encodeSessionId, isWithinSessionsRoot } from './host/session-files.js'
+export { archiveHooks } from './host/hooks/index.js'
+export type { ArchiveLifecycleHooks } from './host/hooks/index.js'
+export { buildRoutes } from './host/routes/index.js'
+export { updateRegistryArchiveSet } from './host/service/registry.js'
+export { encodeSessionId, isWithinSessionsRoot } from './host/service/session-files.js'

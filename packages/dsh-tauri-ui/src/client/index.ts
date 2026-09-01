@@ -10,33 +10,37 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
  * 桌面风格的自定义 chrome 作为插件加载进 `shell.overlay` 帧级浮动层。
  *
  * 本功能的结构（全部 slot-shadow，零结构补丁，零新增依赖）：
- *   - trigger.tsx   注册进 sidebar.settings（priority -1）shadow
- *     官方 SettingsRoot：齿轮按钮 + onboarding 宿主；官方 dialog 被抑制。
- *   - sidebar.tsx   注册进 shell.overlay（id dsh-tauri-ui-settings）：
+ *   - components/trigger.tsx  注册进 sidebar.settings（priority -1）
+ *     shadow 官方 SettingsRoot：齿轮按钮 + onboarding 宿主；官方 dialog 被抑制。
+ *     （槽位注册在 register/trigger.ts）
+ *   - components/sidebar.tsx  注册进 shell.overlay（id dsh-tauri-ui-settings）：
  *     整窗 docked 左栏 + 内容区，经 <SlotOutlet slotKey="settings.section"/>
  *     渲染官方各分区（SlotOutlet 由 renderer 的一行导出补丁提供）。
- *   - store.ts      触发器与侧边栏共享 {open, activeId, query}。
- *   - sections.ts   'settings.section' / 'settings.onboarding'
- *     注册条目的导航行投影（订阅槽位与 locale 变更）。
- *   - locale.ts     本插件文案（返回应用/搜索设置…）双语注册。
+ *     （槽位注册在 register/sidebar.ts；拖拽交互在 hooks/use-rail-drag.ts；
+ *     下层/外部表面隐藏补丁在 dom/settings-obstructions.ts）
+ *   - store/      触发器与侧边栏共享 {open, activeId, query}。
+ *   - hooks/sections.ts + register/sections.ts   'settings.section' /
+ *     'settings.onboarding' 注册条目的导航行投影（hooks 订阅槽位与 locale
+ *     变更；installer 持有 slotsRef）。
+ *   - locales/     本插件文案（返回应用/搜索设置…）双语注册。
  *
  * 保留了骨架期的 `shell.overlay` 条目（id dsh-tauri-ui）作为未来 chrome
  * 的落点，与设置侧边栏（id dsh-tauri-ui-settings）并行不冲突。
  */
 import type { ClientContext } from 'dsh-tauri/client'
 import { SlotOutlet } from '@deepseek-ai/dsh-client-ui-renderer'
+import { TauriUiSeat } from './components/seat'
 import {
   SETTINGS_REGISTRANT,
   SETTINGS_SHELL_OVERLAY_SLOT,
   SETTINGS_SHELL_SEAT_ID,
   SETTINGS_UI_PLUGIN,
 } from './constants'
-import { installSettingsLocale } from './locale'
-import { TauriUiSeat } from './seat'
-import { installSettingsSections } from './sections'
-import { registerSettingsSidebar } from './sidebar'
+import { installSettingsLocale } from './locales'
+import { installSettingsSections } from './register/sections'
+import { registerSettingsSidebar } from './register/sidebar'
+import { registerSettingsTrigger } from './register/trigger'
 import { mountSettingsStyles } from './styles'
-import { registerSettingsTrigger } from './trigger'
 
 /** 插件显示名（诊断元数据）。 */
 export const name = SETTINGS_UI_PLUGIN

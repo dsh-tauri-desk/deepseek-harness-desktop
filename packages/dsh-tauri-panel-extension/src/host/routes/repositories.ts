@@ -1,19 +1,19 @@
 /**
  * routes/repositories.ts — 自定义技能仓库 HTTP 路由（roots 列表 / 添加 / 移除）。
  *
- * 仓库的本地/GitHub 物料在 ../repos.ts，持久化与移除在 ../state.ts。添加/移除
+ * 仓库的本地/GitHub 物料在 ../service/repos.ts，持久化与移除在 ../storage/index.ts。添加/移除
  * 后必须先 remountProvider（宿主侧的 filesystem skill provider 持有目录 watcher，
  * Windows 上移除被 watch 的树会 EPERM），再删除物料目录。
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { SkillRootEntry } from '../state.ts'
-import type { RouteRegistrar } from '../types.ts'
+import type { SkillRootEntry } from '../storage/index.ts'
+import type { RouteRegistrar } from '../types/index.ts'
 import { readJsonBody, sameOrigin, sendJson } from 'dsh-tauri'
 import { API_PREFIX } from '../../shared/constants.ts'
-import { addGitRepo, addLocalRepo, rootExists } from '../repos.ts'
-import { removeTree } from '../rmtree.ts'
-import { loadState, removeSkillRoot } from '../state.ts'
+import { addGitRepo, addLocalRepo, rootExists } from '../service/repos.ts'
+import { removeTree } from '../service/rmtree.ts'
+import { loadState, removeSkillRoot } from '../storage/index.ts'
 
 /** One registered repository plus a liveness flag (roots can go stale). */
 function toRootView(entry: SkillRootEntry): SkillRootEntry & { live: boolean } {

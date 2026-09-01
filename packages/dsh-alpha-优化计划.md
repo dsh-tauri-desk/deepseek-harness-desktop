@@ -1,0 +1,194 @@
+# DSH Alpha 版本接口审查与优化计划（0.1.2-alpha.3）
+
+> 目标：全面审查桌面端与 dsh 核心的全部接口消费面，调研 alpha.3 新增/变更的公开接口，制定分阶段升级与优化计划，**以向后兼容为硬约束**（旧核心可继续运行、补丁可安全跳过、插件能力可降级）。
+
+---
+
+## 一、版本基线
+
+| 项 | 值 |
+| --- | --- |
+| npm `latest` / `next` | `0.1.1-rc.2`（当前桌面端捆绑） |
+| npm `alpha` | `0.1.2-alpha.3`（本计划目标） |
+| alpha 核心本地安装 | `AppData\...\dev\dependencies\dsh`（`@deepseek-ai/dsh@0.1.2-alpha.3`） |
+| 仓库 catalog 当前 | `dsh` 组全部为 `0.1.1-rc.2`（`@deepseek-ai/cordis@4.0.1`） |
+
+alpha 与 rc.2 是**并行发行线**：rc.2 仍为稳定线，alpha.3 带新架构（SDK / API Controller / 新客户端模块系统）。升级必须保持「核心可选版本」能力（桌面端 `service/core` 已支持多核心槽位与切换）。
+
+---
+
+## 二、当前接口消费面全量盘点（对照 alpha.3 状态）
+
+### 2.1 客户端插件消费的 dsh 包（packages/*/package.json + 源码 import）
+
+| 包 | 消费插件 | 用途 | alpha.3 状态 |
+| --- | --- | --- | --- |
+| `@deepseek-ai/dsh-client-runtime` | dsh-tauri / ui / session / panel / panel-extension / rightclick / worktree / panel-placeholder | 类型：`ISessions/IWorkspaces/SlotRegistry/SessionListState/SessionSummary/WorkspaceId`；`dsh.client.inject` | **已移除**（npm 无 alpha tag）→ 拆分为 `dsh-client-store` + `dsh-client-ui-slots` + `dsh-api-*-controller` |
+| `@deepseek-ai/dsh-client-ui-layout` | 全部插件 | `ILayout` 类型、`ctx.layout`（`toggleSidebar` 等） | 存在 `0.1.2-alpha.3`，`LayoutController` 保留 |
+| `@deepseek-ai/dsh-client-ui-primitives` | session / ui / panel-extension / rightclick / worktree | `Button/Modal/Menu/Input/StateDot/MenuEntry/IconChevronDownOutline14` | 运行时由 web-frontend **seed 模块**提供（物理包不在 node_modules）；npm 有 `alpha.3` |
+| `@deepseek-ai/dsh-client-ui-renderer` | panel / ui / panel-placeholder | `SlotOutlet`（桌面补丁注入导出） | 存在 `0.1.2-alpha.3`，`SlotOutlet/SlotRegistry` 保留 |
+| `@deepseek-ai/dsh-client-modules` | （依赖链） | 新客户端模块系统（`window.__ModuleLoader__` / `__DSH_BOOT__`） | 存在 `0.1.2-alpha.3`（新增核心） |
+| `@deepseek-ai/dsh-client-store` | （新） | `createSnapshotStore` / `notifySubscribers`（替代 zustand 运行时） | 新增，npm 有 `alpha.3` |
+| `@deepseek-ai/dsh-client-ui-slots` | （新） | `SlotCore`（slot 注册语义层） | 新增，npm 有 `alpha.3` |
+| `@deepseek-ai/cordis` | 全部 | Context 运行时 | `^4.0.2`（alpha） |
+| `@deepseek-ai/dsh-skill-filesystem` | panel-extension | skill 文件系统工具 | 存在 `0.1.2-alpha.3` |
+
+**关键结论**：仓库唯一直接触碰旧 `dsh-client-runtime` 类型的是
+`packages/dsh-tauri/src/client/types/runtime.ts`（从 `@deepseek-ai/dsh-client-runtime/client` 导入类型并 re-export），以及各插件 `package.json` 的 `dsh.client.inject` 与 `peerDependencies`。alpha 下这些必须迁移，否则 `tsc` / 运行时模块表解析失败。
+
+### 2.2 宿主（host）侧消费的 dsh 运行时接口
+
+| 接口 | 消费点 | alpha.3 状态 |
+| --- | --- | --- |
+| `ctx.sessions`（list/get/binding…） | worktree `host/session.ts`、session `host/session-files.ts` | 保留（`dsh-session` 0.1.2-alpha.3） |
+| `ctx.workspaceRegistry`（resolveByPath/list/delete/archiveSession/archivedSessionIds） | worktree `host/*.ts`、session `host/{registry,archive}.ts` | 保留且增强（新增 `sessionPaths`/`rememberSessionPath` 索引） |
+| `ctx.agents`（get/create） | worktree `host/handoff.ts` | 保留 |
+| `ctx.webServer.register` | rightclick / worktree / session host | 保留 |
+| `ctx.tools.register` / `ctx.systemPrompt.context/section` | worktree `host/apply.ts` | 保留 |
+| `ctx.slots.inject/register` | 各 client 插件 | 语义保留（底层迁到 `dsh-client-ui-slots`） |
+| `ctx.locale`（register/subscribe/getLocale/bind） | 各 client 插件 | 保留 |
+| `ctx.layout.toggleSidebar` | dsh-tauri `apply.ts` | 保留 |
+| 客户端 `ctx.sessions` / `ctx.workspaces`（list.getSnapshot/subscribe, startSession, manager.refresh） | session `client/**`、worktree `client/hydration.ts` | **迁移**：由 `dsh-api-session-controller` / `dsh-api-workspace-controller` 提供（`ClientSessions` / `WorkspaceController` + 流式订阅） |
+
+### 2.3 Rust 桌面壳补丁面（`src-tauri/src/service/patch/*`）与 alpha.3 锚点实测
+
+| 补丁 | 目标文件 | alpha.3 锚点 | 结论 |
+| --- | --- | --- | --- |
+| `alpha_auth.rs`（`--skip-auth`） | `dsh-web-app/lib/startup.js` + `dsh-client-connection/lib/index.js` | ✅ 全部命中 | 兼容；且实测 alpha 核心已含桌面补丁标记（说明 alpha 线已在用该补丁） |
+| `renderer.rs`（`exports.SlotOutlet`） | `dsh-client-ui-renderer/lib/client.js` | ✅ `return module.exports;` 命中 | 兼容 |
+| `session.rs`（`SessionStore.remove`） | `dsh-session/lib/index.js` | ✅ 锚点命中 | 兼容 |
+| `client_hmr.rs` | `dsh-client-hmr/lib/client.js` | ✅ 命中 | 兼容 |
+| `workspace.rs`（显式 attach 归属放宽） | `dsh-workspace/lib/index.js` | ❌ **三处锚点全部失效** | **升级风险**：alpha 重写了成员归属逻辑（`sessionPaths`/`invalidSessionPaths`/`rememberSessionPath`），补丁将 `AnchorMissing` 安全跳过 → worktree 会话归属功能在 alpha.3 上退化 |
+
+**补丁机制本身**（`utils::patch_dsh`）是幂等 + 锚点缺失安全跳过的，架构上天然向后兼容；问题只在于个别补丁需要针对 alpha 新源码重写锚点。
+
+### 2.4 前端 src/ 面
+
+前端不直接消费 dsh 运行时包，全部经 Tauri `invoke`/`listen` 走 Rust bridge（`bridge/{core,config,plugin,lifecycle,profile,backup,system_os}.rs`），仅通过 iframe 承载 web UI。**前端侧对 alpha 升级无直接接口风险**。
+
+---
+
+## 三、alpha.3 新增接口调研（可复用点）
+
+### 3.1 包级新增（30 个，对比 rc.2）
+
+```
+dsh-acp, dsh-acp-app                         Agent Client Protocol（stdio ACP 服务端）
+dsh-api-session-controller                   Session 远程控制器（ClientSessions）
+dsh-api-settings-controller                  Settings/Credentials 远程面
+dsh-api-workspace-controller                 Workspace 远程控制器（WorkspaceController）
+dsh-client-ui-approval / -chat / -schedule / -session   新客户端 UI 模块
+dsh-deepseek-llm-api-extensions              DeepSeek LLM 扩展
+dsh-deque                                    双端队列工具
+dsh-hook-protocol                            hooks 协议基座（runHook/matcherGroup/输出合并）
+dsh-hooks-claude-code / dsh-hooks-codex      Claude Code / Codex 外部 hooks 桥
+dsh-plugin-package-inventory-deepseek        DeepSeek 插件清单
+dsh-sdk-app / -minimal / -protocol / -jsonrpc-server   SDK profile：stdio JSON-RPC 2.0 服务
+dsh-session-log-deepseek                     DeepSeek 会话日志导出
+dsh-session-turn-outline                     会话 turn 大纲
+dsh-util-crypto / -time / -values / -workspace-path   通用工具库
+dsh-web-fetch-http                           Web Fetch HTTP
+dsh-webhook / dsh-webhook-github             Webhook 规则引擎（WebhookRuntime）
+dsh-win32-process                            Win32 进程/Job/stdio 原生能力（koffi）
+```
+
+### 3.2 高价值新接口要点
+
+| 接口 | 能力 | 桌面端可复用场景 |
+| --- | --- | --- |
+| `dsh-sdk-jsonrpc-server` / `dsh-sdk-protocol` | `dsh --profile sdk` 起 stdio JSON-RPC 2.0 服务（newline-delimited），`JsonRpcLineTransport` | 外挂进程/CLI 桥：桌面端可起独立 SDK 进程，与核心双向通信，不依赖 web 端口 |
+| `dsh-api-session-controller`（`/client`） | `ClientSessions`（控制流 + 事件流 + lineage + queue mirror + projection store），`createSessionControlStream`、`SessionEventStream`、`createScope/scopeOf`、`SessionCreateError/SessionForkError` | 替代旧 client-runtime 会话能力；worktree/session 插件改用它订阅会话快照，摆脱 DOM 兜底 |
+| `dsh-api-workspace-controller`（`/client`） | `WorkspaceController` + `ClientWorkspaceModel`（`follow` 重连状态流、baseline+increment、archive 视图） | 归档面板/工作区列表改官方流式订阅 |
+| `dsh-api-settings-controller` | settings/credentials 远程读写（secret redaction） | 桌面端设置面板可直接读写核心设置 |
+| `dsh-webhook` / `dsh-webhook-github` | `WebhookRuntime`（规则 → 会话创建）、`WebhookRuleId/SourceId/DeliveryId` | GitHub 事件 → 自动建会话/触发任务 |
+| `dsh-hooks-claude-code` / `dsh-hooks-codex` | 外部 CLI hooks（`PreToolUse/PostToolUse/SessionStart…`）→ matcher group → `runHook` | 桥接用户已有的 Claude Code/Codex 配置 |
+| `dsh-win32-process` | `Job` 对象、进程树、stdio、`KILL_ON_JOB_CLOSE` | Rust 侧现有进程树管理的 JS 对照/旁路能力 |
+| `dsh-util-*` | crypto/time/values/workspace-path | 宿主插件工具函数替换手写实现 |
+| `dsh-session-turn-outline` | turn 大纲投影 | 会话导航/时间轴 UI |
+| `dsh-acp` | Agent Client Protocol 服务端 | 与外部 ACP 客户端互操作 |
+
+### 3.3 客户端架构变化（最重要）
+
+```
+rc.2:   dsh-client-runtime（SlotRegistry + SessionRuntime + zustand） + dsh-host-apiproxy
+        └─ 插件 import 其类型，dsh.client.inject 引用它
+
+alpha:  dsh-client-modules（客户端模块系统：__ModuleLoader__ 惰性 CJS 表 + __DSH_BOOT__ 图）
+        + dsh-client-store（createSnapshotStore/notifySubscribers，替代 zustand）
+        + dsh-client-ui-slots（SlotCore 注册语义）
+        + dsh-api-{session,workspace,settings}-controller（远程流式控制器）
+        └─ web-frontend bundle 以 seed 模块提供 react/cordis/dsh-client-store/dsh-client-ui-slots/dsh-client-ui-primitives
+```
+
+**含义**：插件 client bundle 中 `require("@deepseek-ai/dsh-client-store")` / `dsh-client-ui-slots` / `dsh-client-ui-primitives` 在 alpha 运行时由模块表解析；但**编译期类型**需从 npm 安装 alpha.3 的对应包（npm 均已发布 `0.1.2-alpha.3`，`dsh-client-runtime` 除外）。
+
+---
+
+## 四、向后兼容影响分析（风险矩阵）
+
+| 影响面 | 严重度 | 说明与对策 |
+| --- | --- | --- |
+| `dsh-client-runtime` 类型导入编译失败 | 🔴 高 | `runtime.ts` 从 `@deepseek-ai/dsh-client-runtime/client` 导入 6 个类型；该包 alpha 无发布。对策：类型改从 `dsh-client-store` / `dsh-client-ui-slots` / `dsh-api-session-controller/client` 导入，或保留本地 ambient 垫片；`dsh.client.inject` 移除 runtime 条目 |
+| `workspace.rs` 补丁锚点失效 → worktree 归属退化 | 🔴 高 | alpha 重写 workspace 成员归属（`sessionPaths` 索引）。对策：重写补丁锚点到新实现，或改用官方 `rememberSessionPath`/显式 attach API；补丁本身安全跳过不会崩 |
+| `dsh-client-ui-primitives` 编译期依赖 | 🟡 中 | 运行时 seed 提供，但 `tsc`/pnpm 需要包。对策：catalog 升级到 `alpha.3` 安装 |
+| `ctx.sessions`/`ctx.workspaces` 客户端面迁移 | 🟡 中 | 改 `dsh-api-*-controller` 流式接口；保留 `list.getSnapshot/subscribe` 语义兼容壳，避免一次改全 |
+| `dsh.client.inject` 声明变更 | 🟡 中 | 旧声明含 `dsh-client-runtime`；alpha 下需移除，否则模块表解析报错（不注册即 throw） |
+| 其余 4 个补丁（alpha_auth/renderer/session/hmr） | 🟢 低 | 锚点实测命中，零改动 |
+| 前端 src/ | 🟢 低 | 不经 Tauri bridge，无直接接口风险 |
+
+**兼容性总原则（沿用 AGENTS.md 退级阶梯）**：
+1. 官方公开 API（`dsh-api-*-controller`、`dsh-sdk-*`、`dsh-webhook`…）优先；
+2. 桌面壳补丁兜底（锚点校验 + 幂等 + 单测），缺锚点安全跳过；
+3. DOM 补丁 / 功能降级最后兜底，绝不静默半工作；
+4. 核心版本可选：rc.2 与 alpha.3 并存，插件按「能力探测」路由。
+
+---
+
+## 五、分阶段优化计划
+
+### Phase 0 — 基线锁定与验证
+- [ ] 用 alpha 核心（`dev/dependencies/dsh`）跑通桌面端 `pnpm tauri dev`，确认启动链（`launch` → 补丁 → web 服务）不回归。
+- [ ] 记录 alpha 核心下 5 个补丁的实际结果（哪些 `Applied` / `AnchorMissing`），固化到 `docs/`。
+- [ ] 确认 `dsh_rel_contains` 判定的 `--skip-auth` 两层命中在 alpha 线成立。
+
+### Phase 1 — 依赖与类型迁移（打通编译）
+- [ ] `pnpm-workspace.yaml` `catalog:dsh` 升级到 alpha.3 系（`cordis@^4.0.2`；移除 `dsh-client-runtime`；新增 `dsh-client-store` / `dsh-client-ui-slots` / `dsh-api-session-controller` / `dsh-api-workspace-controller` 到 catalog）。
+- [ ] 各插件 `package.json`：`peerDependencies` 与 `dsh.client.inject` 去掉 `dsh-client-runtime`，按需引入新包。
+- [ ] 重写 `dsh-tauri/src/client/types/runtime.ts`：类型来源迁到新包；对旧插件保留 re-export 兼容名（`ISessions/IWorkspaces/SlotRegistry/SessionListState/SessionSummary/WorkspaceId`）。
+- [ ] `pnpm typecheck` + `pnpm --filter <pkg> typecheck` 全绿；`pnpm build` 部署到 `src-tauri/resources` 后桌面端加载验证。
+
+### Phase 2 — 补丁兼容修复
+- [ ] 重写 `service/patch/workspace.rs`：锚点对齐 alpha `dsh-workspace/lib/index.js` 新逻辑（`sessionPaths`/`rememberSessionPath`/显式 attach 校验），保留幂等标记与单测；旧 rc.2 锚点失效时安全跳过。
+- [ ] 为 alpha_auth / renderer / session / hmr 各补丁补 alpha 锚点单测（fixture 用 alpha.3 打包产物片段），防升级再破。
+
+### Phase 3 — 新接口采纳（按价值排序）
+- [ ] **客户端会话/工作区流式化**：session 插件归档面板与 worktree 插件 hydration 改接 `dsh-api-session-controller` / `dsh-api-workspace-controller` 的流式接口，删掉 DOM 兜底快照代码。
+- [ ] **SDK stdio 桥**：评估用 `dsh-sdk-jsonrpc-server` 提供「核心外挂进程」能力（Rust 起子进程 + stdio JSON-RPC），作为 web 端口之外的备选交互通道（预留，不阻塞主线）。
+- [ ] **Webhook 集成**：评估 `dsh-webhook(-github)` 让桌面端接收外部事件并建会话（纳入后续迭代，先做接口能力盘点单）。
+- [ ] **工具库替换**：host 侧手写路径/时间/值工具换 `dsh-util-*`（低风险、低收益，排最后）。
+
+### Phase 4 — 双核心验证与灰度
+- [ ] 维护 rc.2 与 alpha.3 双核心跑：核心切换后补丁重打、`dsh_rel_contains` 重判、插件能力探测降级路径全部可回退。
+- [ ] `cargo test`（含补丁单测）+ `pnpm test -- --run` + `pnpm lint --fix`。
+- [ ] 更新 `docs/`（含 `mobile-remote.md` 的版本核对提示）与各插件 README。
+
+---
+
+## 六、验收清单
+
+- [ ] `pnpm typecheck`、各包 `pnpm --filter <pkg> typecheck`、`cargo test` 全绿。
+- [ ] alpha.3 核心下 5 个补丁状态被记录且可解释（4 兼容 + workspace 已修复或已降级）。
+- [ ] 移除 `dsh-client-runtime` 后无任何源码 import / peerDeps / inject 残留。
+- [ ] rc.2 与 alpha.3 均能启动桌面端，插件在两者下均可加载或显式降级（不白屏、不静默半工作）。
+- [ ] 新增类型/常量按 `packages/AGENTS.md` 收敛到 `client/types/`、`client/constants/`。
+- [ ] 相关 README 与文档同步。
+
+---
+
+## 附：关键文件索引
+
+- 版本：`pnpm-workspace.yaml`（`catalog:dsh`）、根 `package.json`
+- 类型迁移：`packages/dsh-tauri/src/client/types/runtime.ts`
+- 补丁：`src-tauri/src/service/patch/{alpha_auth,renderer,session,workspace,client_hmr}.rs`、`src-tauri/src/utils/mod.rs`
+- 客户端消费：各插件 `package.json` 的 `dsh.client.inject` + `src/client/**`
+- 宿主消费：`packages/dsh-tauri-{worktree,session,rightclick}/src/host/**`

@@ -7,10 +7,11 @@
  *   - features/surface.tsx      注册进 shell.overlay：工作树模式的常驻顶部提示条
  *     [ 该会话正在工作树进行 ] --- [ 检出本地 ] [ 放弃 ]。
  *   - features/dialog.tsx       注册进 shell.overlay：检出本地/放弃更改两个模态框。
- *   - session.ts                DOM 补丁：侧边栏会话行时间标识左侧的 Git 分支图标。
+ *   - dom/session-icons.ts      DOM 补丁：侧边栏会话行时间标识左侧的 Git 分支图标。
  *
- * 目录规划：rpc.ts（ofetch 客户端）/ store.ts（共享状态 + unstorage 偏好）/
- * hydration.ts（状态恢复）/ controller 由 dsh-tauri/client 共享提供（hookable）。
+ * 目录规划：apis/（ofetch 客户端）/ store/（共享状态 + unstorage 偏好）/
+ * register/（hydration / session-icons / slot 注册）/ components/（UI 组件）/
+ * utils/（纯函数）/ locales/（双语）/ controller 由 dsh-tauri/client 共享提供（hookable）。
  * 与 node half（host/）经 /api/dsh-worktree/* 通信（create/status/checkout/discard）。
  */
 import type { ClientContext } from 'dsh-tauri/client'
@@ -23,14 +24,14 @@ import {
   SURFACE_EFFECT,
   WORKTREE_PLUGIN_NAME,
 } from './constants'
-import { registerDialog } from './features/dialog'
-import { mountModeSelectStyles, registerModeSelect } from './features/mode-select'
-import { registerSurface } from './features/surface'
-import { installWorktreeHydration } from './hydration'
-import { installLocale } from './locale'
-import { installSessionIcons } from './session'
+import { installLocale } from './locales'
+import { registerDialog } from './register/dialog'
+import { installWorktreeHydration } from './register/hydration'
+import { registerModeSelect } from './register/mode-select'
+import { installSessionIcons } from './register/session-icons'
+import { registerSurface } from './register/surface'
 import { hydratePreferredMode } from './store'
-import { mountWorktreeStyles } from './styles'
+import { mountModeSelectStyles, mountWorktreeStyles } from './styles'
 
 export { WORKTREE_API_PREFIX } from '../shared/constants'
 export type * from './types'

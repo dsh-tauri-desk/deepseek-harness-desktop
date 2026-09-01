@@ -19,8 +19,8 @@ import {
   RIGHTCLICK_MENU_EFFECT,
   RIGHTCLICK_STYLES_EFFECT,
 } from './constants'
-import { installLocale } from './locale'
-import { installContextMenu } from './menu'
+import { installLocale } from './locales'
+import { installContextMenu } from './service/menu'
 import { mountRightClickStyles } from './styles'
 
 /** 插件显示名（诊断元数据）。 */

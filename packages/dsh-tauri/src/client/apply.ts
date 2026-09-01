@@ -5,7 +5,7 @@
  * （侧边栏 / 后退 / 前进）通过 postMessage 操控 iframe 内的 dsh 应用；
  * 本插件是 iframe 内的接收端：把命令转发给 dsh（侧边栏切换走
  * `ctx.layout.toggleSidebar`，后退/前进走 `window.history`），并把 dsh 状态
- * （侧边栏折叠、页面历史边界）回报给宿主。协议详见 `./bridge.ts`。
+ * （侧边栏折叠、页面历史边界）回报给宿主。协议详见 `./service/bridge.ts`。
  *
  * 另：官方侧边栏 logo 行自带的「收起侧边栏」按钮与宿主顶部导航栏的侧边栏
  * 开关重复，插件加载时用一条 CSS 规则把它隐藏（折叠态窄栏的「打开侧边栏」
@@ -16,7 +16,6 @@
  */
 import type { ClientContext } from './types'
 import { CssRender } from 'css-render'
-import { setupNavBridge } from './bridge'
 import {
   COLLAPSE_SIDEBAR_SELECTOR,
   NAV_BRIDGE_EFFECT_ID,
@@ -24,7 +23,8 @@ import {
   SIDEBAR_TWEAKS_EFFECT_ID,
   SIDEBAR_TWEAKS_STYLE_ID,
 } from './constants'
-import { reportPluginError } from './error'
+import { setupNavBridge } from './service/bridge'
+import { reportPluginError } from './utils/error'
 
 /**
  * 插件体：接管导航桥（置位接管标记 → 挂命令监听/状态观察/历史跟踪）。

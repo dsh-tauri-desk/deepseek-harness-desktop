@@ -9,20 +9,20 @@
  *   4. HTTP 路由注册在 effect 内，卸载统一释放。
  */
 
-import type { HostContext, PendingHandoff, PluginConfig } from './types.js'
+import type { HostContext, PendingHandoff, PluginConfig } from './types/index.js'
 import { homedir } from 'node:os'
 import { join } from 'pathe'
 import { WORKTREE_SECTION_ORDER } from '../shared/constants.js'
-import { completeWorktreeHandoff } from './handoff.js'
-import { createWorktreeHooks } from './hooks.js'
-import { unregisterWorktreeWorkspace, worktreeKey } from './operation.js'
-import { buildRoutes } from './route.js'
+import { createWorktreeHooks } from './hooks/index.js'
+import { buildRoutes } from './routes/index.js'
+import { completeWorktreeHandoff } from './service/handoff.js'
+import { unregisterWorktreeWorkspace, worktreeKey } from './service/operation.js'
 import {
   clearPendingCheckoutContext,
   loadCheckoutContextsSync,
   loadLedgerSync,
-} from './storage.js'
-import { createToolSet } from './tools.js'
+} from './storage/index.js'
+import { createToolSet } from './tools/index.js'
 
 /**
  * 插件体：注册工具、HTTP 路由与系统提示注入。

@@ -16,15 +16,15 @@ export const name = PLUGIN_ID
 /** 需要的客户端服务：layout（侧边栏切换）。 */
 export const inject = PLUGIN_INJECT
 
+export * from './apis'
 export { apply } from './apply'
-export { compat, resolveStartSession } from './compat'
 export * from './controller'
-export * from './http'
 export * from './storage'
 export * from './store'
-
 export type * from './types'
+
 export type { ClientContext } from './types'
+export { compat, resolveStartSession } from './utils/compat'
 export { CssRender } from 'css-render'
 
 export { createHooks } from 'hookable'

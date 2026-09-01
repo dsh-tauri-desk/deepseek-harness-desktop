@@ -1,17 +1,17 @@
 /**
  * routes/mcp.ts — MCP 服务器行 HTTP 路由（mcp 列表/保存/开关/移除 + 导入扫描/应用）。
  *
- * 只做参数化与转发：cordis.patch.yml 的读写在 ../mcp.ts，跨目录导入扫描在
- * ../agents.ts。所有返回 `restartNeeded: true`，因为行变更需要 dsh 重启才能组合。
+ * 只做参数化与转发：cordis.patch.yml 的读写在 ../service/mcp.ts，跨目录导入扫描在
+ * ../service/agents.ts。所有返回 `restartNeeded: true`，因为行变更需要 dsh 重启才能组合。
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { McpInput } from '../mcp.ts'
-import type { RouteRegistrar } from '../types.ts'
+import type { McpInput } from '../service/mcp.ts'
+import type { RouteRegistrar } from '../types/index.ts'
 import { readJsonBody, sameOrigin, sendJson } from 'dsh-tauri'
 import { API_PREFIX } from '../../shared/constants.ts'
-import { scanAllMcp } from '../agents.ts'
-import { listMcp, removeMcp, setMcpDisabled, upsertMcp, validateMcpInput } from '../mcp.ts'
+import { scanAllMcp } from '../service/agents.ts'
+import { listMcp, removeMcp, setMcpDisabled, upsertMcp, validateMcpInput } from '../service/mcp.ts'
 
 /** MCP route module 的配置片：profile patch 目录。 */
 export interface McpRoutesConfig {

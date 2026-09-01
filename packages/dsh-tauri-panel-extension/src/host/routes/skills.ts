@@ -1,23 +1,23 @@
 /**
  * routes/skills.ts — 技能目录 HTTP 路由（skills / skill 读写 / policy / 打开目录）。
  *
- * 只做参数化与转发：文件系统与目录发现逻辑在 ../skills.ts / ../state.ts，
+ * 只做参数化与转发：文件系统与目录发现逻辑在 ../service/skills.ts / ../storage/index.ts，
  * 技能的宿主目录列表读 host.skills。路由级安全边界（同源校验、可写性判定、
  * 服务端解析目标路径）集中在本文件。
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { SkillInput } from '../skills.ts'
-import type { SkillRootEntry } from '../state.ts'
-import type { HostSkill, PanelExtensionHost, RouteRegistrar, SkillRepositoryMetadata } from '../types.ts'
+import type { SkillInput } from '../service/skills.ts'
+import type { SkillRootEntry } from '../storage/index.ts'
+import type { HostSkill, PanelExtensionHost, RouteRegistrar, SkillRepositoryMetadata } from '../types/index.ts'
 import { mkdirSync } from 'node:fs'
 import process from 'node:process'
 import { readJsonBody, sameOrigin, sendJson } from 'dsh-tauri'
 import { isAbsolute, join, relative, resolve, sep } from 'pathe'
 import { API_PREFIX } from '../../shared/constants.ts'
-import { openDirectory } from '../opener.ts'
-import { deleteSkill, setSkillPolicy, updateSkillFile, userSkillsDir, validateSkillInput, writeSkill } from '../skills.ts'
-import { loadState, pluginStateDir } from '../state.ts'
+import { openDirectory } from '../service/opener.ts'
+import { deleteSkill, setSkillPolicy, updateSkillFile, userSkillsDir, validateSkillInput, writeSkill } from '../service/skills.ts'
+import { loadState, pluginStateDir } from '../storage/index.ts'
 
 /** One catalog skill as the browser sees it (edit flags and repository metadata added). */
 export type SkillRow = HostSkill & {

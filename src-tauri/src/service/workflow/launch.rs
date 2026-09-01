@@ -521,7 +521,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
-    let spawn_result = {
+    let spawn_result: Result<(Option<std::process::ChildStdout>, Option<std::process::ChildStderr>, u32), String> = {
         #[cfg(windows)]
         {
             use std::io::{BufReader, Read};

@@ -11,7 +11,7 @@
  * session id（只读，不移动 React 管理的节点），再读 store 判断是否处于工作树模式。
  */
 import type { WorkspaceSessionOrder } from './types'
-import { CssRender } from 'dsh-tauri/client'
+import { createLifecycleController, CssRender } from 'dsh-tauri/client'
 import {
   SESSION_ICON_ATTRIBUTE,
   SESSION_ICON_STYLE_ID,
@@ -29,6 +29,7 @@ export type { WorkspaceSessionOrder } from './types'
 export function installSessionIcons(): () => void {
   if (typeof document === 'undefined')
     return () => {}
+  const controller = createLifecycleController()
   const cssr = CssRender()
   if (cssr.find(SESSION_ICON_STYLE_ID) !== null)
     return () => {}
@@ -47,6 +48,7 @@ export function installSessionIcons(): () => void {
     c('[role="treeitem"]', { position: 'relative' }),
   ])
   iconStyle.mount({ id: SESSION_ICON_STYLE_ID, head: true })
+  controller.add(() => iconStyle.unmount({ id: SESSION_ICON_STYLE_ID }))
 
   /**
    * HARDCODE: DSH 0.1.1-rc.2 does not expose a per-session-row slot or data id,
@@ -105,40 +107,17 @@ export function installSessionIcons(): () => void {
     }
   }
 
-  const ro = new MutationObserver(scan)
-  function attach(): boolean {
-    const target = document.querySelector<HTMLElement>(SIDEBAR_SELECTOR) ?? document.body
-    ro.observe(target, { childList: true, subtree: true })
-    scan()
-    return true
-  }
+  // 观察 document.body（覆盖其后挂载的侧边栏子树），store 变更时重扫。
+  controller.observe(document.body, { childList: true, subtree: true }, scan)
+  controller.add(worktreeStore.subscribe(scan))
 
-  // store 变更时重扫（不在 DOM 事件里也能感知模式切换）。
-  const unsubscribeStore = worktreeStore.subscribe(scan)
+  // 应用晚挂载时侧边栏可能尚未出现，短暂轮询直到侧边栏出现即停（观察器已覆盖其子树）。
+  const stopPolling = controller.interval(() => {
+    if (document.querySelector(SIDEBAR_SELECTOR))
+      stopPolling()
+  }, 400)
 
-  let tries = 0
-  let timer: ReturnType<typeof setInterval> | undefined
-  if (!attach()) {
-    timer = setInterval(() => {
-      if (attach() || ++tries > 30)
-        clearInterval(timer)
-    }, 500)
-  }
-  // 应用晚挂载时侧边栏可能尚未出现，短暂轮询补扫。
-  if (!timer) {
-    timer = setInterval(() => {
-      if (document.querySelector(SIDEBAR_SELECTOR))
-        clearInterval(timer)
-    }, 400)
-  }
-
-  return () => {
-    iconStyle.unmount({ id: SESSION_ICON_STYLE_ID })
-    ro.disconnect()
-    unsubscribeStore()
-    if (timer !== undefined)
-      clearInterval(timer)
-  }
+  return () => controller.dispose()
 }
 
 /** 返回目标工作区与当前首个其他会话，供检出会话插到工作区最上方。 */

@@ -56,7 +56,9 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "dsh-tauri": "workspace:*"
+    "dsh-tauri": "workspace:*",
+    "hookable": "catalog:utils",
+    "pathe": "catalog:utils"
   },
   "devDependencies": {
     "dsh-tauri-tsdown": "workspace:*",

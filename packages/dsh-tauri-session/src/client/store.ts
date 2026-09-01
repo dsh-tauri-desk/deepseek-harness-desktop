@@ -9,93 +9,24 @@
  * 不会产生官方 changed frame —— 因此这些变更成功后调用方必须传入 resync
  * （ctx.workspaces.manager.refresh）重新拉取归档镜像，否则列表原地不动。
  */
-import type { ArchivedListPayload, ArchiveSort, ArchiveUiState } from './types'
+import type { ArchiveSort, ArchiveUiState } from './types'
 import { createExternalStore } from 'dsh-tauri/client'
 import { useSyncExternalStore } from 'react'
-import { SESSION_API_PREFIX } from './constants'
-import { text } from './locale'
+import {
+  fetchArchived,
+  postArchive,
+  postArchiveWorkspace,
+  postClear,
+  postDelete,
+  postDeleteWorkspace,
+  postUnarchive,
+} from './rpc'
 
 export type { ArchivedListPayload, ArchiveUiState } from './types'
 
 /** 从 unknown 错误里取可展示文本（Error 取 message，其余字符串化）。 */
 function errMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-const MUTATION_TIMEOUT_MS = 15_000
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS)
-  try {
-    const res = await fetch(`${SESSION_API_PREFIX}${path}`, {
-      headers: { 'content-type': 'application/json' },
-      signal: controller.signal,
-      ...init,
-    })
-    const body = await res.json().catch(() => ({} as { error?: string })) as T & { error?: string }
-    if (!res.ok)
-      throw new Error(body.error ?? text('requestFailed', { status: res.status }))
-    return body as T
-  }
-  catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError')
-      throw new Error(text('requestTimeout'))
-    throw error
-  }
-  finally {
-    clearTimeout(timeout)
-  }
-}
-
-/** 查询归档会话列表。 */
-export function fetchArchived(): Promise<ArchivedListPayload> {
-  return request<ArchivedListPayload>('/archived')
-}
-
-/** 归档单个会话。 */
-export function postArchive(sessionId: string, workspaceId?: string, beforeSessionId?: string): Promise<ArchivedListPayload> {
-  return request<ArchivedListPayload>('/archive', {
-    method: 'POST',
-    body: JSON.stringify({ sessionId, ...(workspaceId ? { workspaceId } : {}), ...(beforeSessionId ? { beforeSessionId } : {}) }),
-  })
-}
-
-/** 取消归档（会话回到其工作区组保留的位置）。 */
-export function postUnarchive(sessionId: string): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>('/unarchive', {
-    method: 'POST',
-    body: JSON.stringify({ sessionId }),
-  })
-}
-
-/** 彻底删除一个归档会话（宿主移除 + 物理删除会话数据，不可恢复）。 */
-export function postDelete(sessionId: string): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>('/delete', {
-    method: 'POST',
-    body: JSON.stringify({ sessionId }),
-  })
-}
-
-/** 归档整个工作区组（一次写入多条记录）。 */
-export function postArchiveWorkspace(workspaceId: string, sessionIds: string[]): Promise<ArchivedListPayload> {
-  return request<ArchivedListPayload>('/archive-workspace', {
-    method: 'POST',
-    body: JSON.stringify({ workspaceId, sessionIds }),
-  })
-}
-
-/** 清空归档（全部会话彻底删除，不可恢复）。 */
-export function postClear(): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>('/clear', { method: 'POST', body: JSON.stringify({}) })
-}
-
-/** 删除项目内的全部归档会话。 */
-export function postDeleteWorkspace(sessionIds: readonly string[]): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>('/delete-workspace', {
-    method: 'POST',
-    body: JSON.stringify({ sessionIds }),
-  })
 }
 
 /** 全局唯一共享状态源（模块级单例）。 */

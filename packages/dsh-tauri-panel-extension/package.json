@@ -62,6 +62,9 @@
   },
   "dependencies": {
     "dsh-tauri": "workspace:*",
+    "hookable": "catalog:utils",
+    "ofetch": "catalog:utils",
+    "pathe": "catalog:utils",
     "smol-toml": "catalog:utils",
     "yaml": "catalog:testing"
   },

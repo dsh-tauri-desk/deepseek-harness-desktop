@@ -1,20 +1,21 @@
 /** Shared protocol and UI constants for the dsh-tauri-session client plugin. */
 
-export const SESSION_CLIENT_PLUGIN = 'dsh-tauri-session'
-export const SESSION_CLIENT_NS = SESSION_CLIENT_PLUGIN
-export const SESSION_API_PREFIX = '/api/dsh-session'
-export const SESSION_REGISTRANT = SESSION_CLIENT_PLUGIN
+import { SESSION_PLUGIN_NAME } from '../shared/constants'
+
+export { SESSION_API_PREFIX, SESSION_PLUGIN_NAME, SESSION_SECTION_ORDER } from '../shared/constants'
+
+export const SESSION_CLIENT_NS = SESSION_PLUGIN_NAME
+export const SESSION_REGISTRANT = SESSION_PLUGIN_NAME
 
 export const SETTINGS_SECTION_SLOT = 'settings.section'
 export const SESSION_SECTION_ID = 'dsh-tauri-session-archive'
-export const SESSION_SECTION_ORDER = 220
 
 export const SESSION_STYLE_ID = 'dsh-tauri-session-styles'
 
 /** Effects / lifecycle ids (诊断元数据). */
-export const SESSION_STYLES_EFFECT = `${SESSION_CLIENT_PLUGIN}: styles`
-export const SESSION_ARCHIVE_PATCH_EFFECT = `${SESSION_CLIENT_PLUGIN}: workspace archive patch`
-export const SESSION_ARCHIVE_SECTION_EFFECT = `${SESSION_CLIENT_PLUGIN}: archive section`
+export const SESSION_STYLES_EFFECT = `${SESSION_PLUGIN_NAME}: styles`
+export const SESSION_ARCHIVE_PATCH_EFFECT = `${SESSION_PLUGIN_NAME}: workspace archive patch`
+export const SESSION_ARCHIVE_SECTION_EFFECT = `${SESSION_PLUGIN_NAME}: archive section`
 
 /** css-render class prefix (value 仅用于样式命名，不作为协议). */
 export const SESSION_CLASSES = {

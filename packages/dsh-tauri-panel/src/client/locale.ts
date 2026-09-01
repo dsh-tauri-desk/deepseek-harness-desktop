@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis'
+import type { ClientContext } from 'dsh-tauri/client'
 
 /**
  * locale.ts — 本插件文案（zh/en 双语）。命名空间 `panel`：
@@ -22,7 +22,7 @@ const en: Record<keyof typeof zh, string> = {
 }
 
 /** 注册面板文案命名空间（effect 生命周期，随插件卸载注销）。 */
-export function installPanelLocale(ctx: Context): void {
+export function installPanelLocale(ctx: ClientContext): void {
   ctx.effect(
     () => {
       const disposeZh = ctx.locale.register(NS, 'zh', zh)

@@ -1,3 +1,4 @@
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 /**
  * dsh-tauri-ui 客户端插件体（browser half）：定制化 Tauri UI 的未来载体。
  *
@@ -22,8 +23,7 @@
  * 保留了骨架期的 `shell.overlay` 条目（id dsh-tauri-ui）作为未来 chrome
  * 的落点，与设置侧边栏（id dsh-tauri-ui-settings）并行不冲突。
  */
-import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type { ClientContext } from 'dsh-tauri/client'
 import { SlotOutlet } from '@deepseek-ai/dsh-client-ui-renderer'
 import {
   SETTINGS_REGISTRANT,
@@ -76,7 +76,11 @@ export function apply(ctx: ClientContext): void {
     'dsh-tauri-ui: settings styles',
   )
   installSettingsLocale(ctx)
-  installSettingsSections(ctx.slots)
+  // 设置分区投影：引用清理也走 effect（插件卸载后 slotsRef 复位，避免跨实例残留）。
+  ctx.effect(
+    () => installSettingsSections(ctx.slots),
+    'dsh-tauri-ui: settings sections projection',
+  )
   if (typeof SlotOutlet === 'function') {
     registerSettingsSidebar(ctx)
     registerSettingsTrigger(ctx)

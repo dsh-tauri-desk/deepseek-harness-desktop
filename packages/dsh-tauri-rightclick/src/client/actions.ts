@@ -8,6 +8,7 @@ import type {
   WorkspacesRuntimeLike,
   WorkspaceViewLike,
 } from './types'
+import { requestJson } from 'dsh-tauri/client'
 import { confirmDialog } from './confirm-dialog'
 import { HOST_OPEN_PATH_ENDPOINT, OPEN_URL_ROUTE } from './constants'
 import { toast } from './dialog'
@@ -20,9 +21,8 @@ import { externalUrl, officialAction } from './locate'
  *  否则目录会被侧边栏编辑器当文件打开（`xxx is a directory`）。
  */
 export async function openInExplorer(path: string): Promise<void> {
-  const response = await fetch(HOST_OPEN_PATH_ENDPOINT, {
+  const full = await requestJson<{ result?: { ok?: boolean, error?: { message?: string } } }>(HOST_OPEN_PATH_ENDPOINT, '', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       type: 'client-request',
       rpcId: crypto.randomUUID(),
@@ -30,9 +30,6 @@ export async function openInExplorer(path: string): Promise<void> {
       payload: { path },
     }),
   })
-  if (!response.ok)
-    throw new Error(text('openFailed', { reason: `HTTP ${response.status}` }))
-  const full = await response.json()
   if (!full.result?.ok)
     throw new Error(text('openFailed', { reason: full.result?.error?.message || text('unknownError') }))
 }
@@ -42,18 +39,12 @@ export async function openExternalUrl(value: string): Promise<void> {
   const url = externalUrl(value)
   if (!url)
     throw new Error(text('openFailed', { reason: text('invalidLink') }))
-  const response = await fetch(OPEN_URL_ROUTE, {
+  const result = await requestJson<{ ok?: boolean, error?: string }>(OPEN_URL_ROUTE, '', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ url }),
   })
-  let result: { ok?: boolean, error?: string } | null = null
-  try {
-    result = await response.json()
-  }
-  catch {}
-  if (!response.ok || !result?.ok)
-    throw new Error(text('openFailed', { reason: result?.error || `HTTP ${response.status}` }))
+  if (!result?.ok)
+    throw new Error(text('openFailed', { reason: result?.error || text('unknownError') }))
 }
 
 /** 官方菜单项选择：点击行内操作按钮后在 [role=menuitem] 中按文案点目标项。 */

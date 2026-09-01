@@ -10,7 +10,7 @@ import type {
   SessionsRuntimeLike,
   WorkspacesRuntimeLike,
 } from './types'
-import { compat } from 'dsh-tauri/client'
+import { compat, createLifecycleController } from 'dsh-tauri/client'
 import {
   archiveSession,
   archiveUngroupedSessions,
@@ -33,12 +33,12 @@ import { editableFrom, externalUrl, isWorkspaceAction, officialAction, resolveSe
 import { holdRegistryLease, registry } from './registry'
 
 /** 官方工作区菜单项选择（工作区操作按钮无 hover 兜底）。 */
-function officialWorkspaceSelect(row: Element, labels: RegExp[], failureMessage: string): void {
+function officialWorkspaceSelect(controller: ContextMenuLifecycle, row: Element, labels: RegExp[], failureMessage: string): void {
   const action = [...row.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find(isWorkspaceAction)
   if (!action)
     throw new Error(text('officialWorkspaceActionUnavailable'))
   action.click()
-  setTimeout(() => {
+  controller.timeout(() => {
     const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node =>
       labels.some(label => label.test(node.textContent?.trim() || '')))
     if (!item) {
@@ -49,8 +49,11 @@ function officialWorkspaceSelect(row: Element, labels: RegExp[], failureMessage:
   }, 0)
 }
 
+/** 菜单模块使用的生命周期子面（避免把整个 controller 类型塞进每个签名）。 */
+type ContextMenuLifecycle = Pick<ReturnType<typeof createLifecycleController>, 'timeout'>
+
 /**
- * 安装右键菜单。返回卸载函数（关闭菜单、移除监听、释放注册表租约）。
+ * 安装右键菜单。返回卸载函数（关闭菜单并 dispose 生命周期控制器）。
  * @param ctx - 客户端根上下文（须已注入 sessions/workspaces）。
  */
 export function installContextMenu(ctx: ClientContext): () => void {
@@ -58,13 +61,16 @@ export function installContextMenu(ctx: ClientContext): () => void {
   const sessions = cx.sessions as unknown as SessionsRuntimeLike
   const workspaces = cx.workspaces as unknown as WorkspacesRuntimeLike
   const extensionsRegistry = registry()
-  const releaseLease = holdRegistryLease()
+  const controller = createLifecycleController()
+  // 注册表租约：apply 时持有、dispose 时释放（哪怕 listeners 先失效）。
+  controller.add(holdRegistryLease())
 
   let menu: HTMLElement | null = null
   const close = (): void => {
     menu?.remove()
     menu = null
   }
+  controller.add(close)
 
   const add = (root: HTMLElement, label: string, run: () => void | Promise<void>, shortcut = '', danger = false): void => {
     const button = document.createElement('button')
@@ -252,6 +258,7 @@ export function installContextMenu(ctx: ClientContext): () => void {
       add(root, text('openInExplorer'), () => openInExplorer(workspace.path))
       split(root)
       add(root, text('renameWorkspace'), () => officialWorkspaceSelect(
+        controller,
         workspaceTarget.row,
         [/^重命名$/, /^rename$/i],
         text('officialWorkspaceRenameUnavailable'),
@@ -337,19 +344,9 @@ export function installContextMenu(ctx: ClientContext): () => void {
       ;(next as HTMLElement).focus()
     }
   }
-  document.addEventListener('contextmenu', onContextMenu, true)
-  document.addEventListener('pointerdown', outside, true)
-  document.addEventListener('keydown', keyboard, true)
+  controller.listen('contextmenu', onContextMenu, { capture: true })
+  controller.listen('pointerdown', outside, { capture: true })
+  controller.listen('keydown', keyboard, { capture: true })
 
-  let disposed = false
-  return () => {
-    if (disposed)
-      return
-    disposed = true
-    close()
-    document.removeEventListener('contextmenu', onContextMenu, true)
-    document.removeEventListener('pointerdown', outside, true)
-    document.removeEventListener('keydown', keyboard, true)
-    releaseLease()
-  }
+  return () => controller.dispose()
 }

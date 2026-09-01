@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ReactElement } from 'react'
 import type { PanelActionItemProps, PanelContentSpec, PanelProtocol } from './types'
-import { createExternalStore } from 'dsh-tauri/client'
+import { createExternalStore, createHooks } from 'dsh-tauri/client'
 import { useSyncExternalStore } from 'react'
 import { PANEL_CLASSES, PANEL_DATA_ATTRIBUTES, PANEL_PROTOCOL_SERVICE, PANEL_VIEW_COMPONENT_ID, PANEL_VIEW_SLOT, SIDEBAR_INTERACTIVE_SELECTOR, SIDEBAR_KEEP_OPEN_SELECTOR, WORKSPACE_GROUP_SELECTOR } from './constants'
 import { NS } from './locale'
@@ -33,20 +33,17 @@ export type { PanelActionItemProps, PanelContentSpec, PanelProtocol } from './ty
  *
  * 不能常驻注册 + SlotOutlet 透传：SlotOutlet 对 single 槽只渲染 live 条目，
  * 自己 live 后渲染官方条目 = 自递归（无公开 API 渲染被 shadow 条目）。
+ *
+ * Controller 化：会话区替换的全部可变状态（inject 句柄、当前规格、pointerdown
+ * 监听）收敛进 createPanelConversationController() 创建的实例；installPanelService
+ * 每次 apply 创建新实例，卸载时 close() 一次性释放，不再依赖模块级单例存活期。
  */
 
-/** 当前 conversation 替换的 inject 句柄（undefined = 官方会话区 live）。 */
-let conversationSeat: (() => void) | undefined
-/** 当前替换视图规格。 */
-let currentSpec: PanelContentSpec | undefined
-/** 替换状态（ActionItem active 样式订阅源）。 */
+/** 替换状态（ActionItem active 样式订阅源；SnapshotStore 可安全保持模块级）。 */
 const panelViewStore = createExternalStore<{ id: string } | null>(null)
-/** 根上下文（renderPanelContent 内部注册用）。 */
-let rootCtx: Context | undefined
 
 /** 渲染 conversation 槽条目：包标记容器 + 宿主内容列（宽度约束由宿主决定，见 styles.ts）。 */
-function ConversationSeat({ t }: { t: (key: string) => string }): ReactElement | null {
-  const spec = currentSpec
+function ConversationSeat({ t, spec }: { t: (key: string) => string, spec: PanelContentSpec | undefined }): ReactElement | null {
   if (!spec)
     return null
   const View = spec.render
@@ -91,14 +88,6 @@ export function shouldClosePanelForSidebarTarget(target: Element | null): boolea
   return workspaceGroup === null || interactive !== workspaceGroup
 }
 
-/** 捕获侧栏导航动作并在目标自身的 click 行为执行前恢复官方会话区。 */
-function onPointerDownCapture(event: PointerEvent): void {
-  if (!conversationSeat)
-    return
-  if (shouldClosePanelForSidebarTarget(event.target instanceof Element ? event.target : null))
-    closeConversation()
-}
-
 /** 将面板激活态投影到侧栏根，供官方工作区行的跨插件样式协议使用。 */
 function setSidebarPanelActive(active: boolean): void {
   const sidebar = document.querySelector(`[${PANEL_DATA_ATTRIBUTES.sidebar}]`)
@@ -108,36 +97,85 @@ function setSidebarPanelActive(active: boolean): void {
     sidebar?.removeAttribute(PANEL_DATA_ATTRIBUTES.active)
 }
 
-/** 打开会话区替换：动态注册 priority -1 的 conversation 条目。 */
-function openConversation(ctx: Context, spec: PanelContentSpec): void {
-  if (currentSpec && currentSpec.id === spec.id)
-    return
-  if (conversationSeat)
-    closeConversation()
-  currentSpec = spec
-  panelViewStore.set({ id: spec.id })
-  conversationSeat = ctx.slots.inject(PANEL_VIEW_SLOT as never, () =>
-    ctx.slots.register(
-      {
-        name: PANEL_VIEW_SLOT,
-        id: PANEL_VIEW_COMPONENT_ID,
-        priority: -1,
-        locale: spec.locale ?? NS,
-      } as never,
-      ConversationSeat,
-    ))
-  document.addEventListener('pointerdown', onPointerDownCapture, true)
-  setSidebarPanelActive(true)
+/** 会话区替换控制器的对外形状（panel.protocol 的机制侧）。 */
+export interface PanelConversationController {
+  open: (ctx: Context, spec: PanelContentSpec) => void
+  close: () => void
+  toggle: (ctx: Context, spec: PanelContentSpec) => void
+  viewId: () => { id: string } | null
 }
 
-/** 关闭会话区替换：dispose inject 句柄 → 注销条目 → 官方 ui-conversation 恢复。 */
-function closeConversation(): void {
-  conversationSeat?.()
-  conversationSeat = undefined
-  currentSpec = undefined
-  panelViewStore.set(null)
-  document.removeEventListener('pointerdown', onPointerDownCapture, true)
-  setSidebarPanelActive(false)
+/** 会话区替换的生命周期钩子（hookable：open/close 事件轴）。 */
+export interface ConversationLifecycleHooks {
+  'view:open': (spec: PanelContentSpec) => void
+  'view:close': () => void
+}
+
+/**
+ * 创建会话区替换控制器：拥有 inject 句柄、当前规格与 capture 层 pointerdown
+ * 监听；close() 恢复官方会话界面并释放全部资源。open/close 走命名钩子
+ * （hookable），供诊断与第三方联动。重复创建（插件重载）时旧实例先被其
+ * effect 清理，互不干扰。
+ */
+export function createPanelConversationController(): PanelConversationController {
+  const hooks = createHooks<ConversationLifecycleHooks>()
+  let conversationSeat: (() => void) | undefined
+  let currentSpec: PanelContentSpec | undefined
+  let onPointerDownCapture: ((event: PointerEvent) => void) | undefined
+
+  /** 打开会话区替换：动态注册 priority -1 的 conversation 条目。 */
+  function open(ctx: Context, spec: PanelContentSpec): void {
+    if (currentSpec && currentSpec.id === spec.id)
+      return
+    if (conversationSeat)
+      close()
+    currentSpec = spec
+    panelViewStore.set({ id: spec.id })
+    conversationSeat = ctx.slots.inject(PANEL_VIEW_SLOT as never, () =>
+      ctx.slots.register(
+        {
+          name: PANEL_VIEW_SLOT,
+          id: PANEL_VIEW_COMPONENT_ID,
+          priority: -1,
+          locale: spec.locale ?? NS,
+        } as never,
+        // spec 经渲染期快照传入：close() 置空后条目已注销，组件自然卸载。
+        (props: { t: (key: string) => string }) => <ConversationSeat t={props.t} spec={currentSpec} />,
+      ))
+    onPointerDownCapture = (event: PointerEvent): void => {
+      if (shouldClosePanelForSidebarTarget(event.target instanceof Element ? event.target : null))
+        close()
+    }
+    document.addEventListener('pointerdown', onPointerDownCapture, true)
+    setSidebarPanelActive(true)
+    void hooks.callHook('view:open', spec)
+  }
+
+  /** 关闭会话区替换：dispose inject 句柄 → 注销条目 → 官方 ui-conversation 恢复。 */
+  function close(): void {
+    conversationSeat?.()
+    conversationSeat = undefined
+    currentSpec = undefined
+    panelViewStore.set(null)
+    if (onPointerDownCapture) {
+      document.removeEventListener('pointerdown', onPointerDownCapture, true)
+      onPointerDownCapture = undefined
+    }
+    setSidebarPanelActive(false)
+    void hooks.callHook('view:close')
+  }
+
+  return {
+    open,
+    close,
+    toggle(ctx, spec) {
+      if (currentSpec)
+        close()
+      else
+        open(ctx, spec)
+    },
+    viewId: () => panelViewStore.getSnapshot(),
+  }
 }
 
 /** 订阅当前替换 id（null = 官方会话区）。 */
@@ -165,48 +203,25 @@ export function PanelActionItem({ id, icon, onClick, children }: PanelActionItem
 }
 
 /**
- * 切换会话区替换：未替换则打开（conversation 槽动态注册 spec.render），
- * 已替换则关闭恢复官方会话界面。子插件在 ActionItem 的 onClick 里调用。
- * @param spec - 内容区规格。
- */
-export function renderPanelContent(spec: PanelContentSpec): void {
-  if (!rootCtx)
-    return
-  if (conversationSeat)
-    closeConversation()
-  else
-    openConversation(rootCtx, spec)
-}
-
-/** 显式关闭当前面板内容；未打开面板时为空操作。 */
-export function closePanelContent(): void {
-  if (conversationSeat)
-    closeConversation()
-}
-
-/**
  * 安装宿主服务：经 ctx.reflect.provide 暴露 panel.protocol（effect 生命周期，
  * 插件卸载即注销）。不依赖 renderer 补丁（conversation 注册只走 slots
  * runtime）——旧核心下内容区替换仍可用（仅面板区条目需 renderer）。
  * @param ctx - 客户端根上下文。
  */
 export function installPanelService(ctx: Context): void {
+  const controller = createPanelConversationController()
   const api: PanelProtocol = {
     ActionItem: PanelActionItem,
-    renderPanelContent,
-    closePanelContent,
+    renderPanelContent: spec => controller.toggle(ctx, spec),
+    closePanelContent: () => controller.close(),
   }
   // Publish synchronously during apply: alpha slot injections can run before
   // sibling effects, so publishing from inside ctx.effect makes consumers see
   // an absent protocol and permanently skip their action registration.
-  rootCtx = ctx
   const disposeProtocol = ctx.reflect.provide(PANEL_PROTOCOL_SERVICE, api)
   ctx.effect(() => {
     return () => {
-      if (rootCtx === ctx) {
-        closePanelContent()
-        rootCtx = undefined
-      }
+      controller.close()
       disposeProtocol()
     }
   }, 'dsh-tauri-panel: panel.protocol host service')

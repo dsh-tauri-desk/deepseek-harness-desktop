@@ -1,20 +1,27 @@
 import type { ExtensionClientContext, McpInjected, McpRow, SkillRowView, SkillsInjected, Translate } from './types'
-import { compat } from 'dsh-tauri/client'
-import { API_PREFIX, LOCALE_NAMESPACE, PLUGIN_ID } from './constants'
+import { compat, createJsonClient } from 'dsh-tauri/client'
+import { API_PREFIX } from '../shared/constants'
+import { LOCALE_NAMESPACE, PLUGIN_ID } from './constants'
 import { installExtensionPanel, registerSkillCreatorPrefill } from './extension-panel'
 import { installExtensionLocale } from './locale'
 import { mountExtensionStyles } from './styles'
 
+/** ofetch 统一 JSON 客户端（错误信息优先取宿主 error 字段，与旧实现一致）。 */
+const jsonApi = createJsonClient(API_PREFIX, {
+  errorMessage: (status, body) => {
+    const error = body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
+      ? (body as { error: string }).error
+      : ''
+    return error || `HTTP ${status}`
+  },
+})
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${path}`, init)
-  const body = await response.json() as T & { error?: string }
-  if (!response.ok)
-    throw new Error(body.error ?? `HTTP ${response.status}`)
-  return body
+  return jsonApi.request<T>(path, init)
 }
 
 function post<T>(path: string, body: unknown): Promise<T> {
-  return fetchJson<T>(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  return jsonApi.post<T>(path, body)
 }
 
 function createSkillsInjected(): SkillsInjected {

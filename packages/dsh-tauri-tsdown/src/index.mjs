@@ -31,6 +31,20 @@ export const dshExternal = [
   /^@deepseek-ai\//,
 ]
 
+/**
+ * 需要内联进 client bundle 的依赖（UnJS 工具库）。
+ *
+ * client bundle 在 DSH Web ModuleLoader（dsh-client-modules）的 factory 里运行，
+ * 其模块表只认识平台种子词（react / @deepseek-ai/*）与已加载的链接模块
+ * （dsh-tauri/client）。tsdown 默认把 package.json 的 `dependencies` 当 external，
+ * 若这些包在 client 代码里被直接 import，产物会发出 loader 的
+ * `require('hookable')` 之类调用——模块表查不到就报
+ * "missed the module table"（build-time externals drift）。
+ * 因此 client entry 必须把它们内联；host entry 保持 external（Node 运行时按
+ * 插件 dependencies 解析）。子路径（unstorage/drivers/*）一并覆盖。
+ */
+const dshClientInline = [/^(unstorage|hookable|ofetch|pathe)([/-].*)?$/]
+
 export function defineDshConfig(options = {}) {
   const common = {
     outDir: 'dist',
@@ -55,6 +69,8 @@ export function defineDshConfig(options = {}) {
       // Client bundles are classic scripts consumed by dsh-client-modules.
       // CJS output is required so its exports remain inside the loader factory.
       format: 'cjs',
+      // UnJS 四库内联（模块表不认识的依赖不能留 require，见 dshClientInline 注释）。
+      noExternal: dshClientInline,
       // CJS must not use `.js` in a `"type": "module"` package — publint would
       // flag the ESM/CJS mismatch. Emit `.cjs` (declarations pair as `.d.cts`).
       outExtensions: () => ({ js: '.cjs' }),

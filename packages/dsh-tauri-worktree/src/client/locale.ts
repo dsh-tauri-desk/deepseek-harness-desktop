@@ -6,7 +6,7 @@
  * 组件侧不引入框架 `t` 座，改用一个极薄的 uSES 桥：apply 时订阅 locale 变更推进 rev，
  * 组件订阅 rev 重渲染，文案按当前 active locale 从本地字典读取。
  */
-import type { Context } from '@deepseek-ai/cordis'
+import type { ClientContext } from 'dsh-tauri/client'
 import type { LocaleKey } from './types'
 import { createExternalStore } from 'dsh-tauri/client'
 import { useSyncExternalStore } from 'react'
@@ -89,7 +89,7 @@ export const localeRev = createExternalStore({ rev: 0 })
  * 在 apply 里安装：注册本插件的双语字典，并桥接 locale 变更到 rev。
  * @param ctx - 客户端根上下文（须已注入 locale 服务）。
  */
-export function installLocale(ctx: Context): void {
+export function installLocale(ctx: ClientContext): void {
   activeLocale = ctx.locale.getLocale().active
   ctx.locale.register(NS, 'zh', DICT_ZH)
   ctx.locale.register(NS, 'en', DICT_EN)

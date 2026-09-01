@@ -1,6 +1,8 @@
-export const PLUGIN_ID = 'dsh-tauri-panel-extension'
-export const API_PREFIX = '/dsh-tauri-panel-extension'
-export const LOCALE_NAMESPACE = 'dsh-tauri-panel-extension'
+import { PLUGIN_NAME } from '../shared/constants'
+
+export { API_PREFIX, PLUGIN_NAME as PLUGIN_ID } from '../shared/constants'
+
+export const LOCALE_NAMESPACE = PLUGIN_NAME
 export const PANEL_PROTOCOL_NAME = 'panel.protocol'
 export const PANEL_SLOT_NAME = 'sidebar.panel.action'
 export const CONVERSATION_INPUT_LEFT_SLOT = 'conversation.input.left'

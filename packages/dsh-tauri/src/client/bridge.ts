@@ -23,6 +23,9 @@
  * 桥内代码路径（观测器回调、导航、命令分发）统一经 `error.ts` 上报宿主：
  * key 与桌面端 `use-iframe-shim.ts` 校验保持一致，宿主持久化后「插件」面板
  * 显示 danger 标记，避免静默失败。
+ *
+ * 生命周期（Controller 化）：两个 MutationObserver、应用晚挂载轮询 interval、
+ * message 监听与接管标记全部登记进 createLifecycleController；卸载即一次 dispose。
  */
 import type { NavBridgeHandlers, Page } from './types'
 import {
@@ -38,6 +41,7 @@ import {
   TRACK_INTERVAL_MS,
   TRACK_MAX_TRIES,
 } from './constants'
+import { createLifecycleController } from './controller'
 import { guard, reportPluginError } from './error'
 
 export type { NavBridgeHandlers } from './types'
@@ -47,8 +51,13 @@ export type { NavBridgeHandlers } from './types'
  * @returns 卸载函数（插件重载/停用时清理，桌面端注入脚本随即恢复接管）。
  */
 export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
-  // 接管标记：置位后桌面端 NAV_SHIM_JS 的命令与事件都让位
+  const controller = createLifecycleController()
+
+  // 接管标记：置位后桌面端 NAV_SHIM_JS 的命令与事件都让位（卸载时随控制器复位）。
   window.__dsh_tauri_bridge__ = true
+  controller.add(() => {
+    delete window.__dsh_tauri_bridge__
+  })
 
   function post(message: Record<string, unknown>): void {
     try {
@@ -71,7 +80,13 @@ export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
     return !!(frame && frame.hasAttribute('data-sidebar-collapsed'))
   }
 
-  const sidebarObserver = new MutationObserver(guard(() => {
+  // 折叠状态观察挂在 body 全树（attributeFilter 限定），AppFrame 出现即生效。
+  controller.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-sidebar-collapsed'],
+  }, guard(() => {
     post({ type: EVENT_SIDEBAR_COLLAPSED, collapsed: collapsedOf() })
   }))
 
@@ -95,7 +110,7 @@ export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
   function rowTitle(row: HTMLElement | null): string {
     if (!row)
       return ''
-    const btn = row.querySelector<HTMLElement>('button[aria-label]')
+    const btn = row.querySelector<HTMLButtonElement>('button[aria-label]')
     const label = btn ? (btn.getAttribute('aria-label') || '') : ''
     for (const pattern of SESSION_LABEL_PATTERNS) {
       const match = pattern.exec(label)
@@ -172,7 +187,12 @@ export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
       pushPage(key, sel)
   })
 
-  const pageObserver = new MutationObserver(onDomChange)
+  controller.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['aria-selected'],
+  }, onDomChange)
 
   // 初始化：应用挂载前无会话树，轮询补报直到拿到 AppFrame
   function startTrack(): boolean {
@@ -180,7 +200,7 @@ export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
       const frame = findFrame()
       if (!frame)
         return false
-      sidebarObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed'] })
+      // sidebarObserver 已在 body 上观察（属性过滤在全树生效），无需换挂载点。
       post({ type: EVENT_SIDEBAR_COLLAPSED, collapsed: collapsedOf() })
 
       const sel = currentSelected()
@@ -189,12 +209,6 @@ export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
       // 根页：当前选中的会话（无选中时以「欢迎页」为根，首个会话打开即入栈）
       pages = [{ key: key || null, el: sel }]
       position = 0
-      pageObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['aria-selected'],
-      })
       reportPage()
       return true
     }
@@ -231,26 +245,21 @@ export function setupNavBridge(handlers: NavBridgeHandlers): () => void {
       reportPluginError(error, 'runtime')
     }
   }
+  // message 事件目标为 window（不经 document 冒泡），监听本身按控制器登记清理。
   window.addEventListener('message', onMessage)
+  controller.add(() => {
+    window.removeEventListener('message', onMessage)
+  })
 
-  // ── 初始化 + 应用晚挂载的轮询补报 ──────────────────────────
-  let trackTimer: ReturnType<typeof setInterval> | undefined
+  // ── 初始化 + 应用晚挂载的轮询补报（controller 管理 interval）───
   if (!startTrack()) {
     let tries = 0
-    trackTimer = setInterval(() => {
-      if (startTrack() || ++tries > TRACK_MAX_TRIES) {
-        clearInterval(trackTimer)
-      }
+    const stopPoll = controller.interval(() => {
+      if (startTrack() || ++tries > TRACK_MAX_TRIES)
+        stopPoll()
     }, TRACK_INTERVAL_MS)
   }
 
-  // ── 卸载 ──────────────────────────────────────────────────────
-  return () => {
-    delete window.__dsh_tauri_bridge__
-    window.removeEventListener('message', onMessage)
-    sidebarObserver.disconnect()
-    pageObserver.disconnect()
-    if (trackTimer !== undefined)
-      clearInterval(trackTimer)
-  }
+  // ── 卸载：控制器一次性清理（观察器 / interval / 监听 / 接管标记）──
+  return () => controller.dispose()
 }

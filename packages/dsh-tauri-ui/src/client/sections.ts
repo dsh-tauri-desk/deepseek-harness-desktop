@@ -20,11 +20,16 @@ export type { SettingsRow } from './types'
 let slotsRef: SlotRegistry | undefined
 
 /**
- * 在 apply 里安装：把 ctx.slots 引用留给投影 hooks。
+ * 在 apply 里安装：把 ctx.slots 引用留给投影 hooks，返回卸载清理。
  * @param slots - 客户端 slota 注册中心（ctx.slots）。
+ * @returns 卸载函数（插件卸载后清除模块引用，避免跨实例残留）。
  */
-export function installSettingsSections(slots: SlotRegistry): void {
+export function installSettingsSections(slots: SlotRegistry): () => void {
   slotsRef = slots
+  return () => {
+    if (slotsRef === slots)
+      slotsRef = undefined
+  }
 }
 
 /** 解析条目 label（镜像官方 resolveSlotLabel 语义；不依赖 ui-slots 运行时导出）。 */

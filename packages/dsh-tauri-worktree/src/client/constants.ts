@@ -1,7 +1,10 @@
-export const WORKTREE_PLUGIN_NAME = 'dsh-tauri-worktree'
+/** client/constants.ts — 客户端共享常量（跨 half 协议常量见 shared/constants.ts）。 */
+
+import { WORKTREE_PLUGIN_NAME } from '../shared/constants'
+
+export { WORKTREE_API_PREFIX, WORKTREE_PLUGIN_NAME } from '../shared/constants'
+
 export const WORKTREE_LOCALE_NAMESPACE = WORKTREE_PLUGIN_NAME
-export const WORKTREE_API_PREFIX = '/api/dsh-worktree'
-export const PREFERRED_MODE_STORAGE_KEY = `${WORKTREE_PLUGIN_NAME}:preferred-mode`
 
 export const INPUT_DOCK_SLOT = 'conversation.input.dock'
 export const SHELL_OVERLAY_SLOT = 'shell.overlay'
@@ -12,6 +15,8 @@ export const SURFACE_ORDER = -10
 export const DIALOG_ID = `${WORKTREE_PLUGIN_NAME}-dialog`
 
 export const STYLES_EFFECT = `${WORKTREE_PLUGIN_NAME}: styles`
+export const MODE_SELECT_EFFECT = `${WORKTREE_PLUGIN_NAME}: mode select slot`
+export const SURFACE_EFFECT = `${WORKTREE_PLUGIN_NAME}: surface slot`
 export const DIALOG_EFFECT = `${WORKTREE_PLUGIN_NAME}: dialog`
 export const HYDRATION_EFFECT = `${WORKTREE_PLUGIN_NAME}: hydrate session bindings`
 export const SESSION_ICONS_EFFECT = `${WORKTREE_PLUGIN_NAME}: session branch icons`

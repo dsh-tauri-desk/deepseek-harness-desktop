@@ -65,6 +65,9 @@ catalogs:
     '@deepseek-ai/dsh-skill-filesystem':
       specifier: ^0.1.2-alpha.3
       version: 0.1.2-alpha.3
+    '@deepseek-ai/dsh-util-workspace-path':
+      specifier: 0.1.2-alpha.3
+      version: 0.1.2-alpha.3
   lint:
     '@antfu/eslint-config':
       specifier: ^9.3.0
@@ -522,6 +525,9 @@ importers:
         specifier: catalog:utils
         version: 2.0.3
     devDependencies:
+      '@deepseek-ai/dsh-util-workspace-path':
+        specifier: catalog:dsh
+        version: 0.1.2-alpha.3(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.2))
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown
@@ -563,6 +569,9 @@ importers:
         specifier: catalog:utils
         version: 2.0.3
     devDependencies:
+      '@deepseek-ai/dsh-util-workspace-path':
+        specifier: catalog:dsh
+        version: 0.1.2-alpha.3(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.2))
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown

@@ -60,6 +60,7 @@
     "pathe": "catalog:utils"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-util-workspace-path": "catalog:dsh",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli"
   }

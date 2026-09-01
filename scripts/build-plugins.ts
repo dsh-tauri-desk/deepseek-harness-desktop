@@ -128,6 +128,11 @@ function main(): void {
   // 来的 node_modules 混入整个 workspace 的生产依赖（桌面壳的 React/UI 栈全部冗余）。
   // 改为现代「注入式」deploy（`--config.inject-workspace-packages=true`），只把 bundle 的
   // workspace 依赖及其真实生产闭包注入产物，得到紧凑可移植的 node_modules。
+  // 但注入式默认仍是 isolated 布局：第三方依赖收进 `.pnpm/<dep>@<ver>/` 虚拟仓库，
+  // 各插件靠虚拟仓库条目内的同级链接解析。materializeTree 把顶层插件符号链接解引用成
+  // 实体目录时会丢掉这些同级依赖链接，产物里插件 `dist/index.js` 的裸 import（pathe /
+  // unstorage 等）随之解析失败。改用 hoisted 布局（`--config.node-linker=hoisted`）让依赖
+  // 平铺到顶层 node_modules，产物即自包含可解析，也彻底绕开符号链接。
   // 目标必须是空目录（src-tauri/resources 内含下发清单，不能直接部署）且为相对路径，
   // 因此先部署到仓库内相对临时目录，再把自包含的 node_modules 落入 resources/node_modules。
   const deployTarget = '.build-plugins-tmp'
@@ -141,6 +146,7 @@ function main(): void {
       'deploy',
       '--prod',
       '--config.inject-workspace-packages=true',
+      '--config.node-linker=hoisted',
       deployTarget,
     ])
     const deployed = join(temp, 'node_modules')

@@ -104,7 +104,18 @@
   }
 
   observer = new MutationObserver(evaluate)
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true })
+  // initialization_script_for_all_frames 可能在文档解析极早期（documentElement 尚为
+  // null，如 iframe / about:blank）执行；observe(null) 会抛
+  // "Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type
+  // 'Node'" 并中断后续 timer 注册。此处防御性跳过 observe，交由 fallbackTimer 轮询
+  // 兜底（本就存在，用于 splash 检测与 stall 判定，正确性不依赖 MutationObserver）。
+  try {
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true })
+  }
+  catch (_) {
+    observer.disconnect()
+    observer = null
+  }
   fallbackTimer = setInterval(evaluate, 1000)
   window.addEventListener('pagehide', stop)
   evaluate()

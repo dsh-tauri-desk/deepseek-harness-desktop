@@ -66,11 +66,16 @@ pub(super) fn find_user_dsh_bin(app_handle: &AppHandle) -> Option<PathBuf> {
         dirs
     };
 
-    // Windows：用户 npm dsh 通常在 `%APPDATA%\npm`（已在 PATH），无需补充目录。
+    // Windows：GUI 进程不读取交互式 shell 配置，fnm（及部分 nvm 衍生）通过
+    // shell 初始化把 node 安装目录（含 npm 全局 bin）注入继承 PATH —— 桌面端
+    // 补不到这份环境，导致 fnm 全局安装的 `dsh` 漏检（issue #229）。因此在
+    // 继承 PATH 之后补充 npm / fnm 的标准用户目录，与 pnpm 探测策略一致。
     #[cfg(windows)]
     let dirs = {
         let _ = &app_handle;
-        path_dirs
+        let mut dirs = path_dirs;
+        append_windows_dsh_dirs(&mut dirs);
+        dirs
     };
 
     scan_dirs_for_user_dsh(&dirs, candidates)
@@ -90,6 +95,46 @@ fn scan_dirs_for_user_dsh(dirs: &[PathBuf], candidates: &[&str]) -> Option<PathB
     None
 }
 
+/// Windows GUI 进程的 PATH 可能早于用户安装（且 fnm 等版本管理器只把 node 目录
+/// 注入 shell 内 PATH，GUI 进程看不到），补充这些工具的标准用户目录。
+///
+/// 覆盖两类常见布局：
+/// - npm 全局：`%APPDATA%\npm`（`dsh.cmd` 与 `node_modules\@deepseek-ai\dsh` 同级）；
+/// - fnm 全局：`%LOCALAPPDATA%\fnm\node-versions\<version>\installation`
+///   （`node_modules\.bin\dsh.cmd` shim，包目录位于 `node_modules\@deepseek-ai\dsh`，
+///   见 issue #229；`~/.fnm` 在 Windows 上极少使用，本函数只在 LOCALAPPDATA 下探测）。
+///
+/// 只补充能确定存在的绝对目录，且按顺序去重。继承 PATH 仍优先。
+#[cfg(windows)]
+fn append_windows_dsh_dirs(dirs: &mut Vec<PathBuf>) {
+    let mut append = |dir: PathBuf| {
+        if dir.is_absolute() && dir.is_dir() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        // npm 全局 bin 目录（标准 npm 布局：shim 与 node_modules 同级）
+        append(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let fnm_versions = PathBuf::from(&local_app_data).join("fnm").join("node-versions");
+        if let Ok(entries) = std::fs::read_dir(&fnm_versions) {
+            for entry in entries.flatten() {
+                // 版本目录下 `installation` 是 node 实际安装根；npm 全局包位于其
+                // `node_modules\@deepseek-ai\dsh`，shim 在 `node_modules\.bin\dsh.cmd`
+                //（fnm 也可能放到 `installation\bin`，一并补充）。
+                let installation = entry.path().join("installation");
+                if installation.is_dir() {
+                    append(installation.join("node_modules").join(".bin"));
+                    append(installation.join("bin"));
+                    append(installation);
+                }
+            }
+        }
+    }
+}
+
 /// 在给定前缀下探测 `node_modules/@deepseek-ai/dsh` 包目录。
 fn probe_package_dir(prefix: &Path) -> Option<PathBuf> {
     let p = prefix.join("node_modules").join("@deepseek-ai").join("dsh");
@@ -99,16 +144,33 @@ fn probe_package_dir(prefix: &Path) -> Option<PathBuf> {
 /// 由 dsh 可执行文件路径推导候选"安装前缀"（npm/pnpm 全局安装根目录）：
 /// - bin 目录本身（node_modules 与 bin 同级）；
 /// - bin 目录的父目录（标准 npm 全局布局：`<prefix>/bin/dsh`，包目录位于
-///   `<prefix>/lib/node_modules` 或 `<prefix>/node_modules`）。
+///   `<prefix>/lib/node_modules` 或 `<prefix>/node_modules`）；
+/// - `node_modules/.bin` 的父目录（fnm/pnpm 全局布局：shim 位于
+///   `<prefix>/node_modules/.bin/dsh`，包目录位于 `<prefix>/node_modules/@deepseek-ai/dsh`）。
 fn prefix_candidates(bin: &Path) -> Vec<PathBuf> {
     let Some(bin_dir) = bin.parent() else {
         return Vec::new();
     };
     let mut prefixes = vec![bin_dir.to_path_buf()];
+    let dir_name = bin_dir.file_name().and_then(|n| n.to_str());
     // 仅当 bin 目录名为 `bin` 时才把父目录作为前缀候选，避免无关目录被误判
-    if bin_dir.file_name().and_then(|n| n.to_str()) == Some("bin") {
+    if dir_name == Some("bin") {
         if let Some(parent) = bin_dir.parent() {
             prefixes.push(parent.to_path_buf());
+        }
+    }
+    // fnm/pnpm 全局布局：shim 位于 `<prefix>/node_modules/.bin`，包目录位于
+    // `<prefix>/node_modules/@deepseek-ai/dsh`，故前缀候选取 `.bin` 的祖父目录
+    // （即 `node_modules` 的父目录 `<prefix>`）。
+    if dir_name == Some(".bin")
+        && bin_dir
+            .parent()
+            .and_then(|n| n.file_name())
+            .and_then(|n| n.to_str())
+            == Some("node_modules")
+    {
+        if let Some(prefix) = bin_dir.parent().and_then(Path::parent) {
+            prefixes.push(prefix.to_path_buf());
         }
     }
     prefixes
@@ -435,6 +497,38 @@ mod tests {
             package_dir_from_bin(&bin),
             Some(root.join("node_modules").join("@deepseek-ai").join("dsh"))
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// fnm 全局布局：shim 位于 `<prefix>/node_modules/.bin/dsh.cmd`，包目录位于
+    /// `<prefix>/node_modules/@deepseek-ai/dsh`（issue #229）。包目录解析必须能从
+    /// `.bin` shim 上溯到安装前缀。
+    #[test]
+    fn package_dir_from_bin_resolves_fnm_node_modules_bin_layout() {
+        let root = temp_dir("fnm-bin-layout");
+        let pkg = root.join("node_modules").join("@deepseek-ai").join("dsh");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@deepseek-ai/dsh","version":"0.1.0-rc.8"}"#,
+        )
+        .unwrap();
+        let bin = root.join("node_modules").join(".bin").join("dsh.cmd");
+        assert_eq!(
+            package_dir_from_bin(&bin),
+            Some(root.join("node_modules").join("@deepseek-ai").join("dsh"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `prefix_candidates` 必须把 `node_modules/.bin` 的祖父目录（安装前缀）纳入候选，
+    /// 否则 fnm 全局 shim 无法定位包目录。
+    #[test]
+    fn prefix_candidates_include_grandparent_of_node_modules_bin() {
+        let root = temp_dir("fnm-prefix-candidates");
+        let bin = root.join("node_modules").join(".bin").join("dsh.cmd");
+        let candidates = prefix_candidates(&bin);
+        assert!(candidates.contains(&root));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

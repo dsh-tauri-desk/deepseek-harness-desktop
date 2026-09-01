@@ -30,6 +30,19 @@ use super::sweep::{dsh_bin_open_error, relaunch_marker_path, relaunch_via_shell_
 use super::utils::{is_port_in_use, rotate_service_log, spawn_output_readers};
 use super::win_inspector;
 
+#[cfg(windows)]
+type SpawnResult = std::io::Result<(
+    Option<std::fs::File>,
+    Option<std::fs::File>,
+    u32,
+)>;
+#[cfg(unix)]
+type SpawnResult = Result<(
+    Option<std::process::ChildStdout>,
+    Option<std::process::ChildStderr>,
+    u32,
+), String>;
+
 /// 端口释放等待上限：刚结束/清扫过上个会话的残留 dsh 进程后，TCP 端口释放
 /// 存在短暂滞后（taskkill 返回 ≠ 端口已可复用）。等待窗口内端口回落为空闲则
 /// 复用配置端口；到期仍未释放才按“真占用”逐级递增。
@@ -521,7 +534,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
-    let spawn_result: Result<(Option<std::process::ChildStdout>, Option<std::process::ChildStderr>, u32), String> = {
+    let spawn_result: SpawnResult = {
         #[cfg(windows)]
         {
             use std::io::{BufReader, Read};

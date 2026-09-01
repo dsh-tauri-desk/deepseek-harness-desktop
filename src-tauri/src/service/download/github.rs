@@ -237,8 +237,11 @@ async fn fetch_dsh_digest_from_expanded_assets(
 /// 修复前：api.github.com 一限流 `fetch_latest_dsh_pkg_info` 直接返回 Err，
 /// `check_dsh_update` 静默跳过，导致上游 rc.8 发布后桌面端迟迟不出现更新提示。
 ///
-/// 预览版（Pre-release label 或 tag 命名，见 [`is_preview_tag`]）不返回：
-/// 返回 Err 由调用方保持本地安装、不提示更新，避免把预览版推给用户自动更新。
+/// 预览版（Pre-release label 或 tag 命名，见 [`is_preview_tag`]）不参与更新判定：
+/// 最新 release 恰好是预览版时**不直接推给用户**，而是由 [`fetch_latest_non_preview`]
+/// 回退到最新一条非预览版 release 供更新/安装判定（issue #299：最新 alpha 发布后
+/// 旧实现直接回 Err，导致初始化流程报 `DSH_INTEGRITY_UNAVAILABLE` 卡死）。仅当所有
+/// release 都是预览版（找不到非预览版）时才返回 Err，由调用方保持本地安装、不提示。
 pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     let client = github_client()?;
     let expected_name = config::get_dsh_download_url()?
@@ -278,15 +281,15 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
 
     // 2b. 预览版不参与更新判定：`/releases/latest` 已按 label 排除 Pre-release，
     //     这里按 tag 命名再兜底拦一道（发布时漏标 Pre-release label 的预览版
-    //     同样不会推给用户自动更新）。返回 Err 由调用方保持本地安装、不提示。
+    //     同样不会推给用户自动更新）。但「最新 release 恰好是预览版」时不能因此
+    //     让初始化/更新流程整体卡死（issue #299），改为回退到最新非预览版 release，
+    //     仍然绝不把预览版推给用户自动更新。
     if is_preview_tag(&tag_name) {
         log::info!(
-            "DSH_SKIP_PREVIEW: latest release {} is a preview, ignoring for update",
+            "DSH_SKIP_PREVIEW: latest release {} is a preview, falling back to latest non-preview release",
             tag_name
         );
-        return Err(format!(
-            "DSH_PREVIEW_RELEASE: {tag_name} is a preview release, not an update"
-        ));
+        return fetch_latest_non_preview().await;
     }
 
     // 3. commit：优先 API /commits/{tag}，失败用 tag 内嵌 build-id 兜底
@@ -378,6 +381,25 @@ pub async fn fetch_dsh_pkg_version(version: &str) -> Result<LatestDshPkg, String
         .find(|release| parse_version_from_tag(&release.tag).as_deref() == Some(version))
         .ok_or_else(|| format!("DSH_RECOMMENDED_NOT_FOUND: no release found for {version}"))?;
     fetch_dsh_pkg_asset(&release.tag).await
+}
+
+/// 最新非预览版 release：仅当最新 release 是预览版时由 [`fetch_latest_dsh_pkg_info`] 调用。
+///
+/// 从完整 release 列表（[`fetch_dsh_pkg_releases`]，最新在前，含 Pre-release label）
+/// 取最新一条「非预览」的 release（label 非 Pre-release 且 tag 命名非预览标记，
+/// 见 [`is_preview_tag`]），再复用固定 tag 的资产/摘要查询，确保下载内容与校验摘要
+/// 属于同一发布。找不到非预览版（全部是预览版）时返回错误，调用方保持不更新——
+/// 不把预览版推给用户自动更新，也不再以「最新是预览版」整段卡死初始化流程。
+async fn fetch_latest_non_preview() -> Result<LatestDshPkg, String> {
+    let tag = fetch_dsh_pkg_releases()
+        .await?
+        .into_iter()
+        .find(|m| !m.prerelease && !is_preview_tag(&m.tag))
+        .map(|m| m.tag)
+        .ok_or_else(|| {
+            "DSH_PREVIEW_RELEASE: no non-preview release available, not an update".to_string()
+        })?;
+    fetch_dsh_pkg_asset(&tag).await
 }
 
 /// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
@@ -886,6 +908,55 @@ mod tests {
         assert!(releases[0].prerelease);
         assert_eq!(releases[1].tag, "dsh-0.1.1-rc.2-2");
         assert!(!releases[1].prerelease);
+    }
+
+    /// 验证 [`fetch_latest_non_preview`] 的选型谓词（无需网络的纯逻辑）：
+    /// 最新 release 是预览版时，应回退到最新一条「非预览」release（issue #299）。
+    #[test]
+    fn non_preview_selection_skips_preview_tags_and_labels() {
+        let pick_non_preview = |releases: &[DshPkgReleaseMeta]| {
+            releases
+                .iter()
+                .find(|m| !m.prerelease && !is_preview_tag(&m.tag))
+                .map(|m| m.tag.clone())
+        };
+
+        // 最新是标签预览版（dsh-…-alpha.3，issue #299 现场：dsh-0.1.2-alpha.3）
+        // + 上方一条被 Pre-release label 标记的 release → 回退到非预览 rc。
+        let releases = vec![
+            DshPkgReleaseMeta {
+                tag: "dsh-0.1.2-alpha.3-33444825807".to_string(),
+                prerelease: false,
+            },
+            DshPkgReleaseMeta {
+                tag: "dsh-0.1.1-rc.2-32485170079".to_string(),
+                prerelease: true,
+            },
+            DshPkgReleaseMeta {
+                tag: "dsh-0.1.1-rc.8-32342588166".to_string(),
+                prerelease: false,
+            },
+        ];
+        assert_eq!(
+            pick_non_preview(&releases).as_deref(),
+            Some("dsh-0.1.1-rc.8-32342588166")
+        );
+
+        // 全部是预览版（标签或 label）→ 找不到非预览版，`fetch_latest_non_preview`
+        // 返回错误，调用方按「无可用 release」处理（不推预览版更新）。
+        let all_preview = vec![
+            DshPkgReleaseMeta {
+                tag: "dsh-0.2.0-preview.1-32490000001".to_string(),
+                prerelease: false,
+            },
+            DshPkgReleaseMeta {
+                tag: "dsh-0.1.0-rc.7-32054485373".to_string(),
+                prerelease: true,
+            },
+        ];
+        assert_eq!(pick_non_preview(&all_preview), None);
+        // 空列表 → None
+        assert_eq!(pick_non_preview(&[]), None);
     }
 
     #[test]

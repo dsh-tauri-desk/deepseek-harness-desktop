@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 #[cfg(not(windows))]
+use std::io::Read;
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 
@@ -501,9 +503,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // alpha 的浏览器会话 Cookie 在沙箱跨源 iframe 上下文无法完成交换，因此桌面端
     // 显式追加 `--skip-auth`：只有核心（经上面的 alpha_auth 补丁，或上游官方合并）
     // 确实支持该标志才传，避免旧核心把未知选项当成错误退出。
-    let skip_auth = crate::service::patch::alpha_auth::web_startup_supports_skip_auth(
-        &app_handle,
-    );
+    let skip_auth = crate::service::patch::alpha_auth::web_startup_supports_skip_auth(&app_handle);
 
     log::info!("Starting Harness process");
 
@@ -669,21 +669,83 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 .stderr(Stdio::piped())
                 // 独立进程组让停止操作只影响 Harness 及其后代。
                 .process_group(0);
-            cmd.spawn().map(|mut child| {
-                let pid = child.id();
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                set_owned_process(pid);
-                let exit_app_handle = app_handle.clone();
-                std::thread::spawn(move || {
-                    let code = child.wait().ok().and_then(|status| status.code());
-                    // 进程确已退出：清空持有 PID 并把 Status 从 Running 回落为 Stopped
-                    // （Unix 无进程句柄可关闭，忽略返回的进程记录）。
-                    // 仅当该 PID 仍是当前登记才取出——旧监视线程不会误清新进程。
-                    let _ = on_owned_process_exit(&exit_app_handle, pid, |_| code.map(i64::from));
-                });
-                (stdout, stderr, pid)
-            })
+            let mut attempt = 0u32;
+            let mut child = 'attempts: loop {
+                attempt += 1;
+                match cmd.spawn() {
+                    Ok(mut child) => {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_millis(2500);
+                        loop {
+                            match child.try_wait() {
+                                Ok(Some(exit)) => {
+                                    let mut stderr_text = String::new();
+                                    if let Some(mut stderr) = child.stderr.take() {
+                                        let _ = stderr.read_to_string(&mut stderr_text);
+                                    }
+                                    if exit.code() == Some(1)
+                                        && stderr_text.contains("duplicate loader entry")
+                                        && attempt < 3
+                                    {
+                                        log::warn!(
+                                            "DUPLICATE_LOADER_ENTRY: dsh exited early with duplicate loader entry \
+                                             (pid={}, code=1); resetting profile root and relaunching \
+                                             (attempt {attempt}/3)",
+                                            child.id()
+                                        );
+                                        reset_active_profile_root(&app_handle);
+                                        cmd = Command::new(&node_binary_path);
+                                        cmd.arg(&dsh_binary_path)
+                                            .arg("--profile")
+                                            .arg(active_profile.as_str())
+                                            .arg("--host")
+                                            .arg("127.0.0.1")
+                                            .arg("--port")
+                                            .arg(setting.port.to_string());
+                                        if no_open {
+                                            cmd.arg("--no-open");
+                                        }
+                                        if skip_auth {
+                                            cmd.arg("--skip-auth");
+                                        }
+                                        cmd.envs(&envs)
+                                            .current_dir(config::get_dsh_install_path(&app_handle))
+                                            .stdin(Stdio::null())
+                                            .stdout(Stdio::piped())
+                                            .stderr(Stdio::piped())
+                                            .process_group(0);
+                                        continue 'attempts;
+                                    }
+                                    for line in stderr_text.lines() {
+                                        log::warn!(target: "dsh", "{}", line);
+                                    }
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Harness exited early: {exit}"),
+                                    ));
+                                }
+                                Ok(None) if std::time::Instant::now() >= deadline => break,
+                                Ok(None) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(50))
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        break child;
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            let pid = child.id();
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            set_owned_process(pid);
+            let exit_app_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let code = child.wait().ok().and_then(|status| status.code());
+                let _ = on_owned_process_exit(&exit_app_handle, pid, |_| code);
+            });
+            Ok((stdout, stderr, pid))
         }
     };
 

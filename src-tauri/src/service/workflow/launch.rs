@@ -719,21 +719,18 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                     for line in stderr_text.lines() {
                                         log::warn!(target: "dsh", "{}", line);
                                     }
-                                    return Err(std::io::Error::new(
-                                        std::io::ErrorKind::Other,
-                                        format!("Harness exited early: {exit}"),
-                                    ));
+                                    return Err(format!("Harness exited early: {exit}"));
                                 }
                                 Ok(None) if std::time::Instant::now() >= deadline => break,
                                 Ok(None) => {
                                     std::thread::sleep(std::time::Duration::from_millis(50))
                                 }
-                                Err(error) => return Err(error),
+                                Err(error) => return Err(error.to_string()),
                             }
                         }
                         break child;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.to_string()),
                 }
             };
             let pid = child.id();
@@ -743,7 +740,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             let exit_app_handle = app_handle.clone();
             std::thread::spawn(move || {
                 let code = child.wait().ok().and_then(|status| status.code());
-                let _ = on_owned_process_exit(&exit_app_handle, pid, |_| code);
+                let _ = on_owned_process_exit(&exit_app_handle, pid, |_| code.map(i64::from));
             });
             Ok((stdout, stderr, pid))
         }

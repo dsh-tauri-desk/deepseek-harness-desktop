@@ -1,0 +1,160 @@
+name: Build Test (unsigned)
+
+on:
+  # 仅手动触发：用于快速验证「能否在当前平台产物上完成一次完整 tauri build」，
+  # 不发布、不打签名（TPM 签名密钥 / Apple 证书 / 公证强制可省），不写 GitHub Release。
+  # 触发后可在此 run 的 Actions 页面核对三平台的打包产物是否生成。
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 只想验证的平台（默认全部）
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+          - linux
+          - windows
+
+permissions:
+  contents: read
+
+# 同一分支的手动构建排队执行，避免并发挤占 runner。
+concurrency:
+  group: build-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # macOS 用 Apple Silicon runner（macos-latest）交叉编译 x64，
+  # 与 release 的可复用构建（build-macos.yml 的矩阵）保持一致。
+  macos:
+    name: Build (macos-${{ matrix.id }})
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: aarch64
+            target: aarch64-apple-darwin
+          - id: x86_64
+            target: x86_64-apple-darwin
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 不注入任何签名/公证 secrets，产出未签名（unsigned/no-notarized）bundle，
+      # 依然完整走一遍 beforeBuildCommand（build:plugins + 前端）+ cargo release 构建。
+      - name: Build package
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-test-macos-${{ matrix.id }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Build (linux)
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
+    # 与 release 的可复用构建一致：22.04 的 glibc/WebKitGTK 产物兼容性最好。
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm tauri build --bundles appimage
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-test-linux
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Build (windows)
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # WiX 只接受纯数字版本；NSIS 仍使用完整 SemVer。
+      - name: Prepare MSI version override
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const rawVer = require('./src-tauri/tauri.conf.json').version;
+            const cleanVer = rawVer.replace(/[-+].*\$/, '');
+            fs.writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: cleanVer } } } }));
+            console.log('MSI version override ->', cleanVer);
+          "
+
+      - name: Build packages
+        run: pnpm tauri build --config release-msi-version.tmp.json
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-test-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 7

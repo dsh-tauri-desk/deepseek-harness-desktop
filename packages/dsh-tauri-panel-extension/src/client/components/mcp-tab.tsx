@@ -351,6 +351,7 @@ export function McpTab(props: McpTabProps): ReactElement {
       <Modal
         open={editor !== null}
         onClose={() => setEditor(null)}
+        closeLabel={t('close')}
         title={editor !== null && editor.id !== '' ? t('editServer') : t('addServer')}
         className="dpte-modalForm"
         contentClassName="dpte-modalScroll"
@@ -377,6 +378,7 @@ export function McpTab(props: McpTabProps): ReactElement {
       <Modal
         open={confirmId !== null}
         onClose={() => setConfirmId(null)}
+        closeLabel={t('close')}
         title={t('confirmRemove')}
         description={confirmId ?? undefined}
         footer={(
@@ -392,6 +394,7 @@ export function McpTab(props: McpTabProps): ReactElement {
       <Modal
         open={restartConfirm}
         onClose={() => setRestartConfirm(false)}
+        closeLabel={t('close')}
         title={t('restartConfirmTitle')}
         footer={(
           <>

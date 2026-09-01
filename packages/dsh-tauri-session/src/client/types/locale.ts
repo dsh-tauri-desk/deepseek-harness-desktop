@@ -38,3 +38,4 @@ export type LocaleKey
     | 'untitled'
     | 'requestFailed'
     | 'requestTimeout'
+    | 'close'

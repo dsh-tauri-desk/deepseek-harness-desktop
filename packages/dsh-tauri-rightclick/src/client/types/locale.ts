@@ -44,6 +44,7 @@ export type LocaleKey
     | 'deleteWorkspaceConfirm'
     | 'workspaceDeleted'
     | 'cancel'
+    | 'close'
     | 'workspaceSessionsArchived'
     | 'officialSessionActionUnavailable'
     | 'officialWorkspaceActionUnavailable'

@@ -246,7 +246,7 @@ export function SkillsTab({ t, injected, createSkill }: SkillsTabProps): ReactEl
         </ul>
       )}
 
-      <Modal open={editor !== null} onClose={() => setEditor(null)} title={editor?.mode === 'edit' ? t('editSkill') : t('viewSkill')} className="dpte-modalForm" contentClassName="dpte-modalScroll">
+      <Modal open={editor !== null} onClose={() => setEditor(null)} closeLabel={t('close')} title={editor?.mode === 'edit' ? t('editSkill') : t('viewSkill')} className="dpte-modalForm" contentClassName="dpte-modalScroll">
         {editor && (
           <div className="dpte-form">
             <label className="dpte-label">
@@ -294,6 +294,7 @@ export function SkillsTab({ t, injected, createSkill }: SkillsTabProps): ReactEl
       <Modal
         open={confirmName !== null}
         onClose={() => setConfirmName(null)}
+        closeLabel={t('close')}
         title={t('confirmDelete')}
         description={confirmName ?? undefined}
         footer={(
@@ -305,7 +306,7 @@ export function SkillsTab({ t, injected, createSkill }: SkillsTabProps): ReactEl
       >
         <p>{t('deleteWarn')}</p>
       </Modal>
-      <Modal open={importOpen} onClose={() => setImportOpen(false)} title={t('importRepositoryTitle')} className="dpte-modalWide">
+      <Modal open={importOpen} onClose={() => setImportOpen(false)} closeLabel={t('close')} title={t('importRepositoryTitle')} className="dpte-modalWide">
         <div className="dpte-form">
           <p className="dpte-intro">{t('importRepositoryHint')}</p>
           <label className="dpte-label">

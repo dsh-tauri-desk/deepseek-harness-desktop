@@ -5,6 +5,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { WorktreeDialogProps } from '../types'
 import { compat } from 'dsh-tauri/client'
 import { WorktreeDialog } from '../components/dialog'
 import { DIALOG_EFFECT, DIALOG_ID, SHELL_OVERLAY_SLOT, WORKTREE_PLUGIN_NAME } from '../constants'
@@ -25,9 +26,11 @@ export function registerDialog(ctx: Context): void {
             name: SHELL_OVERLAY_SLOT,
             id: DIALOG_ID,
             registrant: WORKTREE_PLUGIN_NAME,
-            inject: () => ({
-              workspacesRuntime: cx.workspaces,
-              sessionsRuntime: cx.sessions,
+            inject: (): Pick<WorktreeDialogProps, 'sessionsRuntime' | 'workspacesRuntime'> => ({
+              // cx.sessions/cx.workspaces 在 alpha 解析为宿主服务面（SessionStore/IWorkspaces），
+              // 投影到 WorktreeDialogProps 所需的轻量运行时读写面。
+              workspacesRuntime: cx.workspaces as unknown as WorktreeDialogProps['workspacesRuntime'],
+              sessionsRuntime: cx.sessions as unknown as WorktreeDialogProps['sessionsRuntime'],
             }),
           },
           WorktreeDialog,

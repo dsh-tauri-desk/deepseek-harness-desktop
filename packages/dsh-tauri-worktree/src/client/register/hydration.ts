@@ -23,6 +23,11 @@ export function installWorktreeHydration(ctx: ClientContext): () => void {
   // The public session-list source does not emit every tool-event mutation, so
   // live checkout/discard reconciliation subscribes to the bound Session source.
   const sessionsRuntime = ctx.sessions as unknown as WorktreeHydrationSessionsRuntime
+  // alpha 下 workspacesRuntime.list 为宿主服务面（SessionStore/WorkspaceController 差异），
+  // 投影到本地只读快照契约（archivedSessionIds 归组清理）。
+  const workspacesRuntime = ctx.workspaces as unknown as {
+    list: { getSnapshot: () => WorkspaceListSnapshot, subscribe: (listener: () => void) => () => void }
+  }
   const controller = createLifecycleController()
   const seen = new Set<string>()
   const switching = new Map<string, string>()
@@ -51,7 +56,7 @@ export function installWorktreeHydration(ctx: ClientContext): () => void {
   const noteListBaseline = (): void => {
     if (baselineCaptured)
       return
-    const snapshot = ctx.sessions.list.getSnapshot() as SessionListSnapshot
+    const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
     if (snapshot.ids.length === 0)
       return
     baselineCaptured = true
@@ -61,7 +66,7 @@ export function installWorktreeHydration(ctx: ClientContext): () => void {
 
   /** 记录会话首次出现在列表的时间（交接时效窗口的起点）。 */
   const noteAppearances = (): void => {
-    const snapshot = ctx.sessions.list.getSnapshot() as SessionListSnapshot
+    const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
     const now = Date.now()
     for (const sessionId of snapshot.ids) {
       if (!appearedAt.has(sessionId))
@@ -212,14 +217,14 @@ export function installWorktreeHydration(ctx: ClientContext): () => void {
   }
 
   const hydrate = (): void => {
-    const snapshot = ctx.sessions.list.getSnapshot() as SessionListSnapshot
+    const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
     for (const sessionId of snapshot.ids) reconcileSession(sessionId)
   }
 
   // 原生侧栏「归档」只隐藏会话。若该会话绑定工作树，归档集合变化后补做
   // worktree/owned branch/ledger 清理；会话日志仍由 DSH 归档持久化保留。
   const cleanupArchivedWorktrees = (): void => {
-    const snapshot = ctx.workspaces.list.getSnapshot() as WorkspaceListSnapshot
+    const snapshot = workspacesRuntime.list.getSnapshot() as WorkspaceListSnapshot
     for (const sessionId of snapshot.archivedSessionIds) {
       if (cleanedArchives.has(sessionId))
         continue
@@ -238,7 +243,7 @@ export function installWorktreeHydration(ctx: ClientContext): () => void {
   }
 
   const bindSessionEvents = (): void => {
-    const snapshot = ctx.sessions.list.getSnapshot() as SessionListSnapshot
+    const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
     for (const sessionId of snapshot.ids) {
       if (subscribedSessions.has(sessionId))
         continue
@@ -253,13 +258,13 @@ export function installWorktreeHydration(ctx: ClientContext): () => void {
       }))
     }
   }
-  const unsubscribeSessions = ctx.sessions.list.subscribe(() => {
+  const unsubscribeSessions = sessionsRuntime.list.subscribe(() => {
     noteListBaseline()
     noteAppearances()
     hydrate()
     bindSessionEvents()
   })
-  const unsubscribeWorkspaces = ctx.workspaces.list.subscribe(cleanupArchivedWorktrees)
+  const unsubscribeWorkspaces = workspacesRuntime.list.subscribe(cleanupArchivedWorktrees)
   controller.add(unsubscribeSessions)
   controller.add(unsubscribeWorkspaces)
   noteListBaseline()

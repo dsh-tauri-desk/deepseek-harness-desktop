@@ -157,6 +157,7 @@ export function installWorkspaceArchivePatch(workspacesRuntime: WorkspacesRuntim
       title: text('archiveWorkspaceTitle', { count: sessionIds.length }),
       description: text('archiveWorkspaceDescription', { workspace: workspaceTitle }),
       footer: createElement('div', {}, createElement(Button, { variant: 'ghost', onClick: closeDialog, style: { marginRight: 6 } }, text('cancel')), createElement(Button, { variant: 'outline', onClick: confirm }, text('archiveWorkspaceConfirm'))),
+      closeLabel: text('close'),
     }))
   }
 

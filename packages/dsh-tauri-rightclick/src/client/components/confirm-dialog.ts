@@ -43,6 +43,7 @@ export function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
     root.render(createElement(Modal, {
       open: true,
       onClose: () => close(false),
+      closeLabel: text('close'),
       title: options.title,
       description: options.description,
       footer,

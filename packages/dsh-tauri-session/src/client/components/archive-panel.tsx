@@ -284,6 +284,7 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
         title={text('deleteSingleTitle')}
         description={text('deleteSingleBody')}
         footer={footer}
+        closeLabel={text('close')}
       />
       <Modal
         open={confirm?.kind === 'all'}
@@ -291,6 +292,7 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
         title={text('deleteAllTitle')}
         description={text('deleteAllBody')}
         footer={footer}
+        closeLabel={text('close')}
       />
       <Modal
         open={confirm?.kind === 'workspace'}
@@ -298,6 +300,7 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
         title={text('deleteProjectTitle')}
         description={confirm?.kind === 'workspace' ? text('deleteProjectBody', { count: confirm.sessionIds.length, workspace: confirm.workspaceTitle }) : ''}
         footer={footer}
+        closeLabel={text('close')}
       />
     </div>
   )

@@ -27,6 +27,7 @@ export function McpImportDialog(props: McpImportDialogProps): ReactElement {
     <Modal
       open={open}
       onClose={onClose}
+      closeLabel={t('close')}
       title={t('importServers')}
       className="dpte-modalWide"
     >

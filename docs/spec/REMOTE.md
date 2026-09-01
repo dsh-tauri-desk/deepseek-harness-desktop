@@ -162,6 +162,12 @@ flowchart LR
 1. **DSH API 面**：本壳打包的 DSH 是否具备 `POST /api/<method>`（`client-request` 信封）、
    `/api/events.mux`（下行 WS）、`/api/respond`、`settings.describe`？参考实现要求
    `@deepseek-ai/dsh@0.1.1-rc.1`+；本壳 DSH 来自 `dsh-tauri-desk/deepseek-harness-pkg`，需核对版本。
+   > 版本核对提示：桌面端 `service/core` 支持多核心槽位与切换（稳定线 `0.1.1-rc.2` 与 alpha 线
+   > `0.1.2-alpha.3` 并存）。alpha.3 线重构了客户端运行时（`dsh-client-runtime` 拆分为
+   > `dsh-client-store` / `dsh-client-ui-slots` / `dsh-api-*-controller`），但 web 传输面
+   > （`/api` 信封 / `events.mux` / `respond` / `settings.describe`）保持不变，`--skip-auth`
+   > 两层锚点（`startup.js` + `dsh-client-connection`）在两条线上均命中。侧车桥实现仅依赖
+   > 上述 web 传输面即可跨线工作；做能力探测而非硬编码版本号。
 2. **Node 版本**：本壳捆绑 `v22.22.0`；侧车需用到全局 `WebSocket`/`fetch`（Node 22+ 满足）。
 3. **桥端口**：与 DSH 端口（`DSH_PORT 3080`/`DSH_DEV_PORT 3081`）隔离，避免冲突；参考实现用
    `43127`/`43128`，可沿用并做占用回退。

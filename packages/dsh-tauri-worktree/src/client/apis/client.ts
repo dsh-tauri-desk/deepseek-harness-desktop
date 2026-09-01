@@ -17,9 +17,9 @@ export function fetchStatus(sessionId: string): Promise<WorktreeStatus> {
   return worktreeApi.request(`/status?sessionId=${encodeURIComponent(sessionId)}`)
 }
 
-/** 为预分配的新会话创建工作树；项目路径从当前源会话解析。 */
-export function createWorktree(sessionId: string, sourceSessionId = sessionId): Promise<WorktreeCreate> {
-  return worktreeApi.post('/create', { sessionId, sourceSessionId })
+/** 为预分配的新会话创建工作树；项目路径从当前源会话解析。inherit 打开时宿主用源会话事件建好完整会话。 */
+export function createWorktree(sessionId: string, sourceSessionId = sessionId, inherit = false): Promise<WorktreeCreate> {
+  return worktreeApi.post('/create', { sessionId, sourceSessionId, inherit })
 }
 
 /** 将已创建的 worktree 会话正式归属到源项目 Workspace。 */

@@ -13,7 +13,7 @@ import { routeHandler, withConnectionAuth } from 'dsh-tauri'
 import { join } from 'pathe'
 import { WORKTREE_API_PREFIX } from '../../shared/constants.js'
 import { gitToplevel } from '../service/git.js'
-import { checkoutToLocalAndHandback } from '../service/handoff.js'
+import { checkoutToLocalAndHandback, inheritSessionIntoWorktree } from '../service/handoff.js'
 import { discardWorktree, ensureWorktree, worktreeKey } from '../service/operation.js'
 import { findSession, resolveProjectPath } from '../service/session.js'
 import { loadLedger } from '../storage/index.js'
@@ -71,6 +71,20 @@ export function buildRoutes(ctx: HostContext, config: PluginConfig): any[] {
         })
         if (!r.ok)
           return [400, { error: r.error }]
+        // 继承源会话完整对话历史：仅当客户端请求 inherit 且源会话确有事件时，宿主才用
+        // sourceSession.events 作为 seed 建好「已是完整会话」的工作树会话（问题 2 的修复）。
+        // 否则回退官方空白会话路径（客户端用 sessionsRuntime.create({ cwd }) 兜底）。
+        let inherited = false
+        if (body.inherit === true) {
+          const inheritedSession = await inheritSessionIntoWorktree(
+            ctx,
+            worktreesRoot,
+            sourceSessionId,
+            sessionId,
+            r.binding.worktreePath,
+          )
+          inherited = inheritedSession.ok
+        }
         return [200, {
           ok: true,
           hash: r.binding.hash,
@@ -81,6 +95,7 @@ export function buildRoutes(ctx: HostContext, config: PluginConfig): any[] {
           sourceSessionId: r.binding.sourceSessionId,
           log: r.log,
           existed: r.existed,
+          inherited,
         }]
       }, { mutate: true }),
     },

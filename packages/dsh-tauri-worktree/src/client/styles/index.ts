@@ -33,7 +33,9 @@ export function mountModeSelectStyles(): () => void {
     c(`.${MODE_SELECT_CLASSES.triggerOpen}`, { background: 'var(--dsw-alias-interactive-bg-hover)' }),
     c(`.${MODE_SELECT_CLASSES.icon}`, { color: 'var(--dsw-alias-label-primary)', display: 'inline-flex', flex: 'none' }),
     c(`.${MODE_SELECT_CLASSES.chevron}`, { color: 'var(--dsw-alias-label-caption)', flex: 'none' }),
-    c(`.${MODE_SELECT_CLASSES.host}`, { display: 'inline-flex', alignItems: 'center' }),
+    // host 现在是 .tools 的直接 flex 子元素（gap 16px）；flex:none 防止长文案触发被压缩、
+    // 以及部分浏览器对 inline-flex 的收缩行为导致控件宽度塌陷。
+    c(`.${MODE_SELECT_CLASSES.host}`, { display: 'inline-flex', alignItems: 'center', flex: 'none' }),
     c(`.${MODE_SELECT_CLASSES.anchor}`, { display: 'none' }),
   ])
   style.mount({ id: MODE_SELECT_STYLE_ID, head: true })

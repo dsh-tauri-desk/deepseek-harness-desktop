@@ -16,6 +16,9 @@ export interface SessionsRuntime {
   create: (opts: { cwd: string, sessionId: string }) => Promise<string>
   open: (sessionId: string) => void
   provideInfo: (sessionId: string) => { props?: { inputActions?: InputActions } } | undefined
+  /** 刷新会话列表（宿主侧 seed 创建的会话会发布进来；本插件在 waitForSessionListed 中调用）。 */
+  refresh: () => Promise<void>
+  list: { getSnapshot: () => { ids: string[], current?: string } }
 }
 
 export interface ModeSelectProps {
@@ -23,6 +26,8 @@ export interface ModeSelectProps {
   useInput: <S>(selector: (state: InputState) => S) => S
   inputActions: InputActions
   sessionsRuntime: SessionsRuntime
+  /** 归档源会话用：切换工作树成功后，删除被完整继承的源会话，避免侧边栏多出一个重复会话。 */
+  workspacesRuntime: WorkspacesRuntime
 }
 
 export interface SurfaceBarProps {

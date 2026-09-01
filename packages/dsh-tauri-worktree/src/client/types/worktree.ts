@@ -66,6 +66,11 @@ export interface WorktreeCreate {
   sourceSessionId: string
   log: string[]
   existed: boolean
+  /**
+   * 宿主是否已把源会话的完整事件作为 seed 建好工作树会话（问题 2 的修复）。
+   * true 表示客户端不得再用 create 新建空白会话，而应等待该会话 in-list 后直接使用。
+   */
+  inherited: boolean
 }
 
 /** 检出本地：把工作树改动带回本地分支，解除绑定，恢复本地会话。 */

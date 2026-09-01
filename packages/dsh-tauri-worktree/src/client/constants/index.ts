@@ -86,7 +86,14 @@ export const worktreeStyles = {
 export const SESSION_ICON_ATTRIBUTE = 'data-dsh-worktree-icon'
 export const SIDEBAR_SELECTOR = '[data-slot="sidebar"]'
 export const COMPOSER_SEAT_SELECTOR = '[data-composer-seat]'
+export const COMPOSER_CARD_SELECTOR = '[data-composer-card="true"]'
 export const HERO_PRESET_SLOT_SELECTOR = '[data-slot="conversation.hero.agentPreset"]'
-/** rc.2/alpha 共用的稳定模式按钮定位（alpha 已移除 hero preset slot）。 */
-export const COMPOSER_MODE_BUTTON_SELECTOR = '[data-composer-card="true"] button[aria-label*="访问模式"], [data-composer-card="true"] button[aria-label*="Access mode"]'
+/** 输入条内的「规划」计划槽位，用于定位访问模式右侧的 .modes 分组（见 utils/worktree.ts）。 */
+export const COMPOSER_PLAN_SLOT_SELECTOR = '[data-slot="conversation.input.plan"]'
+/**
+ * rc.2/alpha 共用的稳定「访问模式」按钮定位。aria-label 由官方
+ * input.accessMode 文案提供（`.uV2eYG_modes` 是生成 hash，绝不依赖）。
+ * 模式选择器始终锚到此按钮右侧的 .modes 分组，而非 hero 的 Agent 预设槽位。
+ */
+export const COMPOSER_MODE_BUTTON_SELECTOR = `${COMPOSER_CARD_SELECTOR} button[aria-label*="访问模式"], ${COMPOSER_CARD_SELECTOR} button[aria-label*="Access mode"]`
 export const MODE_ANCHOR_ATTRIBUTE = 'data-dsh-tauri-worktree-mode-anchor'

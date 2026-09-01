@@ -21,6 +21,102 @@ import { checkoutToLocal, discardWorktree } from './operation.js'
 import { findSession } from './session.js'
 
 /**
+ * 用源会话的完整事件创建继承会话（cwd 指向目标路径），供「检出本地」「正在新建工作树」
+ * 两类交接复用。继承发生在源会话 events 完整时，否则返回 ok:false。
+ *
+ * @param ctx 宿主根上下文
+ * @param sourceSessionId 源会话 id（其 events 作为 seed）
+ * @param options 创建选项
+ * @param options.seed 显式 seed（缺省取 sourceSession.events）
+ * @param options.cwd 新会话工作目录
+ * @param options.parentSession 记录到 meta.parentSession 的源会话 id
+ * @param options.attach 是否创建后归属到 cwd 对应的 Workspace
+ * @param options.targetSessionId 固定新会话 id（缺省生成随机 id）
+ * @returns 新会话 id + 继承的事件条数
+ */
+export async function createInheritedSession(
+  ctx: HostContext,
+  sourceSessionId: string,
+  options: {
+    seed?: unknown[]
+    cwd: string
+    parentSession?: string
+    attach?: boolean
+    /** 固定新会话 id；缺省时生成随机 id。宿主在预分配会话 id 时（如工作树绑定）必须传入。 */
+    targetSessionId?: string
+  } = { cwd: '' },
+): Promise<OperationResult<{ targetSessionId: string, seedLength: number }>> {
+  const agent = ctx.agents?.get?.(sourceSessionId)
+  const sourceSession = agent?.session ?? findSession(ctx, sourceSessionId)
+  if (!sourceSession)
+    return { ok: false, error: `未找到源会话：${sourceSessionId}` }
+  const seed = options.seed ?? (Array.isArray(sourceSession.events) ? sourceSession.events : [])
+  if (seed.length === 0)
+    return { ok: false, error: `源会话没有可继承的事件：${sourceSessionId}` }
+  const { cwd, attach = false } = options
+  const targetSessionId = options.targetSessionId ?? `session-${randomUUID()}`
+  try {
+    const presets = ctx.get?.('agentPresets')
+    const parentPreset = agent
+      ? (presets?.composedPreset(agent.ctx) ?? sourceSession.header?.agentPreset)
+      : sourceSession.header?.agentPreset
+    const createOptions: any = {
+      sessionId: targetSessionId,
+      seed,
+      meta: {
+        cwd,
+        parentSession: options.parentSession ?? sourceSession.id,
+        seedLength: seed.length,
+        ...(parentPreset ? { agentPreset: parentPreset } : {}),
+      },
+      agentOptions: agent?.options ?? {},
+    }
+    if (agent && presets && parentPreset) {
+      createOptions.setup = (agentCtx: any) => {
+        presets.composeFrom(agentCtx, agent.ctx)
+      }
+    }
+    await ctx.agents.create(createOptions)
+    if (attach) {
+      const workspace = await ctx.workspaceRegistry.resolveByPath(cwd)
+      if (workspace)
+        await workspace.attachSession(targetSessionId)
+    }
+    return { ok: true, targetSessionId, seedLength: seed.length }
+  }
+  catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * 创建工作树会话并继承源会话完整对话历史（客户端「工作模式 → 新建工作树」流程）。
+ *
+ * 背景：客户端 UI 用 sessionsRuntime.create({ cwd }) 创建的目标会话是空白的；只有在
+ * 触发工具那一条消息被迁移后才有 1 轮对话（完整源会话对不上）。本函数在创建绑定的同时
+ * 用源会话完整事件作 seed 建好工作树会话，保证新工作树会话带全量上下文。
+ * 注意：**不在宿主内 attach**——沿客户端既有 /attach 步骤归属 Workspace；seed 沿用源会话
+ * 现有事件（此时源 turn 尚未结束，工作树预选流程在消息提交前启用），不做追加。cwd 传入
+ * 新工作树路径（客户端后续把该会话锚定到工作树目录）。
+ *
+ * @returns ok=false 表示源会话无事件可继承（客户端回退官方 create 空白会话路径）。
+ */
+export async function inheritSessionIntoWorktree(
+  ctx: HostContext,
+  worktreesRoot: string,
+  sourceSessionId: string,
+  targetSessionId: string,
+  cwd: string,
+): Promise<OperationResult<{ targetSessionId: string, seedLength: number }>> {
+  void worktreesRoot
+  return createInheritedSession(
+    ctx,
+    sourceSessionId,
+    { cwd, parentSession: sourceSessionId, attach: false, targetSessionId },
+  )
+}
+
+/**
  * 把工作树会话的完整对话历史带回本地仓库：以工作树会话的全部事件为 seed 创建
  * 继承会话，cwd 指向本地项目路径，并归属源 Workspace。
  *

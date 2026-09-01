@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   COMPOSER_MODE_BUTTON_SELECTOR,
+  COMPOSER_PLAN_SLOT_SELECTOR,
   COMPOSER_SEAT_SELECTOR,
   HERO_PRESET_SLOT_SELECTOR,
   MODE_ANCHOR_ATTRIBUTE,
@@ -28,7 +29,7 @@ import {
   rememberNewSessionMode,
   useWorktreeSession,
 } from '../store'
-import { waitForInputActions } from '../utils/worktree'
+import { resolveAccessModeGroup, waitForInputActions, waitForSessionListed } from '../utils/worktree'
 import { CircleTreeIcon } from './icons'
 
 export function WorktreeModeSelect(props: ModeSelectProps): ReactElement {
@@ -46,12 +47,18 @@ export function WorktreeModeSelect(props: ModeSelectProps): ReactElement {
 
     let host: HTMLSpanElement | null = null
     const place = (): void => {
-      // rc.2 exposes the hero preset slot; alpha removed it but keeps the
-      // stable composer mode button. Prefer the old anchor and fall back to
-      // the button without depending on generated CSS module hashes.
-      const presetSlot = composerSeat.querySelector<HTMLElement>(HERO_PRESET_SLOT_SELECTOR)
+      // 访问模式按钮是官方「标准模式」右侧的稳定锚点（aria-label 由 input.accessMode
+      // 提供，见 constants）。选择器始终优先插到其右侧的 .modes 分组（gap 16px），而不是
+      // hero 的 Agent 预设槽位——后者只在 hero 首屏存在，会话开始后消失，会让控件「跳位」。
       const modeButton = composerSeat.querySelector<HTMLElement>(COMPOSER_MODE_BUTTON_SELECTOR)
-      const target = presetSlot ?? modeButton
+      let target: HTMLElement | null = null
+      if (modeButton) {
+        const planSlot = composerSeat.querySelector<HTMLElement>(COMPOSER_PLAN_SLOT_SELECTOR)
+        target = resolveAccessModeGroup(modeButton, planSlot)
+      }
+      // graceful fallback：composer 与模式按钮都缺失的极端布局下归位到 hero 预设槽位，
+      // 保证控件不消失；此时锚点可能随 hero 卸载而消失，由 MutationObserver 重放。
+      target ??= composerSeat.querySelector<HTMLElement>(HERO_PRESET_SLOT_SELECTOR)
       if (!target) {
         setPortalHost(null)
         host?.remove()
@@ -85,7 +92,7 @@ export function WorktreeModeSelect(props: ModeSelectProps): ReactElement {
   )
 }
 
-function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntime }: ModeSelectProps): ReactElement | null {
+function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntime, workspacesRuntime }: ModeSelectProps): ReactElement | null {
   const state = useWorktreeSession(sessionId)
   const draft = useInput(input => input.draft)
   const imageIds = useInput(input => input.imageIds)
@@ -110,7 +117,9 @@ function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntim
       const targetSessionId = `session-${crypto.randomUUID()}`
       patchSession(sessionId, { mode: 'pending', phase: 'creating', loadingLabel: text('progressCreating'), error: '' })
       try {
-        const created = await createWorktree(targetSessionId, sessionId)
+        // inherit=true：由宿主用源会话完整事件建好「已是完整会话」的工作树会话
+        // （问题 2 修复）。宿主返回 inherited=false 时才回退官方空白会话路径。
+        const created = await createWorktree(targetSessionId, sessionId, true)
         patchSession(targetSessionId, {
           mode: 'worktree',
           phase: 'created',
@@ -121,7 +130,13 @@ function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntim
           projectPath: created.projectPath,
           sourceSessionId: created.sourceSessionId,
         })
-        await sessionsRuntime.create({ cwd: created.worktreePath, sessionId: targetSessionId })
+        if (created.inherited) {
+          // 宿主 seed 建的会话需先进入客户端会话列表才能寻址，等待而非 create（防「已存在会话」）。
+          await waitForSessionListed(sessionsRuntime, targetSessionId)
+        }
+        else {
+          await sessionsRuntime.create({ cwd: created.worktreePath, sessionId: targetSessionId })
+        }
         await attachWorktreeSession(targetSessionId)
         const nextActions = await waitForInputActions(sessionsRuntime, targetSessionId)
         nextActions.setDraft(draft)
@@ -142,6 +157,12 @@ function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntim
             for (const imageId of imageIds) nextActions.removeImage(imageId)
           }
         })
+        // 源会话完整对话已继承进工作树会话：归档源会话，避免侧边栏多出一个重复会话。
+        // 仅 inherited 成功时归档——空白回退路径（inherited=false）下源会话仍保有原始
+        // 对话，删除会造成会话信息丢失。先 open(target) 再 archive(source)：archiveSession
+        // 的投影只在被归档会话是当前会话时清空选择，此刻 current 已是目标会话，选择不受影响。
+        if (created.inherited)
+          await workspacesRuntime.archiveSession(sessionId).catch(() => {})
       }
       catch (error) {
         patchSession(sessionId, {
@@ -178,15 +199,18 @@ function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntim
       composerSeat.removeEventListener('click', intercept, true)
       composerSeat.removeEventListener('keydown', intercept, true)
     }
-  }, [draft, imageIds, inputActions, sessionId, sessionsRuntime, state.mode])
+  }, [draft, imageIds, inputActions, sessionId, sessionsRuntime, state.mode, workspacesRuntime])
 
+  // 已是工作树会话：完整对话已迁移进隔离工作树，模式选择不再有意义，整个控件隐藏。
+  // 状态由常驻 surface 提示条（检出本地 / 放弃）接管；重新选回本地走官方检出流程。
+  if (state.mode === 'worktree')
+    return null
   // 非 git 目录不提供工作树：隐藏整个模式选择器，会话永远只能停留在本地模式。
   if (state.isGit === false)
     return null
 
   const pending = state.mode === 'pending'
-  const bound = state.mode === 'worktree'
-  const activeLabel = bound ? text('modeWorktree') : pending ? text('modeNewWorktree') : text('modeLocal')
+  const activeLabel = pending ? text('modeNewWorktree') : text('modeLocal')
   const trigger = (
     <button
       type="button"
@@ -208,17 +232,13 @@ function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntim
     <Menu
       open={open}
       onClose={() => setOpen(false)}
-      items={bound
-        ? [{ id: 'worktree', label: text('modeWorktree') }]
-        : [
-            { id: 'local', label: text('modeLocal') },
-            { id: 'pending', label: text('modeWorktree') },
-          ]}
-      selectedId={bound ? 'worktree' : pending ? 'pending' : 'local'}
+      items={[
+        { id: 'local', label: text('modeLocal') },
+        { id: 'pending', label: text('modeWorktree') },
+      ]}
+      selectedId={pending ? 'pending' : 'local'}
       onSelect={(id) => {
         setOpen(false)
-        if (bound)
-          return
         const mode = id === 'pending' ? 'pending' : 'local'
         rememberNewSessionMode(mode)
         patchSession(sessionId, {

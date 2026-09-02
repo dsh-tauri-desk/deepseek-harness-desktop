@@ -23,6 +23,14 @@ export const STYLE_ID = 'dsh-tauri-panel-scheduler-styles'
 
 export const STYLES_EFFECT = `${SCHEDULER_PLUGIN_NAME}: styles`
 export const PANEL_EFFECT = `${SCHEDULER_PLUGIN_NAME}: panel slot`
+export const SESSION_ICONS_EFFECT = `${SCHEDULER_PLUGIN_NAME}: session clock icons`
+
+/** 会话行时钟图标补丁的 css-render 样式 id（防重复挂载）。 */
+export const SESSION_ICON_STYLE_ID = '@deepseek-ai/dsh-tauri-panel-scheduler/SessionClockIcon.module.css'
+/** 会话行内注入的时钟图标 span 的标记属性。 */
+export const SESSION_ICON_ATTRIBUTE = 'data-dsh-scheduler-icon'
+/** 官方侧边栏容器（应用晚挂载时的轮询锚点）。 */
+export const SIDEBAR_SELECTOR = '[data-slot="sidebar"]'
 
 /** 客户端轮询刷新间隔（执行记录 / 下次运行时间跟随）。 */
 export const REFRESH_INTERVAL_MS = 5_000

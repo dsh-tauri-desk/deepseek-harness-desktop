@@ -1,17 +1,11 @@
 /**
  * host/service/run-title.ts — 定时执行 Session 的展示标题。
- *  对齐 MichengAI/dsh-automation 的 src/run-title.ts。
+ *
+ * 标题即任务名，不加时间前缀：时间信息已由面板执行记录与侧边栏行内时间列承载，
+ * 侧边栏归属标记由客户端时钟图标负责（register/session-icons.ts，对齐
+ * dsh-tauri-worktree 的会话行图标补丁）。
  */
 
-export function formatRunStamp(iso: string): string {
-  const value = new Date(iso)
-  if (Number.isNaN(value.getTime()))
-    return iso
-  const date = `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
-  const time = `${String(value.getHours()).padStart(2, '0')}:${String(value.getMinutes()).padStart(2, '0')}`
-  return `${date} ${time}`
-}
-
-export function schedulerSessionTitle(taskName: string, iso: string): string {
-  return `${formatRunStamp(iso)} - ${taskName}`
+export function schedulerSessionTitle(taskName: string): string {
+  return taskName
 }

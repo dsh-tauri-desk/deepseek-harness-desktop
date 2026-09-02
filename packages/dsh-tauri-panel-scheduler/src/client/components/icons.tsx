@@ -149,3 +149,13 @@ export function IconCalendar(props: IconProps): ReactElement {
     </IconShell>
   )
 }
+
+/**
+ * Gravity UI Icons `clock.svg`（字符串版本，供 register/session-icons.ts 的 DOM
+ * 补丁以 innerHTML 注入侧边栏会话行；React 树内请用组件版图标）。
+ * Source: https://github.com/gravity-ui/icons/blob/main/svgs/clock.svg
+ * License: MIT, © 2022 YANDEX LLC.
+ */
+export function clockSvg(size: number): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none"><path fill="currentColor" fill-rule="evenodd" d="M13.5 8a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0M15 8A7 7 0 1 1 1 8a7 7 0 0 1 14 0M8.75 4.5a.75.75 0 0 0-1.5 0V8a.75.75 0 0 0 .3.6l2 1.5a.75.75 0 1 0 .9-1.2l-1.7-1.275z" clip-rule="evenodd"/></svg>`
+}

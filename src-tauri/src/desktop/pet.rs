@@ -50,16 +50,22 @@ pub fn ensure_pet_window(app_handle: &AppHandle<Wry>) -> tauri::Result<WebviewWi
         return Ok(existing);
     }
 
-    let builder = WebviewWindowBuilder::new(app_handle, PET_WINDOW_LABEL, WebviewUrl::App("pet.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app_handle, PET_WINDOW_LABEL, WebviewUrl::App("pet.html".into()))
         .title("Deepseek Harness Pet")
         .inner_size(PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT)
         // 无边框、置顶、不进任务栏、去除阴影：桌宠小窗语义。
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .shadow(false)
-        // 透明背景，宠物动画与桌面融合（平台不支持时退化为不透明，功能不受影响）。
-        .transparent(true);
+        .shadow(false);
+
+    // 透明背景，宠物动画与桌面融合。Tauri 2 的 `transparent()` 仅在 Windows/Linux
+    // 上暴露；macOS 需要 `macos-private-api` feature + `macOSPrivateApi: true`
+    // 才支持，作为后续迭代（issue #308「窗口层级优化」），当前 macOS 回退为不透明。
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.transparent(true);
+    }
 
     let window = builder.build()?;
     config::restore_window_state(app_handle, &window, STORE_PET_WINDOW_STATE_KEY);

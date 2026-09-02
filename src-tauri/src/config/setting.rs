@@ -74,6 +74,17 @@ pub struct Setting {
     /// 备份是否包含凭据文件（`.credentials.yaml`）。
     #[serde(default)]
     pub backup_include_credentials: bool,
+    /// 是否启用桌宠（独立 `pet` 窗口）。默认关闭，由设置页 / 侧边栏切换。
+    #[serde(default)]
+    pub pet_enabled: bool,
+    /// 当前选中的桌宠 id（对应 `$DSH_HOME/pets/<id>/`；内置预设为空串表示默认宠物）。
+    #[serde(default = "default_active_pet_id")]
+    pub active_pet_id: String,
+}
+
+/// 默认宠物 id：内置默认宠物（猫咪小助手），无外部资源依赖。
+fn default_active_pet_id() -> String {
+    "cat".to_string()
 }
 
 pub const ZOOM_FACTOR_MIN: f64 = 0.5;
@@ -192,6 +203,8 @@ impl Default for Setting {
             auto_backup_on_change: false,
             backup_retention_count: default_backup_retention_count(),
             backup_include_credentials: false,
+            pet_enabled: false,
+            active_pet_id: default_active_pet_id(),
         }
     }
 }

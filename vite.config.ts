@@ -22,6 +22,17 @@ export default defineConfig(async () => ({
     },
   },
 
+  build: {
+    rollupOptions: {
+      // 多页入口：`pet.html` 是桌宠独立窗口（`WebviewUrl::App("pet.html")`）的入口，
+      // 与 `index.html` 一起被打进产物，保证 Tauri 能按 URL 加载到独立窗口页面。
+      input: {
+        main: 'index.html',
+        pet: 'pet.html',
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development.
   // 1. prevent vite from obscuring rust errors
   clearScreen: false,

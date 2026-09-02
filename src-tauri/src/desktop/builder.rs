@@ -85,15 +85,19 @@ pub fn setup(app_handle: tauri::AppHandle) {
 
     // 命令行集成自愈：已安装且开启时，确保 shim 与 PATH 注册完整
     // （shim 被删除、PATH 条目丢失等情况下自动重建）
+    let app_for_cli = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let setting = crate::config::get_store_dat_setting(&app_handle);
+        let setting = crate::config::get_store_dat_setting(&app_for_cli);
         if !setting.installed || !setting.cli_link_enabled {
             return;
         }
-        if let Err(e) = crate::service::cli::ensure(&app_handle) {
+        if let Err(e) = crate::service::cli::ensure(&app_for_cli) {
             log::warn!("cli link self-heal failed: {e}");
         }
     });
+
+    // 桌宠：若启用则创建并显示独立宠物窗口（隐藏则保持关闭，由侧边栏开关拉起）。
+    crate::desktop::pet::sync_pet_window(&app_handle);
 }
 
 /// setup tray
@@ -572,6 +576,15 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::read_clipboard_image,
         crate::desktop::notification::show_native_notification,
         crate::bridge::log_frontend,
+        // 桌宠（独立宠物窗口）
+        crate::bridge::get_pet_status,
+        crate::bridge::get_pet_state,
+        crate::bridge::set_pet_enabled,
+        crate::bridge::set_active_pet,
+        crate::bridge::report_pet_activity,
+        crate::bridge::list_pets,
+        crate::bridge::show_pet,
+        crate::bridge::hide_pet,
     ]
 }
 
@@ -646,12 +659,23 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 #[cfg(not(target_os = "macos"))]
                 let _ = window.hide();
             }
-            // 移动/缩放主窗口时记录几何，重启后据此恢复（见 config::window_state）
+            // 移动/缩放窗口时记录几何，重启后据此恢复（见 config::window_state）。
+            // 主窗口与桌宠窗口各用自己的 store 键，避免互相覆盖。
             tauri::WindowEvent::Moved(_) => {
-                crate::config::save_geometry(window);
+                if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
+                    crate::desktop::pet::save_pet_geometry(window);
+                }
+                else {
+                    crate::config::save_geometry(window);
+                }
             }
             tauri::WindowEvent::Resized(_) => {
-                crate::config::save_geometry(window);
+                if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
+                    crate::desktop::pet::save_pet_geometry(window);
+                }
+                else {
+                    crate::config::save_geometry(window);
+                }
                 #[cfg(target_os = "macos")]
                 sync_macos_fullscreen_menu(window);
                 // 退出全屏后补做全屏期间被推迟的 Accessory 切换

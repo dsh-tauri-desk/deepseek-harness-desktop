@@ -1,6 +1,7 @@
 mod constants;
 mod format;
 pub mod i18n;
+mod pet_state;
 mod region;
 mod runtime;
 mod setting;
@@ -11,6 +12,7 @@ mod window_state;
 
 pub use constants::*;
 pub use format::*;
+pub use pet_state::*;
 pub use region::*;
 pub use runtime::*;
 pub use setting::*;

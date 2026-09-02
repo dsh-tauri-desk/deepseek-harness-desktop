@@ -2,6 +2,7 @@ import type { RefObject } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
+  FaceRobot,
   LayoutSideContent,
   LayoutSideContentLeft,
   Minus,
@@ -10,6 +11,7 @@ import {
 } from '@gravity-ui/icons'
 import { Button, Chip, Description, Dropdown, Label } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect, useState } from 'react'
@@ -129,6 +131,24 @@ export function Navbar({ iframeRef }: NavbarProps) {
   const openUpdateDialog = useOverlay(DesktopUpdateDialog)
   // 仅当 dsh-tauri 插件启用（已安装）时显示左侧导航控件
   const tauriEnabled = plugins.some(plugin => plugin.id === TAURI_PLUGIN_ID)
+
+  // 桌宠快捷开关：读取启停状态，点击即切换（设置页「宠物」Tab 提供更完整的配置）。
+  const { data: petStatus, refetch: refreshPetStatus } = useQuery({
+    queryKey: ['pet_status'],
+    queryFn: () => invoke<{ enabled: boolean }>('get_pet_status'),
+  })
+  const { mutate: onTogglePet, isPending: petToggling } = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      await invoke<{ enabled: boolean }>('set_pet_enabled', { enabled })
+      await refreshPetStatus()
+      toast(enabled ? t('pet.enabled_toast') : t('pet.disabled_toast'), {})
+    },
+    onError: (err: unknown) => {
+      console.error('[Navbar] toggle pet failed:', err)
+      toast(t('pet.operation_failed'), { variant: 'danger' })
+    },
+  })
+
   function handleWindowAction(action: 'minimize' | 'maximize' | 'background') {
     const appWindow = getCurrentWindow()
     switch (action) {
@@ -274,6 +294,18 @@ export function Navbar({ iframeRef }: NavbarProps) {
             onPress={handleOpenConfig}
           >
             {t('app.config')}
+          </Button>
+          {/* 桌宠快捷开关：小脸图标 + 启用高亮，点击切换（具体配置见设置 → 宠物） */}
+          <Button
+            className={`rounded-lg h-6 px-1.5 ${petStatus?.enabled ? 'text-accent' : ''}`}
+            size="sm"
+            variant="ghost"
+            isIconOnly
+            isDisabled={petToggling}
+            aria-label={t(petStatus?.enabled ? 'pet.disable_toggle' : 'pet.enable_toggle')}
+            onPress={() => onTogglePet(!petStatus?.enabled)}
+          >
+            <FaceRobot className="size-3.5" />
           </Button>
           <Dropdown>
             <Button

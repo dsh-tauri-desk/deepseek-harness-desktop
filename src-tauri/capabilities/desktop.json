@@ -6,7 +6,8 @@
     "linux"
   ],
   "windows": [
-    "main"
+    "main",
+    "pet"
   ],
   "permissions": []
 }

@@ -65,11 +65,13 @@ fn store_dat_file_name() -> &'static str {
 }
 
 /// 读取上次保存的窗口状态；无记录时返回默认值（首次启动）。
-pub fn get_window_state<R: Runtime>(app_handle: &AppHandle<R>) -> WindowState {
+///
+/// `store_key` 区分不同窗口的几何记录（主窗口 / 桌宠窗口等）。
+pub fn get_window_state_under<R: Runtime>(app_handle: &AppHandle<R>, store_key: &str) -> WindowState {
     let store = app_handle
         .store(store_dat_file_name())
         .expect("Failed to load store for window state");
-    let raw = store.get(STORE_WINDOW_STATE_KEY);
+    let raw = store.get(store_key);
     raw.and_then(|v| {
         v.as_str()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -80,27 +82,26 @@ pub fn get_window_state<R: Runtime>(app_handle: &AppHandle<R>) -> WindowState {
 }
 
 /// 把窗口状态写回 store 并落盘（store 基于 AppData，不随窗口生命周期丢失）。
-fn save_window_state<R: Runtime>(app_handle: &AppHandle<R>, state: &WindowState) {
+fn save_window_state_under<R: Runtime>(app_handle: &AppHandle<R>, store_key: &str, state: &WindowState) {
     let store = app_handle
         .store(store_dat_file_name())
         .expect("Failed to load store for window state");
     let serialized = serde_json::to_value(state).expect("Failed to serialize window state");
-    store.set(STORE_WINDOW_STATE_KEY, serialized);
+    store.set(store_key, serialized);
     store.save().expect("Failed to save window state");
 }
 
-/// 采样当前窗口并保存（主窗口移动/缩放时由 builder 调用）。
-pub fn save_geometry<R: Runtime>(window: &Window<R>) {
-    // 原生全屏切换会触发 Resized，但此时的屏幕尺寸不是可恢复的
-    // 普通窗口几何；保留进入全屏前的最后一帧，退出全屏后会再次正常采样。
+/// 采样当前窗口并保存到「给定 store 键」下（主窗口移动/缩放时由 builder 调用）。
+///
+/// 原生全屏切换会触发 Resized，但此时的屏幕尺寸不是可恢复的普通窗口几何；保留
+/// 进入全屏前的最后一帧，退出全屏后会再次正常采样。窗口尚未显示（Windows 上
+/// builder 先隐藏创建、恢复几何后再 show）时，build()/restore 阶段触发的
+/// Moved/Resized 事件拿到的可能是瞬态尺寸（常被夹到最小尺寸），一旦落盘就会让
+/// 窗口永久卡在最小尺寸，因此未显示前不采样。
+pub fn save_geometry_under<R: Runtime>(window: &Window<R>, store_key: &str) {
     if window.is_fullscreen().unwrap_or(false) {
         return;
     }
-
-    // 窗口尚未显示（Windows 上 builder 先隐藏创建、恢复几何后再 show）时，
-    // build()/restore 阶段触发的 Moved/Resized 事件拿到的可能是瞬态尺寸
-    // （常被夹到最小尺寸），一旦落盘就会让窗口永久卡在最小尺寸。
-    // 因此未显示前不采样；真正几何在 show 之后的下一次移动/缩放或退出时保存。
     if !window.is_visible().unwrap_or(false) {
         return;
     }
@@ -117,7 +118,12 @@ pub fn save_geometry<R: Runtime>(window: &Window<R>) {
             .unwrap_or(DEFAULT_WINDOW_HEIGHT as u32),
         size_is_inner: true,
     };
-    save_window_state(window.app_handle(), &state);
+    save_window_state_under(window.app_handle(), store_key, &state);
+}
+
+/// 采样当前主窗口并保存（主窗口移动/缩放时由 builder 调用）。
+pub fn save_geometry<R: Runtime>(window: &Window<R>) {
+    save_geometry_under(window, STORE_WINDOW_STATE_KEY);
 }
 
 /// 正常退出前主动采样主窗口，兜底最后一次移动/缩放事件尚未落盘的情况。
@@ -226,14 +232,17 @@ fn resolve_geometry<R: Runtime>(
     Some((PhysicalSize::new(w, h), PhysicalPosition::new(x, y)))
 }
 
-/// 恢复主窗口的大小与位置。在 `build_main_window` 成功 build() 之后调用。
+/// 恢复给定窗口的大小与位置，几何记录存于 `store_key`。在窗口 build() 成功后调用。
 ///
 /// 内部读取上次保存的 `WindowState`；顺序说明：先设置物理尺寸/位置，再按需
 /// `maximize()`——最大化会覆盖窗口当前尺寸，因此尺寸/位置要在最大化之前设置。
-/// 无历史状态时不改动窗口，由 builder 的默认 `inner_size(1280, 840)`
-/// （逻辑像素，居中）生效。
-pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
-    let mut saved = get_window_state(app);
+/// 无历史状态时不改动窗口，由 builder 的默认尺寸生效。
+pub fn restore_window_state<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    store_key: &str,
+) {
+    let mut saved = get_window_state_under(app, store_key);
     if !saved.size_is_inner {
         if let (Ok(outer), Ok(inner)) = (window.outer_size(), window.inner_size()) {
             saved = migrate_legacy_outer_size(&saved, outer, inner);
@@ -247,6 +256,16 @@ pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindo
     if saved.maximized {
         let _ = window.maximize();
     }
+}
+
+/// 恢复主窗口的大小与位置。在 `build_main_window` 成功 build() 之后调用。
+///
+/// 内部读取上次保存的 `WindowState`；顺序说明：先设置物理尺寸/位置，再按需
+/// `maximize()`——最大化会覆盖窗口当前尺寸，因此尺寸/位置要在最大化之前设置。
+/// 无历史状态时不改动窗口，由 builder 的默认 `inner_size(1280, 840)`
+/// （逻辑像素，居中）生效。
+pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
+    restore_window_state(app, window, STORE_WINDOW_STATE_KEY);
 }
 
 #[cfg(test)]

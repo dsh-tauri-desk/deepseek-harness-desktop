@@ -13,6 +13,8 @@ export interface AppConfig {
   auto_backup_on_change: boolean
   backup_retention_count: number
   backup_include_credentials: boolean
+  pet_enabled: boolean
+  active_pet_id: string
 }
 
 /// 共享的 app 配置查询：config-close-action 与 config-debug 共用同一份

@@ -3,6 +3,7 @@ import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { PluginRecovery } from '../components/plugin-recovery'
 import { useDshTheme } from '../hooks/use-dsh-theme'
+import { usePetProducer } from '../hooks/use-pet-producer'
 import { store } from '../store'
 import { DesktopUpdater } from './components/desktop-updater'
 import { DownloadToast } from './components/download-toast-trigger'
@@ -18,6 +19,8 @@ import '../i18n'
  */
 export function App() {
   useDshTheme()
+  // 桌宠状态生产者：把 Harness 生命周期同步到宠物状态文件桥（见 use-pet-producer）。
+  usePetProducer()
   const { status } = useStore(store.harness)
   // 首次挂载自动启动 harness（store 内部对 StrictMode 重复挂载去重）
   useEffect(() => {

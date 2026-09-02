@@ -29,7 +29,7 @@ export function blankUiState(): SchedulerUiState {
   return {
     tasks: [],
     runs: [],
-    options: { workspaces: [], presets: [], models: [] },
+    options: { workspaces: [], permissions: [], defaultPermission: 'read-only', models: [], defaultModel: null },
     loading: false,
     error: '',
     refreshedAt: 0,
@@ -119,6 +119,22 @@ export async function applyDeleteTask(id: string): Promise<{ ok: boolean, error?
 }
 
 /** 立即运行。 */
+export async function applyDeleteRun(id: string): Promise<{ ok: boolean, error?: string }> {
+  const result = await schedulerApi.deleteRun(id)
+  if (!result.ok)
+    return result
+  await refreshScheduler()
+  return { ok: true }
+}
+
+export async function applyClearRuns(): Promise<{ ok: boolean, error?: string }> {
+  const result = await schedulerApi.clearRuns()
+  if (!result.ok)
+    return result
+  await refreshScheduler()
+  return { ok: true }
+}
+
 export async function applyRunTask(id: string): Promise<{ ok: boolean, error?: string }> {
   const result = await schedulerApi.runTask(id)
   if (!result.ok)

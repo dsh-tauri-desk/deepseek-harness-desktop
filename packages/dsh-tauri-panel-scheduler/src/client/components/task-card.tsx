@@ -1,13 +1,20 @@
 /**
- * components/task-card.tsx — 任务列表卡片：名称 + 计划·下次运行 + [...] 菜单
- * （立即运行 / 暂停或恢复 / 删除）。
+ * components/task-card.tsx — 任务列表卡片：名称 + 计划·下次运行 + [...] 菜单。
+ *
+ * [...] 菜单用官方 primitives `Menu`（portal，align=end），条目：立即运行 /
+ * 暂停或恢复 / 删除（danger）。删除经官方 `Modal` 二次确认（与 dsh-tauri-session
+ * 的归档删除一致）。
  */
 
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ReactElement } from 'react'
 import type { TaskView, Translate } from '../types'
-import { useEffect, useRef, useState } from 'react'
+import { IconWarningOutline16, Menu, Modal, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useRef, useState } from 'react'
+import { SCHEDULER_CLASSES as K } from '../constants'
 import { applyDeleteTask, applyRunTask, applyToggleTask } from '../store'
-import { IconMore, IconPause, IconPlay, IconTrash } from './icons'
+import { IconMore, IconPause, IconPlay, IconSchedule, IconTrash } from './icons'
+import { releaseTaskRecommendation } from './recommendations'
 
 export interface TaskCardProps {
   task: TaskView
@@ -15,25 +22,16 @@ export interface TaskCardProps {
   describe: string
   nextRun?: string
   paused: boolean
+  /** 点击卡片主体 → 打开编辑弹窗（复用创建弹窗）。 */
+  onEdit: (task: TaskView) => void
 }
 
-export function TaskCard({ task, t, describe, nextRun, paused }: TaskCardProps): ReactElement {
+export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCardProps): ReactElement {
   const [menuOpen, setMenuOpen] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const [actionError, setActionError] = useState('')
-
-  // 点击外部关闭菜单。
-  useEffect(() => {
-    if (!menuOpen)
-      return
-    function onPointerDown(event: MouseEvent): void {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node))
-        setMenuOpen(false)
-    }
-    window.addEventListener('pointerdown', onPointerDown)
-    return () => window.removeEventListener('pointerdown', onPointerDown)
-  }, [menuOpen])
+  const [toast, setToast] = useState<{ text: string, seq: number } | null>(null)
+  const cardRef = useRef<HTMLLIElement | null>(null)
 
   async function runAction(
     action: () => Promise<{ ok: boolean, error?: string }>,
@@ -41,90 +39,153 @@ export function TaskCard({ task, t, describe, nextRun, paused }: TaskCardProps):
   ): Promise<void> {
     const result = await action()
     if (!result.ok) {
-      setActionError(result.error ?? t(errorKey))
+      const message = result.error ?? t(errorKey)
+      setActionError(message)
+      setToast({ text: message, seq: Date.now() })
       return
     }
-    setMenuOpen(false)
-    setConfirming(false)
     setActionError('')
+    setToast(null)
   }
 
-  function onRun(): void {
-    void runAction(() => applyRunTask(task.id), 'runFailed')
+  async function onRun(): Promise<void> {
+    try {
+      await runAction(() => applyRunTask(task.id), 'runFailed')
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(error)
+      setActionError(message)
+      setToast({ text: message, seq: Date.now() })
+    }
   }
-  function onToggle(): void {
-    void runAction(() => applyToggleTask(task.id, paused), 'toggleFailed')
+  async function onToggle(): Promise<void> {
+    await runAction(() => applyToggleTask(task.id, paused), 'toggleFailed')
   }
-  function onDelete(): void {
-    void runAction(() => applyDeleteTask(task.id), 'deleteFailed')
+  async function onDelete(): Promise<void> {
+    setConfirmOpen(false)
+    const result = await applyDeleteTask(task.id)
+    if (!result.ok) {
+      const message = result.error ?? t('deleteFailed')
+      setActionError(message)
+      setToast({ text: message, seq: Date.now() })
+      return
+    }
+    setActionError('')
+    // 若删除的是由推荐创建的任务（名称匹配其推荐项），让该推荐项回到列表。
+    releaseTaskRecommendation(task.name, t)
   }
 
-  function openMenu(): void {
-    setMenuOpen(open => !open)
-    setConfirming(false)
-  }
+  const items: MenuEntry[] = [
+    { id: 'run', label: t('runNow'), icon: <IconPlay /> },
+    { id: 'toggle', label: paused ? t('resume') : t('pause'), icon: <IconPause /> },
+    { type: 'separator', id: 'sep' },
+    { id: 'delete', label: t('delete'), icon: <IconTrash />, danger: true },
+  ]
 
   return (
-    <li className={`dsch-card${paused ? ' is-paused' : ''}`}>
-      <span className="dsch-cardTitle" title={task.name}>{task.name}</span>
-      <div className="dsch-cardMeta">
-        <span className="dsch-cardMetaText">
-          {describe}
-          {nextRun !== undefined
-            ? (
-                <>
-                  {' · '}
-                  <strong>
-                    {t('nextRun')}
-                    {' '}
-                    {nextRun}
-                  </strong>
-                </>
-              )
-            : <strong>{t('paused')}</strong>}
+    <li
+      ref={cardRef}
+      className={`${K.card}${paused ? ` ${K.cardPaused}` : ''}`}
+      onClick={(event) => {
+        // 仅当点击落在卡片本体（title/meta 文本）时打开编辑；portaled 的菜单列表 /
+        // Modal 不是 li 的 DOM 后代，contains() 为 false，不触发编辑（避免误开弹窗）。
+        if (event.currentTarget.contains(event.target as Node))
+          onEdit(task)
+      }}
+    >
+      <div>
+        <span className={K.cardTitle} title={task.name}>
+          <IconSchedule className={K.cardIcon} />
+          {task.name}
         </span>
-        <div className="dsch-menu" ref={menuRef}>
+        <div className={K.cardMeta}>
+          <span className={K.cardMetaText}>
+            {describe}
+            {' · '}
+            {nextRun !== undefined
+              ? (
+                  <>
+                    <strong>
+                      {t('nextRun')}
+                      {' '}
+                      {nextRun}
+                    </strong>
+                  </>
+                )
+              : <strong>{t('paused')}</strong>}
+          </span>
+
+        </div>
+      </div>
+      <button
+        type="button"
+        className={K.taskToggle}
+        aria-label={paused ? t('resume') : t('pause')}
+        onClick={(event) => {
+          event.stopPropagation()
+          void onToggle()
+        }}
+      >
+        {paused ? <IconPlay /> : <IconPause />}
+      </button>
+      <Menu
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        onSelect={(id) => {
+          setMenuOpen(false)
+          if (id === 'run')
+            onRun()
+          else if (id === 'toggle')
+            onToggle()
+          else if (id === 'delete')
+            setConfirmOpen(true)
+        }}
+        items={items}
+        portal
+        align="end"
+        anchor={(
           <button
-            className="dsch-more"
             type="button"
+            className={K.iconButton}
             aria-label={task.name}
-            data-open={menuOpen ? 'true' : undefined}
-            aria-expanded={menuOpen}
             aria-haspopup="menu"
-            onClick={openMenu}
+            aria-expanded={menuOpen}
+            onClick={(event) => {
+              event.stopPropagation()
+              setMenuOpen(openState => !openState)
+            }}
           >
             <IconMore />
           </button>
-          {menuOpen
-            ? (
-                <div className="dsch-menuPanel" role="menu">
-                  <button className="dsch-menuItem" type="button" role="menuitem" onClick={onRun}>
-                    <IconPlay />
-                    {t('runNow')}
-                  </button>
-                  <button className="dsch-menuItem" type="button" role="menuitem" onClick={onToggle}>
-                    <IconPause />
-                    {paused ? t('resume') : t('pause')}
-                  </button>
-                  {confirming
-                    ? (
-                        <button className="dsch-menuItem is-danger" type="button" role="menuitem" onClick={onDelete}>
-                          <IconTrash />
-                          {t('delete')}
-                        </button>
-                      )
-                    : (
-                        <button className="dsch-menuItem is-danger" type="button" role="menuitem" onClick={() => setConfirming(true)}>
-                          <IconTrash />
-                          {t('delete')}
-                        </button>
-                      )}
-                </div>
-              )
-            : null}
-        </div>
-      </div>
-      {actionError ? <p className="dsch-error" role="alert">{actionError}</p> : null}
+        )}
+      />
+      {actionError ? <p className={K.error} role="alert">{actionError}</p> : null}
+      {toast !== null
+        ? (
+            <Toast
+              key={toast.seq}
+              text={toast.text}
+              icon={<IconWarningOutline16 />}
+              anchor={cardRef.current}
+              onDone={() => setToast(null)}
+            />
+          )
+        : null}
+
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title={`${t('deleteConfirmTitle')} ${task.name}？`}
+        description={t('deleteConfirmBody')}
+        closeLabel={t('close')}
+        footer={(
+          <>
+            <button className={K.btn} type="button" onClick={() => setConfirmOpen(false)}>{t('cancel')}</button>
+            <button className={`${K.btn} ${K.btnDanger}`} type="button" onClick={() => void onDelete()}>{t('deleteConfirmAction')}</button>
+          </>
+        )}
+      />
     </li>
   )
 }

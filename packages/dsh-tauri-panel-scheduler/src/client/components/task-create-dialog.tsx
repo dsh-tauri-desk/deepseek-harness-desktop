@@ -1,25 +1,32 @@
 /**
  * components/task-create-dialog.tsx — 新建任务对话框。
  *
- * 布局对齐 issue #307 的 ASCII 设计图，控件一律用原生
- * <input>/<select>/<textarea>/<button>（DeepSeek 设计令牌样式，不自绘）：
- *   标题 + [X] → 提示「请编写完整、独立的任务说明…」→ 名称
- *   → 计划（模式 Select + 动态参数：每天/工作日=时间段 Select；间隔=时长 Select；
- *      每周=星期周期 Select + 时间段 Select）
- *   → 任务指令 textarea + 底部 composer（workspace / mode / module 三个 Select）
- *   → 取消 / 保存。
+ * 外壳用官方 primitives `Modal`（居中弹层 + 标题/描述/关闭按钮/页脚），
+ * 字段控件复刻官方样式：名称 = input 类；计划下拉 = input + selectInput 类；
+ * 任务指令 = textarea 类；底部 composer 的 workspace / permission / 模型 三个
+ * 选择器 = pill 触发按钮 + primitives `Menu`（官方 selector 模式，
+ * 见 components/menu-select.tsx）。
+ * 计划动态参数保持 #307 语义：每天/工作日=时间段；间隔=时长；每周=星期+时间段。
  */
 
 import type { ReactElement } from 'react'
 import type { ScheduleForm, SchedulerOptions, TaskFormState, Translate, Weekday } from '../types'
-import { useEffect, useRef, useState } from 'react'
-import { applyCreateTask } from '../store'
-import { IconClose } from './icons'
+import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useRef, useState } from 'react'
+import { SCHEDULER_CLASSES as K } from '../constants'
+import { applyCreateTask, applyUpdateTask } from '../store'
+import { MenuSelect } from './menu-select'
+import { ModelPicker } from './model-picker'
 
 export interface TaskCreateDialogProps {
   t: Translate
   options: SchedulerOptions
+  /** 关闭回调（保存中忽略）。 */
   onClose: () => void
+  /** 编辑模式：传入任务 id 时保存走 updateTask。 */
+  taskId?: string
+  /** 初始表单（编辑预填 / 推荐预填）；不传则新建空表单。 */
+  initial?: TaskFormState
 }
 
 const WEEKDAYS: Weekday[] = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
@@ -64,19 +71,20 @@ function kindLabelKey(kind: (typeof SCHEDULE_KINDS)[number]): string {
   return `schedule${kind.charAt(0).toUpperCase()}${kind.slice(1)}`
 }
 
-export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps): ReactElement {
-  const [form, setForm] = useState<TaskFormState>({
+export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskCreateDialogProps): ReactElement {
+  const [form, setForm] = useState<TaskFormState>(() => initial ?? {
     name: '',
     schedule: { kind: 'daily', time: '09:00' },
     prompt: '',
     workspaceId: '',
-    mode: '',
-    module: '',
+    permission: options.defaultPermission || 'read-only',
+    provider: '',
+    model: '',
+    reasoningEffort: '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const dialogRef = useRef<HTMLDivElement | null>(null)
-  // 保存中禁止关闭（Esc / 遮罩 / 取消 / [X]）：用 ref 供稳定闭包读取最新值。
+  // 保存中禁止关闭（Esc / 遮罩 / 关闭按钮）：用 ref 供稳定闭包读取最新值。
   const savingRef = useRef(false)
   savingRef.current = saving
 
@@ -86,25 +94,6 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
     onClose()
   }
 
-  // 模态对话框基础键盘行为：挂载聚焦、Esc 关闭、卸载还原焦点。
-  // onClose 经 ref 读取，避免 effect 依赖每次渲染重建的 closeSafe。
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    const dialog = dialogRef.current
-    dialog?.focus()
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape' && !savingRef.current)
-        onCloseRef.current()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      previouslyFocused?.focus()
-    }
-  }, [])
-
   function setSchedule(patch: Partial<ScheduleForm>): void {
     setForm(state => ({ ...state, schedule: { ...state.schedule, ...patch } as ScheduleForm }))
   }
@@ -113,14 +102,17 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
     setSaving(true)
     setError('')
     const schedule = { ...form.schedule } as Record<string, unknown>
-    const result = await applyCreateTask({
+    const input = {
       name: form.name,
       schedule,
       prompt: form.prompt,
       workspaceId: form.workspaceId || undefined,
-      mode: form.mode || undefined,
-      module: form.module || undefined,
-    })
+      permission: form.permission || undefined,
+      provider: form.provider || undefined,
+      model: form.model || undefined,
+      reasoningEffort: form.reasoningEffort || undefined,
+    }
+    const result = await (taskId ? applyUpdateTask(taskId, input) : applyCreateTask(input))
     setSaving(false)
     if (!result.ok) {
       setError(result.error ?? t('createFailed'))
@@ -136,29 +128,48 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
   const currentEveryMinutes = form.schedule.kind === 'interval' ? form.schedule.everyMinutes : 30
   const currentWeekday: Weekday = form.schedule.kind === 'weekly' ? (form.schedule.weekdays[0] ?? 'MO') : 'MO'
 
-  return (
-    <div
-      className="dsch-mask"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget)
-          closeSafe()
-      }}
-    >
-      <div className="dsch-dialog" role="dialog" aria-modal="true" aria-label={t('createDialogTitle')} tabIndex={-1} ref={dialogRef}>
-        <div className="dsch-dialogHead">
-          <div>
-            <h2>{t('createDialogTitle')}</h2>
-            <p>{t('dialogHint')}</p>
-          </div>
-          <button className="dsch-dialogClose" type="button" aria-label={t('close')} onClick={closeSafe}>
-            <IconClose />
-          </button>
-        </div>
+  const workspaceOptions = [
+    // Keep the empty id: the host interprets it as the ungrouped/default workspace.
+    { id: '', label: t('workspaceDefault') },
+    ...options.workspaces.map(ws => ({ id: ws.id, label: ws.title || ws.path })),
+  ]
+  // 权限选项：来自宿主 permissionPresets；缺失降级为常见三项（含完全访问）。
+  const fallbackPermissions = [
+    { id: 'read-only', label: t('permissionReadOnly') },
+    { id: 'workspace-write', label: t('permissionWrite') },
+    { id: 'danger-full-access', label: t('permissionFullAccess') },
+  ]
+  const permissionOptions = (options.permissions ?? []).length > 0
+    ? options.permissions.map(option => ({ id: option.value, label: option.name }))
+    : fallbackPermissions
+  // 编辑旧任务：当前值不在选项里时补一项，避免显示空值。
+  if (form.permission && !permissionOptions.some(option => option.id === form.permission))
+    permissionOptions.unshift({ id: form.permission, label: form.permission })
 
-        <label className="dsch-field">
-          <span className="dsch-fieldLabel">{t('taskName')}</span>
+  const modelValue = form.provider && form.model ? `${form.provider}::${form.model}` : ''
+
+  return (
+    <Modal
+      open
+      onClose={closeSafe}
+      title={taskId ? t('editDialogTitle') : t('createDialogTitle')}
+      description={t('dialogHint')}
+      closeLabel={t('close')}
+      className={K.modal}
+      footer={(
+        <>
+          <button className={K.btn} type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
+          <button className={`${K.btn} ${K.btnPrimary}`} type="button" disabled={saving} onClick={() => void onSave()}>
+            {t('save')}
+          </button>
+        </>
+      )}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <label className={K.field}>
+          <span className={K.fieldLabel}>{t('taskName')}</span>
           <input
+            className={K.input}
             type="text"
             value={form.name}
             placeholder={t('taskNamePlaceholder')}
@@ -166,11 +177,11 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
           />
         </label>
 
-        <div className="dsch-field">
-          <span className="dsch-fieldLabel">{t('schedule')}</span>
-          <div className="dsch-inline">
+        <div className={K.field}>
+          <span className={K.fieldLabel}>{t('schedule')}</span>
+          <div className={K.inline}>
             <select
-              className="dsch-select"
+              className={`${K.input} ${K.selectInput} ${K.inlineSelect}`}
               value={scheduleKind}
               aria-label={t('schedule')}
               onChange={event => setForm(state => ({ ...state, schedule: defaultScheduleFor(event.target.value as ScheduleForm['kind']) }))}
@@ -183,7 +194,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
             {scheduleKind === 'interval'
               ? (
                   <select
-                    className="dsch-select dsch-select--auto"
+                    className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
                     value={currentEveryMinutes}
                     aria-label={t('scheduleEveryMinutes')}
                     onChange={event => setSchedule({ kind: 'interval', everyMinutes: Number(event.target.value) })}
@@ -195,7 +206,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
                 ? (
                     <>
                       <select
-                        className="dsch-select dsch-select--auto"
+                        className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
                         value={currentWeekday}
                         aria-label={t('scheduleWeekdays')}
                         onChange={event => setSchedule({ kind: 'weekly', weekdays: [event.target.value as Weekday], time: currentTime })}
@@ -203,7 +214,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
                         {WEEKDAYS.map(day => <option key={day} value={day}>{t(WEEKDAY_KEYS[day])}</option>)}
                       </select>
                       <select
-                        className="dsch-select dsch-select--auto"
+                        className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
                         value={currentTime}
                         aria-label={t('scheduleTime')}
                         onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
@@ -214,7 +225,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
                   )
                 : (
                     <select
-                      className="dsch-select dsch-select--auto"
+                      className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
                       value={currentTime}
                       aria-label={t('scheduleTime')}
                       onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
@@ -225,57 +236,49 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
           </div>
         </div>
 
-        <div className="dsch-field">
-          <span className="dsch-fieldLabel">{t('schedulePrompt')}</span>
-          <textarea
-            value={form.prompt}
-            placeholder={t('schedulePromptPlaceholder')}
-            onChange={event => setForm(state => ({ ...state, prompt: event.target.value }))}
-          />
-        </div>
-
-        <div className="dsch-composer">
-          <select
-            className="dsch-select"
-            value={form.workspaceId}
-            aria-label={t('workspace')}
-            title={t('workspace')}
-            onChange={event => setForm(state => ({ ...state, workspaceId: event.target.value }))}
-          >
-            <option value="">{t('workspaceDefault')}</option>
-            {options.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
-          </select>
-          <select
-            className="dsch-select"
-            value={form.mode}
-            aria-label={t('mode')}
-            title={t('mode')}
-            onChange={event => setForm(state => ({ ...state, mode: event.target.value }))}
-          >
-            <option value="">{t('mode')}</option>
-            {options.presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-          </select>
-          <select
-            className="dsch-select"
-            value={form.module}
-            aria-label={t('module')}
-            title={t('module')}
-            onChange={event => setForm(state => ({ ...state, module: event.target.value }))}
-          >
-            <option value="">{t('moduleDefault')}</option>
-            {options.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
-          </select>
-        </div>
-
-        {error ? <p className="dsch-error" role="alert">{error}</p> : null}
-
-        <div className="dsch-dialogFooter">
-          <button className="dsch-btn" type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
-          <button className="dsch-btn dsch-btn--primary" type="button" disabled={saving} onClick={() => void onSave()}>
-            {t('save')}
-          </button>
+        <div className={K.field}>
+          <span className={K.fieldLabel}>{t('schedulePrompt')}</span>
+          <div className={K.promptWrap}>
+            <textarea
+              className={K.textarea}
+              value={form.prompt}
+              placeholder={t('schedulePromptPlaceholder')}
+              onChange={event => setForm(state => ({ ...state, prompt: event.target.value }))}
+            />
+            <div className={K.composer}>
+              <MenuSelect
+                label={t('workspace')}
+                value={form.workspaceId}
+                options={workspaceOptions}
+                onSelect={id => setForm(state => ({ ...state, workspaceId: id }))}
+              />
+              <MenuSelect
+                label={t('permission')}
+                value={form.permission}
+                options={permissionOptions}
+                onSelect={id => setForm(state => ({ ...state, permission: id }))}
+              />
+              <ModelPicker
+                value={modelValue}
+                reasoningEffort={form.reasoningEffort}
+                models={options.models ?? []}
+                followGlobalLabel={t('followGlobal')}
+                modelLabel={t('module')}
+                effortLabel={t('reasoningEffort')}
+                defaultModelLabel={t('followGlobal')}
+                providerDefaultLabel={t('moduleDefault')}
+                onSelection={(provider, model, reasoningEffort) => setForm(state => ({
+                  ...state,
+                  provider,
+                  model,
+                  reasoningEffort,
+                }))}
+              />
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+      {error ? <p className={K.error} role="alert">{error}</p> : null}
+    </Modal>
   )
 }

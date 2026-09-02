@@ -37,7 +37,6 @@ export function createSchedulerInjected(): SchedulerInjected {
     runTask: id => post('/tasks/run', { id }),
     listRuns: taskId => fetchJson<{ runs: RunView[] }>(`/history${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`),
     deleteRun: id => post('/history/delete', { id }),
-    clearRuns: () => post('/history/clear', {}),
     fetchOptions: () => fetchJson<SchedulerOptions>('/options'),
     recover: async () => { await post('/recover', {}) },
   }

@@ -139,7 +139,6 @@ export interface SchedulerInjected {
   runTask: (id: string) => Promise<{ ok: boolean, error?: string }>
   listRuns: (taskId?: string) => Promise<{ runs: RunView[] }>
   deleteRun: (id: string) => Promise<{ ok: boolean, error?: string }>
-  clearRuns: () => Promise<{ ok: boolean, error?: string }>
   fetchOptions: () => Promise<SchedulerOptions>
   recover: () => Promise<void>
 }

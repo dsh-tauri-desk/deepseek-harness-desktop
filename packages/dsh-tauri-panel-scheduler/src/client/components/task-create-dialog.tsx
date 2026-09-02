@@ -91,9 +91,10 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
     prompt: '',
     workspaceId: '',
     permission: options.defaultPermission || 'read-only',
-    provider: '',
-    model: '',
-    reasoningEffort: '',
+    // 照搬 dsh-automation defaultFormState：默认选中宿主默认模型（不出现空选择）。
+    provider: options.defaultModel?.provider ?? '',
+    model: options.defaultModel?.model ?? '',
+    reasoningEffort: options.defaultModel?.reasoning?.defaultEffort ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -281,7 +282,8 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
                   modelKey={modelKey}
                   reasoningEffort={form.reasoningEffort === '' ? 'none' : form.reasoningEffort}
                   onSelection={(nextKey, effort) => {
-                  // 照搬 dsh-automation：modelKey = `${provider}::${model}`，'default' 表示跟随全局。
+                  // 照搬 dsh-automation：modelKey = `${provider}::${model}`；'default' 仅在
+                  // 目录无默认模型时出现（trigger 显示官方 fallback「选择模型」）。
                     const sep = nextKey.indexOf('::')
                     const provider = sep >= 0 ? nextKey.slice(0, sep) : ''
                     const model = sep >= 0 ? nextKey.slice(sep + 2) : ''

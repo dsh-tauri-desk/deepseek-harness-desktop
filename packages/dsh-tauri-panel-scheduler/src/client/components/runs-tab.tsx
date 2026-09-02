@@ -11,7 +11,6 @@ export interface RunsTabProps {
   t: Translate
   runs: RunView[]
   onDelete: (id: string) => void
-  onClear: () => void
 }
 
 function statusKey(t: Translate, status: RunView['status']): string {
@@ -25,14 +24,11 @@ function statusKey(t: Translate, status: RunView['status']): string {
   }
 }
 
-export function RunsTab({ t, runs, onDelete, onClear }: RunsTabProps): ReactElement {
+export function RunsTab({ t, runs, onDelete }: RunsTabProps): ReactElement {
   if (runs.length === 0)
     return <p className={K.empty}>{t('emptyRuns')}</p>
   return (
     <>
-      <div className={K.runsToolbar}>
-        <button type="button" className={K.btnDanger} onClick={onClear}>{t('clearRuns')}</button>
-      </div>
       <ul className={K.runsList}>
         {runs.map(run => (
           <li key={run.id} className={K.runRow}>

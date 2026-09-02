@@ -164,13 +164,6 @@ export function deleteRun(id: string): Promise<{ ok: true } | { ok: false, error
   })
 }
 
-/** 清空全部执行历史。 */
-export function clearRuns(): Promise<{ ok: true }> {
-  return withStateLock(() => {
-    return saveRuns([]).then(() => ({ ok: true }))
-  })
-}
-
 /** 读取执行历史（按开始时间倒序；可选按任务过滤）。 */
 export function listRuns(taskId?: string): SchedulerRun[] {
   const state = loadState()

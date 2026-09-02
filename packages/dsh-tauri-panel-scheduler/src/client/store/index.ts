@@ -127,14 +127,6 @@ export async function applyDeleteRun(id: string): Promise<{ ok: boolean, error?:
   return { ok: true }
 }
 
-export async function applyClearRuns(): Promise<{ ok: boolean, error?: string }> {
-  const result = await schedulerApi.clearRuns()
-  if (!result.ok)
-    return result
-  await refreshScheduler()
-  return { ok: true }
-}
-
 export async function applyRunTask(id: string): Promise<{ ok: boolean, error?: string }> {
   const result = await schedulerApi.runTask(id)
   if (!result.ok)

@@ -20,7 +20,7 @@ export type * from './types'
 export const name = PLUGIN_ID
 
 /** 需要的客户端服务：slots（注册点位）、locale（双语文案）。 */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'layout', 'locale', 'sessions', 'workspaces']
 
 /**
  * 插件体：安装文案与样式，注册面板条目与 Chat 预填桥。

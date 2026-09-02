@@ -12,7 +12,7 @@ import type { ReactElement } from 'react'
 import type { SchedulerPanelProps, TaskFormState, TaskView } from '../types'
 import { useEffect, useState } from 'react'
 import { SCHEDULER_CLASSES as K, REFRESH_INTERVAL_MS } from '../constants'
-import { applyClearRuns, applyDeleteRun, refreshScheduler, useSchedulerState } from '../store'
+import { applyDeleteRun, refreshScheduler, useSchedulerState } from '../store'
 import { describeSchedule, formatRelative, isTaskPaused } from '../utils/schedule'
 import { IconChat, IconPlus, IconRefresh, IconSearch } from './icons'
 import { Recommendations } from './recommendations'
@@ -148,7 +148,6 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
               t={t}
               runs={state.runs}
               onDelete={id => void applyDeleteRun(id)}
-              onClear={() => void applyClearRuns()}
             />
           )}
 

@@ -178,14 +178,10 @@ async fn install_with_cancel(
     // 旧档案可能由早期版本创建，没有同步 Harness 的最小发布时间例外；补齐
     // 精确的已审查 zod 版本，避免 registry 元数据瞬时失败阻断插件安装（issue #222）。
     super::ensure_profile_pnpm_policy(app_handle)?;
-    // 安装/升级前自动快照已安装的插件（覆盖式），失败仅告警不阻断安装
-    // （issue #303：自动快照失败不阻塞主流程，避免升级被陈旧快照问题拖垮）。
-    for id in ids {
-        if is_installed(app_handle, id) {
-            super::snapshot::create_best_effort(app_handle, id);
-        }
-    }
-    // 安装前停止运行中的服务，避免资源冲突
+    // 安装前停止运行中的服务，避免资源冲突。
+    // 记录停服结果：停服失败意味着服务可能仍在运行、插件目录可能被写入，
+    // 此时创建快照会捕获不一致状态，因此停服失败时跳过快照（不终止安装）。
+    let mut stopped = true;
     if workflow::has_owned_process() {
         // 停服务会让用户感到"重启"，先在日志面板讲清缘由（issue #48）
         let _ = window.emit(
@@ -195,8 +191,22 @@ async fn install_with_cancel(
             },
         );
         log::info!("Stopping running harness service before installing plugins");
-        if let Err(e) = workflow::stop(app_handle.clone()).await {
-            log::warn!("failed to stop harness before plugin install: {e}");
+        stopped = match workflow::stop(app_handle.clone()).await {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("failed to stop harness before plugin install: {e}");
+                false
+            }
+        };
+    }
+    // 安装/升级前自动快照已安装的插件（覆盖式），失败仅告警不阻断安装。
+    // 仅在服务已确认停止后执行，保证快照一致
+    // （issue #303：自动快照失败不阻塞主流程，避免升级被陈旧快照问题拖垮）。
+    if stopped {
+        for id in ids {
+            if is_installed(app_handle, id) {
+                super::snapshot::create_best_effort(app_handle, id);
+            }
         }
     }
 

@@ -177,7 +177,10 @@ async fn run_single_plugin_command(
     // 与批量安装保持一致：旧档案也必须具备精确的 release-age 例外，
     // 否则升级/卸载触发 pnpm lockfile 校验时同样会被 issue #222 的问题阻断。
     super::ensure_profile_pnpm_policy(app_handle)?;
-    // 插件操作会改写 profile，先停止运行中的服务（与安装一致）
+    // 插件操作会改写 profile，先停止运行中的服务（与安装一致）。
+    // 记录停服结果：停服失败意味着服务可能仍在运行、插件目录可能被写入，
+    // 此时创建快照会捕获不一致状态，因此停服失败时跳过快照（不终止升级）。
+    let mut stopped = true;
     if workflow::has_owned_process() {
         let _ = window.emit(
             PREINSTALL_LOG_EVENT,
@@ -185,14 +188,18 @@ async fn run_single_plugin_command(
                 line: format!("[harness] 正在停止运行中的服务（{action}插件需要短暂重启）…"),
             },
         );
-        if let Err(e) = workflow::stop(app_handle.clone()).await {
-            log::warn!("failed to stop harness before plugin {action}: {e}");
-        }
+        stopped = match workflow::stop(app_handle.clone()).await {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("failed to stop harness before plugin {action}: {e}");
+                false
+            }
+        };
     }
     // 升级前自动快照当前版本（覆盖式），失败仅告警不阻断升级。
-    // 必须在停服之后执行：服务运行期间插件目录可能被写入，先停服保证快照一致
+    // 仅在服务已确认停止后执行：服务运行期间插件目录可能被写入，先停服保证快照一致
     // （issue #303：自动快照失败不阻塞主流程；还原入口在插件面板）。
-    if action == "update" {
+    if action == "update" && stopped {
         super::super::snapshot::create_best_effort(app_handle, id);
     }
 

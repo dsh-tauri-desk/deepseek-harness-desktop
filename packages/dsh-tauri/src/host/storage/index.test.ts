@@ -43,6 +43,27 @@ describe('createAtomicFsStorage setItem/getItem', () => {
     // unstorage fs getItem 会自动 JSON.parse，故按解析后的对象断言。
     await expect(store.getItem('ledger.json')).resolves.toEqual({ ok: true })
   })
+
+  it('冒号子目录 key 落到独立文件且互不干扰（按会话分文件的基础）', async () => {
+    const dir = tempDir()
+    const store = createAtomicFsStorage(dir)
+    await store.setItem('ledger:session-a.json', '{ "a": 1 }\n')
+    await store.setItem('ledger:session-b.json', '{ "b": 2 }\n')
+    await store.setItem('ledger:session-a.json', '{ "a": 3 }\n')
+
+    // 各自独立可读，且覆盖只作用于自己的文件。
+    await expect(store.getItem('ledger:session-a.json')).resolves.toEqual({ a: 3 })
+    await expect(store.getItem('ledger:session-b.json')).resolves.toEqual({ b: 2 })
+
+    // 枚举只暴露本方案的 `<sessionId>.json` 叶子键。
+    const keys = await store.getKeys()
+    expect([...keys].sort()).toEqual(['ledger:session-a.json', 'ledger:session-b.json'])
+
+    // removeItem 只删指定会话文件。
+    await store.removeItem('ledger:session-a.json')
+    await expect(store.hasItem('ledger:session-a.json')).resolves.toBe(false)
+    await expect(store.hasItem('ledger:session-b.json')).resolves.toBe(true)
+  })
 })
 
 describe('原子写 EPERM 锁竞争重试', () => {

@@ -5,7 +5,8 @@
  * 规则（与宿主侧 AGENTS.md 一致）：
  *   - 破坏性 Git 操作必须检查每一步结果，失败时保留可恢复的 binding/ledger；
  *   - 绝不静默覆盖用户已有分支或未提交改动；
- *   - ledger 的 load-modify-save 在单操作内完成，两个并发操作由路由层串行约束。
+ *   - binding 按会话独立落盘（ledger/<sessionId>.json），读写只碰自己的文件，
+ *     同组多工作树的 create/checkout/discard 不再共享整表文件，天然避免并发覆盖。
  */
 
 import type {
@@ -20,7 +21,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'pathe'
 import { WORKTREE_BRANCH_NAME_PATTERN } from '../constants/index.js'
-import { loadLedger, saveLedger } from '../storage/index.js'
+import { listBindings, loadBinding, removeBinding, saveBinding } from '../storage/index.js'
 import {
   applyStagedPatch,
   carryStagedChanges,
@@ -73,8 +74,7 @@ export async function ensureWorktree(
   const dirname = projectDirname(projectPath)
   const path = worktreePath(worktreesRoot, hash, dirname)
 
-  const ledger = await loadLedger(worktreesRoot)
-  const existing = ledger[sessionId]
+  const existing = await loadBinding(worktreesRoot, sessionId)
   if (existing && existsSync(existing.worktreePath)) {
     return { ok: true, binding: existing, existed: true, log: [] }
   }
@@ -142,12 +142,11 @@ export async function ensureWorktree(
     createdAt: new Date().toISOString(),
     log,
   }
-  ledger[sessionId] = binding
-  // ledger 落盘失败时回滚刚创建的 git worktree 与分支，避免留下未被 ledger 引用的
-  // 孤儿目录（失败重试会以新 sessionId 再建一份，累积成「多点几次多出一堆工作树」）。
-  // saveLedger 内部已对瞬时 EPERM 做退避重试，这里兜底覆盖其余硬失败（如权限/磁盘）。
+  // 绑定落盘失败时回滚刚创建的 git worktree 与分支，避免留下未被 ledger 引用的
+  // 孤儿目录。saveBinding 只原子写本会话自己的文件，不再整表读写；saveBinding 内部
+  // 已对瞬时 EPERM 做退避重试，这里兜底覆盖其余硬失败（如权限/磁盘）。
   try {
-    await saveLedger(worktreesRoot, ledger)
+    await saveBinding(worktreesRoot, sessionId, binding)
   }
   catch {
     const rollbackFailures: string[] = []
@@ -172,11 +171,16 @@ export async function ensureWorktree(
 
 /** 解析工作树绑定（兼容 sessionId 或 worktreeHashDirname 定位）。 */
 export async function resolveBinding(worktreesRoot: string, sessionId?: string, key?: string): Promise<{ binding: Binding | null }> {
-  const ledger = await loadLedger(worktreesRoot)
-  if (sessionId && ledger[sessionId])
-    return { binding: ledger[sessionId] }
+  // 主路径：按会话直读自己的 ledger 文件（多工作树同组时也能精确命中）。
+  if (sessionId) {
+    const bySession = await loadBinding(worktreesRoot, sessionId)
+    if (bySession)
+      return { binding: bySession }
+  }
+  // 回退：按 [hash]/[dirname] key 遍历。仅会话 id 对不上时走全量扫描。
   if (key) {
-    for (const binding of Object.values(ledger)) {
+    const all = await listBindings(worktreesRoot)
+    for (const binding of all) {
       if (binding.hash && binding.dirname && `${binding.hash}/${binding.dirname}` === key) {
         return { binding }
       }
@@ -355,10 +359,8 @@ export async function checkoutToLocal(
     return { ok: false, error: `删除工作树失败，绑定已保留以便重试：${removed.error}` }
   await git(['worktree', 'prune'], root, { signal: opts.signal })
 
-  // 5) 解除绑定。
-  const ledger = await loadLedger(worktreesRoot)
-  delete ledger[binding.sessionId]
-  await saveLedger(worktreesRoot, ledger)
+  // 5) 解除绑定：只删本会话的 ledger 文件，互不干扰同组其他工作树。
+  await removeBinding(worktreesRoot, binding.sessionId)
 
   return { ok: true, branch, projectPath: root, worktreePath: binding.worktreePath }
 }
@@ -394,9 +396,7 @@ export async function discardWorktree(
     await git(['branch', '-D', binding.branchName], binding.projectPath, { signal: opts.signal })
   }
 
-  const ledger = await loadLedger(worktreesRoot)
-  delete ledger[binding.sessionId]
-  await saveLedger(worktreesRoot, ledger)
+  await removeBinding(worktreesRoot, binding.sessionId)
 
   return { ok: true, worktreePath: binding.worktreePath }
 }

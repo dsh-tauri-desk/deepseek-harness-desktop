@@ -75,16 +75,26 @@ function isRenameLockError(error: unknown): boolean {
 }
 
 /**
- * 创建「原子写 + unstorage」的文件存储：key 即 base 下的相对路径。
+ * unstorage key 相对路径解析：unstorage 以 `:` 作为 key 层级分隔符（fs driver 的
+ * `r(key) = join(base, key.replace(/:/g, '/'))`），若自定义 setItem 不还原会把 `:` 原样
+ * 拼进路径，Windows 上 `:` 是非法字符导致 EINVAL/ENOENT。这里与 fs driver 保持同一
+ * 还原，使 `ledger:session-a.json` 落到 `base/ledger/session-a.json`。
+ */
+function resolveKeyPath(base: string, key: string): string {
+  return join(base, key.replace(/:/g, '/'))
+}
+
+/**
+ * 创建「原子写 + unstorage」的文件存储：key 即 base 下的相对路径（`:` 为子目录分隔符）。
  * 调用方写入时传对象或预序列化字符串均可；getItem 自动 JSON.parse。
  * @param base 存储根目录（不存在时按需创建）。
- * @returns unstorage Storage（键为相对路径）。
+ * @returns unstorage Storage（键为相对路径，可用 `:` 表达子目录）。
  */
 export function createAtomicFsStorage(base: string): Storage {
   const driver: FsDriverShape = {
     ...fsDriver({ base }),
     async setItem(key: string, value: string) {
-      await writeAtomic(join(base, key), value)
+      await writeAtomic(resolveKeyPath(base, key), value)
     },
   }
   return createStorage({ driver })

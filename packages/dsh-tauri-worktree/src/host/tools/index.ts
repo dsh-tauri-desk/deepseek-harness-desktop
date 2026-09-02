@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 import { join } from 'pathe'
 import { checkoutToLocal, ensureWorktree } from '../service/operation.js'
 import { resolveProjectPath } from '../service/session.js'
-import { loadLedgerSync } from '../storage/index.js'
+import { loadBindingSync } from '../storage/index.js'
 
 /** 文本渲染助手：渲染成模型可见文本。 */
 function textBlock(text: string): Array<{ type: 'text', text: string }> {
@@ -73,7 +73,7 @@ export function createToolSet(
         const sourceSession = sourceAgent?.session
         if (!sourceAgent || !sourceSession)
           return { ok: false, error: 'create_worktree requires a current agent session' }
-        if (loadLedgerSync(worktreesRoot)[sourceSession.id])
+        if (loadBindingSync(worktreesRoot, sourceSession.id))
           return { ok: false, error: 'The current session is already in a worktree' }
 
         const targetSessionId = `session-${randomUUID()}`

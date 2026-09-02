@@ -19,8 +19,10 @@ import { completeWorktreeHandoff } from './service/handoff.js'
 import { unregisterWorktreeWorkspace, worktreeKey } from './service/operation.js'
 import {
   clearPendingCheckoutContext,
-  loadCheckoutContextsSync,
-  loadLedgerSync,
+  listBindingsSync,
+  loadBindingSync,
+  loadCheckoutContextSync,
+  migrateLegacyLedger,
 } from './storage/index.js'
 import { createToolSet } from './tools/index.js'
 
@@ -62,11 +64,14 @@ export function apply(ctx: HostContext, config: PluginConfig = {}): void {
     void hooks.callHook('session:turn-end', session, event)
   })
 
-  // 2) 自愈旧版本遗留：只注销普通 Workspace 记录，不删除工作树或会话。
+  // 2) 旧版本遗留自愈：拆除整表 ledger.json（一次性迁移到按会话文件），并只注销
+  //    普通 Workspace 记录，不删工作树或会话。
   ctx.effect(() => {
-    const ledger = loadLedgerSync(worktreesRoot)
-    void Promise.all(Object.values(ledger).map(binding => unregisterWorktreeWorkspace(ctx, binding.worktreePath)))
-  }, 'dsh-tauri-worktree: unregister legacy worktree workspaces')
+    void Promise.all([
+      migrateLegacyLedger(worktreesRoot),
+      Promise.all(listBindingsSync(worktreesRoot).map(binding => unregisterWorktreeWorkspace(ctx, binding.worktreePath))),
+    ])
+  }, 'dsh-tauri-worktree: unregister legacy worktree workspaces + migrate ledger')
 
   // 3) 检出后的第一条用户消息：作为 DSH dynamic runtime context 注入，而不是
   // 主动 followup 启动额外 turn。目标会话的 header.cwd 已绑定 projectPath。
@@ -77,7 +82,7 @@ export function apply(ctx: HostContext, config: PluginConfig = {}): void {
       const sessionId = context?.scope?.session?.id
       if (!sessionId)
         return ''
-      const checkout = loadCheckoutContextsSync(worktreesRoot)[sessionId]
+      const checkout = loadCheckoutContextSync(worktreesRoot, sessionId)
       if (!checkout)
         return ''
       injectedCheckoutContexts.add(sessionId)
@@ -102,8 +107,7 @@ export function apply(ctx: HostContext, config: PluginConfig = {}): void {
       const sessionId = session?.id
       if (!sessionId)
         return ''
-      const ledger = loadLedgerSync(worktreesRoot)
-      const binding = ledger[sessionId]
+      const binding = loadBindingSync(worktreesRoot, sessionId)
       if (!binding)
         return ''
       return (

@@ -16,7 +16,7 @@ import { gitToplevel } from '../service/git.js'
 import { checkoutToLocalAndHandback, inheritSessionIntoWorktree } from '../service/handoff.js'
 import { discardWorktree, ensureWorktree, worktreeKey } from '../service/operation.js'
 import { findSession, resolveProjectPath } from '../service/session.js'
-import { loadLedger } from '../storage/index.js'
+import { loadBinding } from '../storage/index.js'
 
 /** 构建路由列表。 */
 export function buildRoutes(ctx: HostContext, config: PluginConfig): any[] {
@@ -29,8 +29,7 @@ export function buildRoutes(ctx: HostContext, config: PluginConfig): any[] {
       handler: routeHandler(async (body, req) => {
         const url = new URL(req.url ?? '/', 'http://localhost')
         const sessionId = String(url.searchParams.get('sessionId') ?? body.sessionId ?? '')
-        const ledger = await loadLedger(worktreesRoot)
-        const binding = ledger[sessionId] ?? null
+        const binding = await loadBinding(worktreesRoot, sessionId)
         const activeBinding = binding && existsSync(binding.worktreePath) ? binding : null
         const session = findSession(ctx, sessionId)
         const projectPath = binding?.projectPath ?? (await resolveProjectPath(ctx, session))
@@ -106,8 +105,7 @@ export function buildRoutes(ctx: HostContext, config: PluginConfig): any[] {
         const sessionId = String(body.sessionId ?? '')
         if (!sessionId)
           return [400, { error: '缺少 sessionId' }]
-        const ledger = await loadLedger(worktreesRoot)
-        const binding = ledger[sessionId]
+        const binding = await loadBinding(worktreesRoot, sessionId)
         if (!binding)
           return [404, { error: '未找到绑定的工作树' }]
         const workspace = await ctx.workspaceRegistry.resolveByPath(binding.projectPath)

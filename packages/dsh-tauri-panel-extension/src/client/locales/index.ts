@@ -2,7 +2,7 @@ import type { ExtensionClientContext } from '../types'
 import { LOCALE_NAMESPACE, PLUGIN_ID } from '../constants'
 
 const zh: Record<string, string> = {
-  extension: '扩展',
+  extension: '扩展技能',
   skillsTab: '技能',
   mcpTab: 'MCP',
   skillsTitle: '技能管理',
@@ -104,7 +104,7 @@ const zh: Record<string, string> = {
 }
 
 const en: Record<string, string> = {
-  extension: 'Extensions',
+  extension: 'Extension Skills',
   skillsTab: 'Skills',
   mcpTab: 'MCP',
   skillsTitle: 'Skills',

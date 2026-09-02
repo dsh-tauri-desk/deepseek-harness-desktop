@@ -78,19 +78,26 @@ const settingsStyle = c([
   }, [
     c('&:hover', { background: 'var(--dsw-alias-interactive-bg-hover)' }),
   ]),
+  // 搜索框 = 官方 input 样式值（与 dsh-tauri-panel-scheduler 的 K.input 一致，
+  // 复刻 ModelsSection.zGbnIq_input；令牌化，浅/深色自动适配）。
   c('.dsh-tu-settingsSearch', {
-    width: '100%',
-    height: '36px',
     boxSizing: 'border-box',
-    padding: '0 10px',
-    borderRadius: '10px',
-    border: '1px solid var(--dsw-alias-border-weak, rgba(127,127,127,0.25))',
-    background: 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.08))',
+    border: '.5px solid var(--dsw-alias-border-l4)',
+    width: '100%',
+    height: '32px',
+    font: 'inherit',
+    background: 'var(--dsw-alias-bg-layer-1)',
     color: 'var(--dsw-alias-label-primary)',
-    fontFamily: 'inherit',
+    borderRadius: '8px',
+    padding: '0 10px',
     fontSize: '14px',
+    lineHeight: '22px',
     outline: 'none',
-  }),
+  }, [
+    c('&:focus', { borderColor: 'var(--dsw-alias-brand-primary)' }),
+    c('&::placeholder', { color: 'var(--dsw-alias-label-dimmed)' }),
+    c('&:disabled', { opacity: '.6', cursor: 'default' }),
+  ]),
   c('.dsh-tu-settingsNav', {
     display: 'flex',
     flexDirection: 'column',

@@ -20,7 +20,7 @@ export function shouldClosePanelForSidebarTarget(target: Element | null): boolea
   const sidebar = target.closest(`[${PANEL_DATA_ATTRIBUTES.sidebar}]`)
   if (!sidebar)
     return false
-  if (target.closest(`[${PANEL_DATA_ATTRIBUTES.view}],[${PANEL_DATA_ATTRIBUTES.action}]`))
+  if (target.closest(`[${PANEL_DATA_ATTRIBUTES.view}],[${PANEL_DATA_ATTRIBUTES.action}],.${PANEL_CLASSES.panelView}`))
     return false
   if (target.closest(SIDEBAR_KEEP_OPEN_SELECTOR))
     return false

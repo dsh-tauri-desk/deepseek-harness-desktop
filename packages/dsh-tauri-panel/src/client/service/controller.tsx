@@ -88,7 +88,9 @@ export function createPanelConversationController(): PanelConversationController
     open,
     close,
     toggle(ctx, spec) {
-      if (currentSpec)
+      // 同 id → toggle 关闭；不同/无 → open()（open 内部已处理「已有则先 close 替换」），
+      // 实现多面板「点一个切一个」，而非一开就全关。
+      if (currentSpec && currentSpec.id === spec.id)
         close()
       else
         open(ctx, spec)

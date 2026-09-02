@@ -36,6 +36,7 @@ mod internal;
 mod preset;
 mod process;
 pub mod recovery;
+pub mod snapshot;
 pub mod update;
 pub mod verify;
 pub mod watch;

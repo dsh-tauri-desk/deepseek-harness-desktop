@@ -227,3 +227,42 @@ pub fn enable_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String
     plugin::watch::force_emit(&app_handle);
     Ok(())
 }
+
+/// 创建单个插件的快照（覆盖式：已存在则整体替换），存档于
+/// `$DSH_HOME/.plugin-backups/<id>.tgz`。
+#[tauri::command]
+pub fn snapshot_plugin(app_handle: AppHandle, id: String) -> Result<plugin::snapshot::SnapshotInfo, String> {
+    plugin::snapshot::create(&app_handle, &id)
+}
+
+/// 批量创建插件快照（升级前置自动快照）：单项失败只记录在结果里，不阻断其它项。
+#[tauri::command]
+pub fn snapshot_plugins(
+    app_handle: AppHandle,
+    ids: Vec<String>,
+) -> Result<Vec<plugin::snapshot::SnapshotResult>, String> {
+    Ok(plugin::snapshot::create_many(&app_handle, &ids))
+}
+
+/// 查询单个插件的快照信息（存在性 + 时间 + 大小 + 是否含配置段）。
+#[tauri::command]
+pub fn get_plugin_backup(
+    app_handle: AppHandle,
+    id: String,
+) -> plugin::snapshot::PluginBackupInfo {
+    plugin::snapshot::get(&app_handle, &id)
+}
+
+/// 还原单个插件的快照（覆盖式，内部停服务；仅第三方可行动插件允许）。
+#[tauri::command]
+pub async fn restore_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
+    plugin::snapshot::restore(&app_handle, &id).await?;
+    plugin::watch::force_emit(&app_handle);
+    Ok(())
+}
+
+/// 删除单个插件的快照（卸载级联清理 / 手动删除）：幂等，无快照视为成功。
+#[tauri::command]
+pub fn delete_plugin_backup(app_handle: AppHandle, id: String) -> Result<(), String> {
+    plugin::snapshot::delete(&app_handle, &id)
+}

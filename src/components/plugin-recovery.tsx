@@ -1,5 +1,7 @@
 import { CircleExclamation } from '@gravity-ui/icons'
 import { Button, Chip, Description, Spinner } from '@heroui/react'
+import { invoke } from '@tauri-apps/api/core'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
@@ -34,6 +36,28 @@ export function PluginRecovery({ fullScreen = false }: { fullScreen?: boolean })
   const { t } = useTranslation()
   const { recovery } = useStore(store.harness)
 
+  // 检测问题插件是否已有单插件快照：有则优先提供「从快照还原」入口（issue #303）
+  const [snapshotAvailable, setSnapshotAvailable] = useState(false)
+  useEffect(() => {
+    if (!recovery.required || !recovery.info) {
+      return
+    }
+    let disposed = false
+    Promise.all(recovery.info.plugins.map(id => invoke<{ exists: boolean }>('get_plugin_backup', { id })))
+      .then((results) => {
+        if (!disposed)
+          setSnapshotAvailable(results.some(r => r.exists))
+      })
+      .catch((err) => {
+        console.error('[PluginRecovery] check snapshot failed:', err)
+        if (!disposed)
+          setSnapshotAvailable(false)
+      })
+    return () => {
+      disposed = true
+    }
+  }, [recovery.required, recovery.info])
+
   if (!recovery.required || !recovery.info) {
     return null
   }
@@ -48,6 +72,9 @@ export function PluginRecovery({ fullScreen = false }: { fullScreen?: boolean })
   const primaryLabel = multiple
     ? t('recovery.remove_many', { count: info.plugins.length })
     : t('recovery.remove_one')
+  const restoreLabel = multiple
+    ? t('recovery.restore_many', { count: info.plugins.length })
+    : t('recovery.restore_one')
   const reasonDetail = info.detail
     ? t(reasonKeys.detail, { detail: info.detail })
     : t(reasonKeys.detail)
@@ -99,6 +126,19 @@ export function PluginRecovery({ fullScreen = false }: { fullScreen?: boolean })
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* 还原快照：优先级高于卸载——有快照时优先用快照还原，避免误删插件 */}
+            <If cond={snapshotAvailable}>
+              <Button
+                className="rounded-md"
+                variant="primary"
+                onPress={() => store.harness.restoreAndRedetect(info.plugins)}
+              >
+                <span className="flex items-center gap-1">
+                  <If cond={recovery.busy} then={<Spinner size="sm" color="current" />} />
+                  {recovery.busy ? t('recovery.restoring') : restoreLabel}
+                </span>
+              </Button>
+            </If>
             <Button
               className="rounded-md"
               variant="danger"

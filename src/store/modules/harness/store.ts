@@ -816,6 +816,25 @@ export const harness = defineStore({
       }
     },
 
+    /** 从快照还原并继续检测：优先用单插件快照还原问题插件（优先级高于卸载）；
+     * 无快照的插件保持不动，避免误删。还原成功后重启并重新检测。 */
+    async restoreAndRedetect(ids: readonly string[]) {
+      if (this.recovery.busy || ids.length === 0)
+        return
+      this.recovery = { ...this.recovery, busy: true }
+      try {
+        for (const id of ids) {
+          await invoke('restore_plugin', { id })
+        }
+        this.recovery = { required: false, info: null, attempts: this.recovery.attempts, busy: false }
+        await this.restart()
+      }
+      catch (err) {
+        console.error('[Harness] restore_plugin failed:', err)
+        this.recovery = { ...this.recovery, busy: false, attempts: this.recovery.attempts + 1 }
+      }
+    },
+
     /** 「暂不处理」：关闭修复界面并记住这些插件（运行期场景不阻断使用）。 */
     dismissRecovery() {
       if (this.recovery.info) {

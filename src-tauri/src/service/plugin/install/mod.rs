@@ -178,6 +178,13 @@ async fn install_with_cancel(
     // 旧档案可能由早期版本创建，没有同步 Harness 的最小发布时间例外；补齐
     // 精确的已审查 zod 版本，避免 registry 元数据瞬时失败阻断插件安装（issue #222）。
     super::ensure_profile_pnpm_policy(app_handle)?;
+    // 安装/升级前自动快照已安装的插件（覆盖式），失败仅告警不阻断安装
+    // （issue #303：自动快照失败不阻塞主流程，避免升级被陈旧快照问题拖垮）。
+    for id in ids {
+        if is_installed(app_handle, id) {
+            super::snapshot::create_best_effort(app_handle, id);
+        }
+    }
     // 安装前停止运行中的服务，避免资源冲突
     if workflow::has_owned_process() {
         // 停服务会让用户感到"重启"，先在日志面板讲清缘由（issue #48）

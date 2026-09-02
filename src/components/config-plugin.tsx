@@ -54,8 +54,8 @@ export function ConfigPlugin() {
 
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
-  /** 行内操作进行中状态：id + 操作类型（update/remove/disable/enable），保证单例运行 */
-  const [busy, setBusy] = useState<{ id: string, action: 'update' | 'remove' | 'disable' | 'enable' } | null>(null)
+  /** 行内操作进行中状态：id + 操作类型（update/remove/disable/enable/snapshot/restore/delete-snapshot），保证单例运行 */
+  const [busy, setBusy] = useState<{ id: string, action: 'update' | 'remove' | 'disable' | 'enable' | 'snapshot' | 'restore' | 'delete-snapshot' } | null>(null)
 
   const upgrade = useMutation({
     mutationFn: (id: string) => invoke<void>('update_dsh_plugin', { id }),
@@ -110,6 +110,44 @@ export function ConfigPlugin() {
       const name = plugins.find(p => p.id === id)?.name ?? id
       console.error('[ConfigPlugin] enable failed:', err)
       toast(t('plugins.enable_failed', { name }), {})
+    },
+  })
+  const snapshot = useMutation({
+    mutationFn: (id: string) => invoke<void>('snapshot_plugin', { id }),
+    onSuccess: (_data, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      void queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      toast(t('plugins.snapshot_toast', { name }), {})
+    },
+    onError: (err, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      console.error('[ConfigPlugin] snapshot failed:', err)
+      toast(t('plugins.snapshot_failed', { name }), {})
+    },
+  })
+  const restore = useMutation({
+    mutationFn: (id: string) => invoke<void>('restore_plugin', { id }),
+    onSuccess: (_data, _id) => {
+      // 还原后快照仍在（覆盖式不删快照），插件版本回到快照态：重拉列表。
+      void queryClient.invalidateQueries({ queryKey: ['plugins'] })
+    },
+    onError: (err, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      console.error('[ConfigPlugin] restore failed:', err)
+      toast(t('plugins.restore_failed', { name }), {})
+    },
+  })
+  const deleteSnapshot = useMutation({
+    mutationFn: (id: string) => invoke<void>('delete_plugin_backup', { id }),
+    onSuccess: (_data, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      void queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      toast(t('plugins.snapshot_deleted_toast', { name }), {})
+    },
+    onError: (err, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      console.error('[ConfigPlugin] delete snapshot failed:', err)
+      toast(t('plugins.snapshot_delete_failed', { name }), {})
     },
   })
 
@@ -195,6 +233,111 @@ export function ConfigPlugin() {
       setBusy(null)
       // 启用后统一拉起服务，使新的 bundles 列表生效。
       void store.harness.restart()
+    }
+  }
+
+  async function onSnapshot(id: string, name: string, hasSnapshot: boolean) {
+    if (busy)
+      return
+    // 已存在快照：覆盖式，先确认再覆盖（快照语义 = 覆盖当前状态）。
+    if (hasSnapshot) {
+      try {
+        await openDialog({
+          status: 'warning',
+          title: t('plugins.snapshot_overwrite_title'),
+          description: (
+            <p>
+              {t('plugins.snapshot_overwrite_desc', { name })}
+            </p>
+          ),
+          confirmText: t('plugins.snapshot_overwrite_confirm'),
+        })
+      }
+      catch {
+        return
+      }
+    }
+    setBusy({ id, action: 'snapshot' })
+    try {
+      await snapshot.mutateAsync(id)
+    }
+    catch {
+      // 错误提示已由 mutation 的 onError 处理
+    }
+    finally {
+      setBusy(null)
+    }
+  }
+
+  async function onRestore(id: string, name: string) {
+    if (busy)
+      return
+    try {
+      await openDialog({
+        status: 'warning',
+        title: t('plugins.restore_confirm_title'),
+        description: (
+          <p>
+            {t('plugins.restore_confirm_desc', { name })}
+          </p>
+        ),
+        confirmText: t('plugins.restore'),
+      })
+    }
+    catch {
+      return
+    }
+    setBusy({ id, action: 'restore' })
+    try {
+      await restore.mutateAsync(id)
+      // 还原期间后端已停止服务：复用 config-backup 的「重启服务」toast 交互
+      const key = toast(t('plugins.restore_restart_hint'), {
+        variant: 'accent',
+        timeout: 10_000,
+        actionProps: {
+          children: t('app.restart'),
+          onPress: () => {
+            store.harness.restart()
+            toast.close(key)
+          },
+        },
+      })
+    }
+    catch {
+      // 错误提示已由 mutation 的 onError 处理
+    }
+    finally {
+      setBusy(null)
+    }
+  }
+
+  async function onDeleteSnapshot(id: string, name: string) {
+    if (busy)
+      return
+    try {
+      await openDialog({
+        status: 'danger',
+        title: t('plugins.snapshot_delete_title'),
+        description: (
+          <p>
+            {t('plugins.snapshot_delete_desc', { name })}
+          </p>
+        ),
+        confirmText: t('plugins.snapshot_delete_confirm'),
+      })
+    }
+    catch {
+      return
+    }
+    setBusy({ id, action: 'delete-snapshot' })
+    try {
+      await deleteSnapshot.mutateAsync(id)
+    }
+    catch {
+      // 错误提示已由 mutation 的 onError 处理
+    }
+    finally {
+      setBusy(null)
     }
   }
 
@@ -337,6 +480,44 @@ export function ConfigPlugin() {
                           <span className="flex items-center gap-1">
                             <If cond={busy?.id === plugin.id && busy.action === 'disable'} then={<Spinner size="sm" color="current" />} />
                             {t('plugins.disable')}
+                          </span>
+                        </Chip>
+                      </If>
+                      {/* 单插件快照：快照始终可用（已存在时覆盖确认）；还原/删除快照仅在
+                          存在快照时显示。还原会停服务，还原后 toast 提示重启（issue #303） */}
+                      <Chip
+                        className={actionChip({ busy: !!busy })}
+                        variant="primary"
+                        color="accent"
+                        size="sm"
+                        onClick={() => onSnapshot(plugin.id, plugin.name, plugin.hasSnapshot)}
+                      >
+                        <span className="flex items-center gap-1">
+                          <If cond={busy?.id === plugin.id && busy.action === 'snapshot'} then={<Spinner size="sm" color="current" />} />
+                          {t('plugins.snapshot')}
+                        </span>
+                      </Chip>
+                      <If cond={plugin.hasSnapshot}>
+                        <Chip
+                          className={actionChip({ busy: !!busy })}
+                          variant="primary"
+                          color="accent"
+                          size="sm"
+                          onClick={() => onRestore(plugin.id, plugin.name)}
+                        >
+                          <span className="flex items-center gap-1">
+                            <If cond={busy?.id === plugin.id && busy.action === 'restore'} then={<Spinner size="sm" color="current" />} />
+                            {t('plugins.restore')}
+                          </span>
+                        </Chip>
+                        <Chip
+                          className={actionChip({ busy: !!busy })}
+                          size="sm"
+                          onClick={() => onDeleteSnapshot(plugin.id, plugin.name)}
+                        >
+                          <span className="flex items-center gap-1">
+                            <If cond={busy?.id === plugin.id && busy.action === 'delete-snapshot'} then={<Spinner size="sm" color="current" />} />
+                            {t('plugins.delete_snapshot')}
                           </span>
                         </Chip>
                       </If>

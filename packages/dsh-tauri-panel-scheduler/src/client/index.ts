@@ -10,6 +10,7 @@ import type { SchedulerClientContext, Translate } from './types'
 import { LOCALE_NAMESPACE, PLUGIN_ID, STYLES_EFFECT } from './constants'
 import { installSchedulerLocale } from './locales'
 import { installSchedulerPanel } from './register/panel'
+import { registerSchedulerPrefill } from './register/prefill'
 import { mountSchedulerStyles } from './styles'
 
 export { SCHEDULER_API_PREFIX } from '../shared/constants'
@@ -22,7 +23,7 @@ export const name = PLUGIN_ID
 export const inject = ['slots', 'locale']
 
 /**
- * 插件体：安装文案与样式，注册面板条目。
+ * 插件体：安装文案与样式，注册面板条目与 Chat 预填桥。
  * @param ctx - 客户端根上下文。
  */
 export function apply(ctx: SchedulerClientContext): void {
@@ -30,4 +31,5 @@ export function apply(ctx: SchedulerClientContext): void {
   ctx.effect(() => mountSchedulerStyles(), STYLES_EFFECT)
   const t = ctx.locale.bind(LOCALE_NAMESPACE) as Translate
   installSchedulerPanel(ctx, t)
+  registerSchedulerPrefill(ctx)
 }

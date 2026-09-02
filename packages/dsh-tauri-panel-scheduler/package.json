@@ -53,6 +53,7 @@
     "dev": "tsdown --watch",
     "prepublishOnly": "nr build",
     "start": "tsx src/index.ts",
+    "test": "vitest run",
     "typecheck": "tsc"
   },
   "dependencies": {
@@ -62,6 +63,7 @@
   },
   "devDependencies": {
     "dsh-tauri-tsdown": "workspace:*",
-    "tsdown": "catalog:cli"
+    "tsdown": "catalog:cli",
+    "vitest": "catalog:testing"
   }
 }

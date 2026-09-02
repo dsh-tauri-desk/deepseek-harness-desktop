@@ -23,7 +23,6 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
   const tabRefsRef = useRef<Array<HTMLButtonElement | null>>([])
   const rows = [{ id: 'tasks', label: t('tasksTab') }, { id: 'runs', label: t('runsTab') }]
   const [activeId, setActiveId] = useState('tasks')
-  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(['tasks']))
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
 
@@ -35,9 +34,6 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
     }, REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [])
-  useEffect(() => {
-    setVisited(previous => previous.has(activeId) ? previous : new Set([...previous, activeId]))
-  }, [activeId])
 
   const filtered = search
     ? state.tasks.filter(task => task.name.toLowerCase().includes(search.toLowerCase()))
@@ -118,7 +114,7 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
 
       {state.error ? <p className="dsch-error" role="alert">{state.error}</p> : null}
 
-      {rows.filter(row => row.id === activeId || visited.has(row.id)).map((row) => {
+      {rows.map((row) => {
         const selected = row.id === activeId
         return (
           <div key={row.id} id={`${tabsId}-panel-${row.id}`} className="dsch-tabPanel" role="tabpanel" aria-labelledby={`${tabsId}-tab-${row.id}`} hidden={!selected}>

@@ -44,7 +44,9 @@ export function apply(ctx: HostContext, config: Config = {}): void {
 
   // 2) 启动自愈：上次进程中断留下的 running 记录标记为 failed。
   ctx.effect(() => {
-    void recoverInterruptedRuns()
+    void recoverInterruptedRuns().catch((error: unknown) => {
+      ctx.logger?.warn?.('dsh-tauri-panel-scheduler: recover interrupted runs failed', error)
+    })
   }, 'dsh-tauri-panel-scheduler: recover interrupted runs')
 
   // 3) HTTP 路由注册（卸载统一释放）。
@@ -58,7 +60,9 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   // 4) 调度引擎 tick。
   ctx.effect(() => {
     const timer = setInterval(() => {
-      void engine.tick()
+      void engine.tick().catch((error: unknown) => {
+        ctx.logger?.warn?.('dsh-tauri-panel-scheduler: tick failed', error)
+      })
     }, tickMs)
     return () => clearInterval(timer)
   }, 'dsh-tauri-panel-scheduler: tick')

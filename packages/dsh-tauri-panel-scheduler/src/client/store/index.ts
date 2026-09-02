@@ -53,21 +53,31 @@ function patchState(patch: Partial<SchedulerUiState>): void {
   schedulerStore.set(state => ({ ...state, ...patch }))
 }
 
+/** 轮询代际：只允许最新一次 refresh 落地，防止旧响应覆盖新状态。 */
+let refreshGeneration = 0
+
 /** 拉取任务 + 执行记录 + 选项（幂等，可重复调用）。 */
 export async function refreshScheduler(loadOptions = false): Promise<void> {
+  const generation = ++refreshGeneration
   patchState({ loading: true, error: '' })
   try {
     const [tasks, runs] = await Promise.all([
       schedulerApi.listTasks(),
       schedulerApi.listRuns(),
     ])
+    if (generation !== refreshGeneration)
+      return
     patchState({ tasks: tasks.tasks, runs: runs.runs, loading: false, refreshedAt: Date.now() })
     if (loadOptions) {
       const options = await schedulerApi.fetchOptions()
+      if (generation !== refreshGeneration)
+        return
       patchState({ options })
     }
   }
   catch (error) {
+    if (generation !== refreshGeneration)
+      return
     patchState({ loading: false, error: error instanceof Error ? error.message : String(error) })
   }
 }

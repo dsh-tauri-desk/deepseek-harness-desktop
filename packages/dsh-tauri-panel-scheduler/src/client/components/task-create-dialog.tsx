@@ -7,7 +7,7 @@
 
 import type { ReactElement } from 'react'
 import type { ScheduleForm, SchedulerOptions, TaskFormState, Translate, Weekday } from '../types'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { applyCreateTask } from '../store'
 
 export interface TaskCreateDialogProps {
@@ -21,6 +21,20 @@ const WEEKDAYS: Weekday[] = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
 /** 计划模式标签键映射（用于分段选择器）。 */
 const SCHEDULE_KIND_KEYS = ['daily', 'interval', 'workdays', 'weekly'] as const
 
+/** 各计划模式的默认参数（切换模式时初始化，保证字段齐整）。 */
+function defaultScheduleFor(kind: ScheduleForm['kind']): ScheduleForm {
+  switch (kind) {
+    case 'interval':
+      return { kind: 'interval', everyMinutes: 30 }
+    case 'weekly':
+      return { kind: 'weekly', weekdays: WEEKDAYS.slice(0, 5), time: '09:00' }
+    case 'workdays':
+      return { kind: 'workdays', time: '09:00' }
+    default:
+      return { kind: 'daily', time: '09:00' }
+  }
+}
+
 export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps): ReactElement {
   const [form, setForm] = useState<TaskFormState>({
     name: '',
@@ -32,6 +46,23 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+
+  // 模态对话框基础键盘行为：挂载聚焦、Esc 关闭、卸载还原焦点。
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    const dialog = dialogRef.current
+    dialog?.focus()
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape')
+        onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      previouslyFocused?.focus()
+    }
+  }, [onClose])
 
   function setSchedule(patch: Partial<ScheduleForm>): void {
     setForm(state => ({ ...state, schedule: { ...state.schedule, ...patch } as ScheduleForm }))
@@ -68,7 +99,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
           onClose()
       }}
     >
-      <div className="dsch-dialog" role="dialog" aria-modal="true" aria-label={t('createTask')}>
+      <div className="dsch-dialog" role="dialog" aria-modal="true" aria-label={t('createTask')} tabIndex={-1} ref={dialogRef}>
         <h3>{t('createTask')}</h3>
 
         <label className="dsch-field">
@@ -93,7 +124,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
                 role="radio"
                 aria-checked={scheduleKind === kind}
                 data-active={scheduleKind === kind ? 'true' : undefined}
-                onClick={() => setForm(state => ({ ...state, schedule: { kind, time: '09:00' } as ScheduleForm }))}
+                onClick={() => setForm(state => ({ ...state, schedule: defaultScheduleFor(kind) }))}
               >
                 {t(`schedule${kind.charAt(0).toUpperCase()}${kind.slice(1)}`)}
               </button>
@@ -112,7 +143,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
                   step={5}
                   value={form.schedule.kind === 'interval' ? form.schedule.everyMinutes : 30}
                   aria-label={t('scheduleEveryMinutes')}
-                  onChange={event => setSchedule({ kind: 'interval', everyMinutes: Math.max(1, Number(event.target.value) || 30) })}
+                  onChange={event => setSchedule({ kind: 'interval', everyMinutes: Math.max(5, Number(event.target.value) || 30) })}
                 />
               )
             : (

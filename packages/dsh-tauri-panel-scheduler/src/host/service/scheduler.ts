@@ -8,10 +8,11 @@
  *   3. 执行后按计划计算下次 nextRunAt 并回写持久化（客户端卡片展示下次运行时间）。
  */
 
+import type { Hookable } from 'hookable'
 import type { SchedulerLifecycleHooks } from '../hooks/index.js'
 import type { HostContext, SchedulerTask } from '../types/index.js'
 import { MAX_CONCURRENT_RUNS } from '../constants/index.js'
-import { loadState, saveTasks } from '../storage/index.js'
+import { loadState, saveTasks, withStateLock } from '../storage/index.js'
 import { executeTask } from './executor.js'
 import { nextOccurrence } from './schedule.js'
 
@@ -19,9 +20,9 @@ import { nextOccurrence } from './schedule.js'
 export class SchedulerEngine {
   private readonly running = new Set<string>()
   private readonly ctx: HostContext
-  private readonly hooks: SchedulerLifecycleHooks
+  private readonly hooks: Hookable<SchedulerLifecycleHooks>
 
-  constructor(ctx: HostContext, hooks: SchedulerLifecycleHooks) {
+  constructor(ctx: HostContext, hooks: Hookable<SchedulerLifecycleHooks>) {
     this.ctx = ctx
     this.hooks = hooks
   }
@@ -38,7 +39,10 @@ export class SchedulerEngine {
     const task = loadState().tasks.find(t => t.id === taskId)
     if (!task)
       return { ok: false, error: '任务不存在' }
-    await this.fire(task, 'manual')
+    // 入队即返回（执行在后台推进，不等整次运行收敛）。
+    void this.fire(task, 'manual').catch((error: unknown) => {
+      this.ctx.logger?.warn?.('dsh-tauri-panel-scheduler: manual run failed', error)
+    })
     return { ok: true }
   }
 
@@ -49,30 +53,42 @@ export class SchedulerEngine {
     if (tasks.length === 0)
       return
     const now = Date.now()
+    // 先补齐缺失的 nextRunAt（新建/导入/重新启用的任务按计划计算），再判到期。
+    let backfilled = false
+    for (const task of tasks) {
+      if (task.enabled && task.nextRunAt === undefined) {
+        const next = nextOccurrence(task.schedule, now)
+        if (next !== undefined) {
+          task.nextRunAt = new Date(next).toISOString()
+          backfilled = true
+        }
+      }
+    }
+    if (backfilled) {
+      await withStateLock(() => {
+        // 锁内重读，避免覆盖并发的 CRUD 变更。
+        const state = loadState()
+        for (const task of state.tasks) {
+          if (task.enabled && task.nextRunAt === undefined) {
+            const next = nextOccurrence(task.schedule, now)
+            if (next !== undefined)
+              task.nextRunAt = new Date(next).toISOString()
+          }
+        }
+        return saveTasks(state.tasks)
+      })
+    }
     const due = tasks.filter(task =>
       task.enabled
       && !this.running.has(task.id)
-      && (task.nextRunAt === undefined || new Date(task.nextRunAt).getTime() <= now),
+      && task.nextRunAt !== undefined
+      && new Date(task.nextRunAt).getTime() <= now,
     )
-    // 未到期的任务无需任何处理；到期任务逐个执行（并发上限内）。
-    let active = 0
+    // 全局并发上限：含上一 tick 仍在运行的执行。
     for (const task of due) {
-      if (active >= MAX_CONCURRENT_RUNS)
+      if (this.running.size >= MAX_CONCURRENT_RUNS)
         break
-      active++
       void this.fire(task, 'schedule')
-    }
-    // 所有启用任务的下次触发时间若缺失则立即补齐（新任务/时间被未来时钟覆盖）。
-    const changed = tasks.some(task => task.enabled && task.nextRunAt === undefined)
-    if (changed) {
-      for (const task of tasks) {
-        if (task.enabled && task.nextRunAt === undefined) {
-          const next = nextOccurrence(task.schedule, now)
-          if (next !== undefined)
-            task.nextRunAt = new Date(next).toISOString()
-        }
-      }
-      await saveTasks(tasks)
     }
   }
 
@@ -99,13 +115,15 @@ export class SchedulerEngine {
       const now = Date.now()
       const next = nextOccurrence(task.schedule, now)
       task.nextRunAt = next === undefined ? undefined : new Date(next).toISOString()
-      const state = loadState()
-      const stored = state.tasks.find(t => t.id === task.id)
-      if (stored) {
+      await withStateLock(() => {
+        const state = loadState()
+        const stored = state.tasks.find(t => t.id === task.id)
+        if (!stored)
+          return
         stored.lastRunAt = task.lastRunAt
         stored.nextRunAt = task.nextRunAt
-        await saveTasks(state.tasks)
-      }
+        return saveTasks(state.tasks)
+      })
     }
   }
 }

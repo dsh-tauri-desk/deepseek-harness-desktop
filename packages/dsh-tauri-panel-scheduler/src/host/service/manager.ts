@@ -8,7 +8,7 @@
 import type { SchedulerRun, SchedulerSchedule, SchedulerTask } from '../types/index.js'
 import { randomUUID } from 'node:crypto'
 import { NAME_MAX_LENGTH, PROMPT_MAX_LENGTH } from '../constants/index.js'
-import { loadState, saveRuns, saveTasks } from '../storage/index.js'
+import { loadState, saveRuns, saveTasks, withStateLock } from '../storage/index.js'
 import { localTimeZone, nextOccurrence, validateSchedule } from './schedule.js'
 
 /** 任务创建入参。 */
@@ -66,78 +66,82 @@ export function validateTaskInput(input: unknown): string | null {
 }
 
 /** 新增任务。返回 [ok, task|error]。 */
-export async function createTask(input: TaskInput): Promise<{ ok: true, task: SchedulerTask } | { ok: false, error: string }> {
+export function createTask(input: TaskInput): Promise<{ ok: true, task: SchedulerTask } | { ok: false, error: string }> {
   const invalid = validateTaskInput(input)
   if (invalid !== null)
-    return { ok: false, error: invalid }
-  const state = loadState()
-  const task = buildTask(input)
-  state.tasks.push(task)
-  await saveTasks(state.tasks)
-  return { ok: true, task }
+    return Promise.resolve({ ok: false, error: invalid })
+  return withStateLock(() => {
+    const state = loadState()
+    const task = buildTask(input)
+    state.tasks.push(task)
+    return saveTasks(state.tasks).then(() => ({ ok: true, task }))
+  })
 }
 
 /** 更新任务（合并语义；undefined 字段保持不变）。 */
-export async function updateTask(
+export function updateTask(
   id: string,
   patch: Partial<TaskInput>,
 ): Promise<{ ok: true, task: SchedulerTask } | { ok: false, error: string }> {
-  const state = loadState()
-  const task = state.tasks.find(t => t.id === id)
-  if (!task)
-    return { ok: false, error: '任务不存在' }
-  const merged: TaskInput = {
-    name: patch.name ?? task.name,
-    schedule: patch.schedule ?? task.schedule,
-    prompt: patch.prompt ?? task.prompt,
-    workspaceId: patch.workspaceId === undefined ? task.workspaceId : patch.workspaceId,
-    mode: patch.mode === undefined ? task.mode : patch.mode,
-    module: patch.module === undefined ? task.module : patch.module,
-    enabled: patch.enabled ?? task.enabled,
-  }
-  const invalid = validateTaskInput(merged)
-  if (invalid !== null)
-    return { ok: false, error: invalid }
-  const built = buildTask(merged)
-  task.name = built.name
-  task.schedule = built.schedule
-  task.prompt = built.prompt
-  task.workspaceId = built.workspaceId
-  task.mode = built.mode
-  task.module = built.module
-  task.enabled = built.enabled
-  task.updatedAt = new Date().toISOString()
-  task.nextRunAt = built.nextRunAt
-  await saveTasks(state.tasks)
-  return { ok: true, task }
+  return withStateLock(() => {
+    const state = loadState()
+    const task = state.tasks.find(t => t.id === id)
+    if (!task)
+      return { ok: false, error: '任务不存在' }
+    const merged: TaskInput = {
+      name: patch.name ?? task.name,
+      schedule: patch.schedule ?? task.schedule,
+      prompt: patch.prompt ?? task.prompt,
+      workspaceId: patch.workspaceId === undefined ? task.workspaceId : patch.workspaceId,
+      mode: patch.mode === undefined ? task.mode : patch.mode,
+      module: patch.module === undefined ? task.module : patch.module,
+      enabled: patch.enabled ?? task.enabled,
+    }
+    const invalid = validateTaskInput(merged)
+    if (invalid !== null)
+      return { ok: false, error: invalid }
+    const built = buildTask(merged)
+    task.name = built.name
+    task.schedule = built.schedule
+    task.prompt = built.prompt
+    task.workspaceId = built.workspaceId
+    task.mode = built.mode
+    task.module = built.module
+    task.enabled = built.enabled
+    task.updatedAt = new Date().toISOString()
+    task.nextRunAt = built.nextRunAt
+    return saveTasks(state.tasks).then(() => ({ ok: true, task }))
+  })
 }
 
 /** 启用/暂停。返回 [ok, task|error]。 */
-export async function setTaskEnabled(id: string, enabled: boolean): Promise<{ ok: true, task: SchedulerTask } | { ok: false, error: string }> {
-  const state = loadState()
-  const task = state.tasks.find(t => t.id === id)
-  if (!task)
-    return { ok: false, error: '任务不存在' }
-  task.enabled = enabled
-  task.updatedAt = new Date().toISOString()
-  if (enabled && task.nextRunAt === undefined) {
-    const next = nextOccurrence(task.schedule, Date.now())
-    if (next !== undefined)
-      task.nextRunAt = new Date(next).toISOString()
-  }
-  await saveTasks(state.tasks)
-  return { ok: true, task }
+export function setTaskEnabled(id: string, enabled: boolean): Promise<{ ok: true, task: SchedulerTask } | { ok: false, error: string }> {
+  return withStateLock(() => {
+    const state = loadState()
+    const task = state.tasks.find(t => t.id === id)
+    if (!task)
+      return { ok: false, error: '任务不存在' }
+    task.enabled = enabled
+    task.updatedAt = new Date().toISOString()
+    if (enabled && task.nextRunAt === undefined) {
+      const next = nextOccurrence(task.schedule, Date.now())
+      if (next !== undefined)
+        task.nextRunAt = new Date(next).toISOString()
+    }
+    return saveTasks(state.tasks).then(() => ({ ok: true, task }))
+  })
 }
 
 /** 删除任务（保留执行历史，任务名快照已存在）。 */
-export async function deleteTask(id: string): Promise<{ ok: true } | { ok: false, error: string }> {
-  const state = loadState()
-  const index = state.tasks.findIndex(t => t.id === id)
-  if (index === -1)
-    return { ok: false, error: '任务不存在' }
-  state.tasks.splice(index, 1)
-  await saveTasks(state.tasks)
-  return { ok: true }
+export function deleteTask(id: string): Promise<{ ok: true } | { ok: false, error: string }> {
+  return withStateLock(() => {
+    const state = loadState()
+    const index = state.tasks.findIndex(t => t.id === id)
+    if (index === -1)
+      return { ok: false, error: '任务不存在' }
+    state.tasks.splice(index, 1)
+    return saveTasks(state.tasks).then(() => ({ ok: true }))
+  })
 }
 
 /** 读取执行历史（按开始时间倒序；可选按任务过滤）。 */
@@ -153,17 +157,18 @@ export function listTasks(): SchedulerTask[] {
 }
 
 /** 启动自愈：把上次进程中断留下的 running 记录标记为 failed（host_interrupted）。 */
-export async function recoverInterruptedRuns(): Promise<void> {
-  const state = loadState()
-  let changed = false
-  for (const run of state.runs) {
-    if (run.status === 'running') {
-      run.status = 'failed'
-      run.finishedAt = new Date().toISOString()
-      run.error = run.error || 'host_interrupted'
-      changed = true
+export function recoverInterruptedRuns(): Promise<void> {
+  return withStateLock(() => {
+    const state = loadState()
+    let changed = false
+    for (const run of state.runs) {
+      if (run.status === 'running') {
+        run.status = 'failed'
+        run.finishedAt = new Date().toISOString()
+        run.error = run.error || 'host_interrupted'
+        changed = true
+      }
     }
-  }
-  if (changed)
-    await saveRuns(state.runs)
+    return changed ? saveRuns(state.runs) : Promise.resolve()
+  })
 }

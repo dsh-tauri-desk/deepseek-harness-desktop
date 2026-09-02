@@ -95,24 +95,24 @@ export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactEl
           </button>
           {menuOpen
             ? (
-                <div className="dsch-menuPanel" role="menu">
-                  <button className="dsch-menuItem" type="button" role="menuitem" onClick={onRun}>
+                <div className="dsch-menuPanel">
+                  <button className="dsch-menuItem" type="button" onClick={onRun}>
                     <IconPlay />
                     {t('runNow')}
                   </button>
-                  <button className="dsch-menuItem" type="button" role="menuitem" onClick={onToggle}>
+                  <button className="dsch-menuItem" type="button" onClick={onToggle}>
                     <IconPause />
                     {paused ? t('resume') : t('pause')}
                   </button>
                   {confirming
                     ? (
-                        <button className="dsch-menuItem dsch-menuItemDanger" type="button" role="menuitem" onClick={onDelete}>
+                        <button className="dsch-menuItem dsch-menuItemDanger" type="button" onClick={onDelete}>
                           <IconTrash />
                           {t('confirmDeleteTitle')}
                         </button>
                       )
                     : (
-                        <button className="dsch-menuItem dsch-menuItemDanger" type="button" role="menuitem" onClick={() => setConfirming(true)}>
+                        <button className="dsch-menuItem dsch-menuItemDanger" type="button" onClick={() => setConfirming(true)}>
                           <IconTrash />
                           {t('delete')}
                         </button>

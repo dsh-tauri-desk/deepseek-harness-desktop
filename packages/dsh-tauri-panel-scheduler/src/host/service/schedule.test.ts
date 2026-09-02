@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { nextOccurrence, parseTimeToMinutes, validateSchedule } from './schedule'
 
 describe('parseTimeToMinutes', () => {
@@ -73,5 +73,47 @@ describe('validateSchedule', () => {
     expect(validateSchedule({ kind: 'weekly', weekdays: ['XX'], time: '08:00' })).toBe(false)
     expect(validateSchedule(null)).toBe(false)
     expect(validateSchedule('nope')).toBe(false)
+  })
+})
+
+describe('nextOccurrence across DST (America/New_York)', () => {
+  const originalTZ = process.env.TZ
+
+  beforeAll(() => {
+    process.env.TZ = 'America/New_York'
+  })
+
+  afterAll(() => {
+    if (originalTZ === undefined)
+      delete process.env.TZ
+    else
+      process.env.TZ = originalTZ
+  })
+
+  it('daily keeps the same wall-clock time across spring-forward', () => {
+    // 2026-03-08 02:00 EST → 03:00 EDT（春季前拨，当天只有 23 小时）。
+    // 从 03-07 09:00 之后找 08:00 → 应为 03-08 08:00 EDT。
+    const from = new Date(2026, 2, 7, 9, 0, 0).getTime()
+    const next = nextOccurrence({ kind: 'daily', time: '08:00', timeZone: 'America/New_York' }, from)
+    const expected = new Date(2026, 2, 8, 8, 0, 0).getTime()
+    expect(next).toBe(expected)
+    // 与「日历日 +1」一致：加 24h 毫秒会得到 23 小时的钟面错位。
+    expect(new Date(next as number).getHours()).toBe(8)
+  })
+
+  it('daily keeps the same wall-clock time across fall-back', () => {
+    // 2026-11-01 02:00 EDT → 01:00 EST（秋季回拨，当天 25 小时）。
+    const from = new Date(2026, 9, 31, 9, 0, 0).getTime()
+    const next = nextOccurrence({ kind: 'daily', time: '08:00', timeZone: 'America/New_York' }, from)
+    const expected = new Date(2026, 10, 1, 8, 0, 0).getTime()
+    expect(next).toBe(expected)
+    expect(new Date(next as number).getHours()).toBe(8)
+  })
+
+  it('workdays keeps wall-clock time across a DST boundary', () => {
+    // 2026-03-06（周五）之后的工作日 08:00：跨 03-08 春季前拨 → 03-09（周一）08:00。
+    const friday = new Date(2026, 2, 6, 12, 0, 0).getTime()
+    const next = nextOccurrence({ kind: 'workdays', time: '08:00', timeZone: 'America/New_York' }, friday)
+    expect(next).toBe(new Date(2026, 2, 9, 8, 0, 0).getTime())
   })
 })

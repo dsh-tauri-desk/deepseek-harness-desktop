@@ -8,7 +8,6 @@
 import type { SchedulerSchedule, Weekday } from '../types/index.js'
 import { WORKDAY_SET } from '../../shared/constants.js'
 
-const DAY_MS = 24 * 60 * 60 * 1000
 const MINUTE_MS = 60 * 1000
 /** 月份推进的保守上限（避免非法周次死循环）。 */
 const MAX_FORWARD_DAYS = 366
@@ -45,6 +44,15 @@ function timeOnDay(date: Date, minutes: number): number | undefined {
 }
 
 /**
+ * 从锚点日期开始，按「本地日历日」逐日推进 days 天并取"当日 HH:mm"时间戳。
+ * 用日历日加法而非 24h 毫秒加法，跨 DST 拨钟（春季前拨/秋季回拨）时保持本地钟面时间。
+ */
+function timeOnDayAfter(date: Date, days: number, minutes: number): number | undefined {
+  const shifted = new Date(date.getFullYear(), date.getMonth(), date.getDate() + days)
+  return timeOnDay(shifted, minutes)
+}
+
+/**
  * 计算某个计划在 from（ms 时间戳）之后的首次触发时间。
  * 返回 ms 时间戳；计划非法或不可达时返回 undefined。
  */
@@ -65,14 +73,15 @@ export function nextOccurrence(schedule: SchedulerSchedule, from: number): numbe
       const today = timeOnDay(anchor, minutes)
       if (today === undefined)
         return undefined
-      return today > from ? today : today + DAY_MS
+      // 今天未过则今天；已过则取下一个日历日的同钟面时间（DST 安全）。
+      return today > from ? today : timeOnDayAfter(anchor, 1, minutes)
     }
     case 'workdays': {
       const minutes = parseTimeToMinutes(schedule.time)
       if (minutes === undefined)
         return undefined
       for (let offset = 0; offset < MAX_FORWARD_DAYS; offset++) {
-        const candidate = new Date(anchor.getTime() + offset * DAY_MS)
+        const candidate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + offset)
         const day = candidate.getDay()
         const weekday = Object.keys(WEEKDAY_TO_JS_DAY).find(
           key => WEEKDAY_TO_JS_DAY[key as Weekday] === day,
@@ -94,7 +103,7 @@ export function nextOccurrence(schedule: SchedulerSchedule, from: number): numbe
         return undefined
       const targetDays = new Set(weekdays.map(day => WEEKDAY_TO_JS_DAY[day]))
       for (let offset = 0; offset < MAX_FORWARD_DAYS; offset++) {
-        const candidate = new Date(anchor.getTime() + offset * DAY_MS)
+        const candidate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + offset)
         if (!targetDays.has(candidate.getDay()))
           continue
         const ts = timeOnDay(candidate, minutes)

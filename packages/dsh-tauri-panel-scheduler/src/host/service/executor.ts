@@ -11,7 +11,7 @@
 import type { HostContext, RunTrigger, SchedulerTask } from '../types/index.js'
 import { randomUUID } from 'node:crypto'
 import { RUNS_HISTORY_LIMIT } from '../constants/index.js'
-import { loadState, saveRuns } from '../storage/index.js'
+import { loadState, saveRuns, withStateLock } from '../storage/index.js'
 
 /** 单次执行结果。 */
 export interface ExecuteOutcome {
@@ -55,18 +55,20 @@ export async function executeTask(
   const scheduledFor = new Date().toISOString()
   const sessionId = `task-${randomUUID()}`
   const cwd = await resolveWorkspacePath(ctx, task.workspaceId)
-  const state = loadState()
-  state.runs.push({
-    id: runId,
-    taskId: task.id,
-    taskName: task.name,
-    trigger,
-    status: 'running',
-    scheduledFor,
-    startedAt: scheduledFor,
-    sessionId,
+  await withStateLock(() => {
+    const state = loadState()
+    state.runs.push({
+      id: runId,
+      taskId: task.id,
+      taskName: task.name,
+      trigger,
+      status: 'running',
+      scheduledFor,
+      startedAt: scheduledFor,
+      sessionId,
+    })
+    return saveRuns(state.runs)
   })
-  await saveRuns(state.runs)
 
   try {
     const presets = ctx.get?.('agentPresets')
@@ -127,17 +129,19 @@ async function finalizeRun(
   status: 'succeeded' | 'failed',
   outcome: ExecuteOutcome,
 ): Promise<void> {
-  const state = loadState()
-  const run = state.runs.find(r => r.id === runId)
-  if (!run)
-    return
-  run.status = status
-  run.finishedAt = new Date().toISOString()
-  run.error = outcome.error
-  if (outcome.sessionId)
-    run.sessionId = outcome.sessionId
-  state.runs = state.runs.slice(-RUNS_HISTORY_LIMIT)
-  await saveRuns(state.runs)
+  await withStateLock(() => {
+    const state = loadState()
+    const run = state.runs.find(r => r.id === runId)
+    if (!run)
+      return
+    run.status = status
+    run.finishedAt = new Date().toISOString()
+    run.error = outcome.error
+    if (outcome.sessionId)
+      run.sessionId = outcome.sessionId
+    state.runs = state.runs.slice(-RUNS_HISTORY_LIMIT)
+    return saveRuns(state.runs)
+  })
 }
 
 /** 带超时的 Promise 竞速（超时按失败处理由调用方收敛）。 */

@@ -455,12 +455,15 @@ pub fn get(app_handle: &AppHandle, id: &str) -> PluginBackupInfo {
             include_config: false,
         };
     }
-    let created = read_manifest(&path)
-        .ok()
-        .map(|m| m.created)
-        .unwrap_or_else(|| now_timestamp());
+    // 只读一次 manifest：`read_manifest` 需解压扫描整个归档，重复调用开销重复。
+    // manifest 不可读时 created 回落当前时间（mtime 语义近似），保持 UI 可展示。
+    let manifest = read_manifest(&path).ok();
+    let created = manifest
+        .as_ref()
+        .map(|m| m.created.clone())
+        .unwrap_or_else(now_timestamp);
     let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let include_config = read_manifest(&path).map(|m| m.include_config).unwrap_or(false);
+    let include_config = manifest.is_some_and(|m| m.include_config);
     PluginBackupInfo {
         exists: true,
         created: Some(created),

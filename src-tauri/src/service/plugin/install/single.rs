@@ -177,11 +177,6 @@ async fn run_single_plugin_command(
     // 与批量安装保持一致：旧档案也必须具备精确的 release-age 例外，
     // 否则升级/卸载触发 pnpm lockfile 校验时同样会被 issue #222 的问题阻断。
     super::ensure_profile_pnpm_policy(app_handle)?;
-    // 升级前自动快照当前版本（覆盖式），失败仅告警不阻断升级
-    // （issue #303：自动快照失败不阻塞主流程；还原入口在插件面板）。
-    if action == "update" {
-        super::super::snapshot::create_best_effort(app_handle, id);
-    }
     // 插件操作会改写 profile，先停止运行中的服务（与安装一致）
     if workflow::has_owned_process() {
         let _ = window.emit(
@@ -193,6 +188,12 @@ async fn run_single_plugin_command(
         if let Err(e) = workflow::stop(app_handle.clone()).await {
             log::warn!("failed to stop harness before plugin {action}: {e}");
         }
+    }
+    // 升级前自动快照当前版本（覆盖式），失败仅告警不阻断升级。
+    // 必须在停服之后执行：服务运行期间插件目录可能被写入，先停服保证快照一致
+    // （issue #303：自动快照失败不阻塞主流程；还原入口在插件面板）。
+    if action == "update" {
+        super::super::snapshot::create_best_effort(app_handle, id);
     }
 
     let envs = build_plugin_envs(app_handle, prefer_bundled_pnpm);

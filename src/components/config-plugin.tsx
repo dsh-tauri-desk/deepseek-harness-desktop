@@ -291,7 +291,7 @@ export function ConfigPlugin() {
     try {
       await restore.mutateAsync(id)
       // 还原期间后端已停止服务：复用 config-backup 的「重启服务」toast 交互
-      const key = toast(t('plugins.restore_restart_hint'), {
+      const key = toast(t('plugins.restore_restart_hint', { name }), {
         variant: 'accent',
         timeout: 10_000,
         actionProps: {

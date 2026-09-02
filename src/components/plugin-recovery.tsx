@@ -36,22 +36,32 @@ export function PluginRecovery({ fullScreen = false }: { fullScreen?: boolean })
   const { t } = useTranslation()
   const { recovery } = useStore(store.harness)
 
-  // 检测问题插件是否已有单插件快照：有则优先提供「从快照还原」入口（issue #303）
-  const [snapshotAvailable, setSnapshotAvailable] = useState(false)
+  // 检测问题插件哪些已有单插件快照：仅对「确实有快照」的插件提供「从快照还原」入口
+  // （issue #303）。无快照的插件还原会 SNAPSHOT_NOT_FOUND，故必须按 id 过滤，
+  // 避免多插件场景下整体还原失败。
+  const [restorableIds, setRestorableIds] = useState<string[]>([])
   useEffect(() => {
     if (!recovery.required || !recovery.info) {
       return
     }
     let disposed = false
-    Promise.all(recovery.info.plugins.map(id => invoke<{ exists: boolean }>('get_plugin_backup', { id })))
+    Promise.all(recovery.info.plugins.map(async (id) => {
+      try {
+        const r = await invoke<{ exists: boolean }>('get_plugin_backup', { id })
+        return r.exists ? id : null
+      }
+      catch {
+        return null
+      }
+    }))
       .then((results) => {
         if (!disposed)
-          setSnapshotAvailable(results.some(r => r.exists))
+          setRestorableIds(results.filter((id): id is string => id !== null))
       })
       .catch((err) => {
         console.error('[PluginRecovery] check snapshot failed:', err)
         if (!disposed)
-          setSnapshotAvailable(false)
+          setRestorableIds([])
       })
     return () => {
       disposed = true
@@ -72,8 +82,8 @@ export function PluginRecovery({ fullScreen = false }: { fullScreen?: boolean })
   const primaryLabel = multiple
     ? t('recovery.remove_many', { count: info.plugins.length })
     : t('recovery.remove_one')
-  const restoreLabel = multiple
-    ? t('recovery.restore_many', { count: info.plugins.length })
+  const restoreLabel = restorableIds.length > 1
+    ? t('recovery.restore_many', { count: restorableIds.length })
     : t('recovery.restore_one')
   const reasonDetail = info.detail
     ? t(reasonKeys.detail, { detail: info.detail })
@@ -126,12 +136,13 @@ export function PluginRecovery({ fullScreen = false }: { fullScreen?: boolean })
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* 还原快照：优先级高于卸载——有快照时优先用快照还原，避免误删插件 */}
-            <If cond={snapshotAvailable}>
+            {/* 还原快照：优先级高于卸载——有快照的插件优先用快照还原，避免误删插件；
+                仅传「确有快照」的 id，无快照的插件保持不动（还原会 SNAPSHOT_NOT_FOUND） */}
+            <If cond={restorableIds.length > 0}>
               <Button
                 className="rounded-md"
                 variant="primary"
-                onPress={() => store.harness.restoreAndRedetect(info.plugins)}
+                onPress={() => store.harness.restoreAndRedetect(restorableIds)}
               >
                 <span className="flex items-center gap-1">
                   <If cond={recovery.busy} then={<Spinner size="sm" color="current" />} />

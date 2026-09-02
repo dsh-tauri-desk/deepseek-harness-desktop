@@ -26,7 +26,7 @@ use super::process::{new_process_owner, ProcessOwner};
 use crate::config;
 
 use manifest::{
-    dedupe_profile_bundles, dep_matches_spec, internal_plugin_entry_is_ready,
+    dedupe_profile_bundles, dep_matches_spec, internal_plugin_entry_is_ready, is_local_link_dep,
     remove_duplicate_bundle_entries_from_patch, remove_internal_plugins_from_manifest,
     remove_stale_plugin_entry, write_profile_manifest,
 };
@@ -528,15 +528,36 @@ async fn ensure_inner(
     }
 
     let mut need: Vec<(String, String, PathBuf)> = Vec::new();
+    // 本分支要「直接卸载」的孤儿内置插件（安装包名）：其捆绑目录已不存在且仍以
+    // `link:`/`file:` 本地依赖形式安装在 profile 里。见下方 bundle 缺失分支的说明。
+    let mut orphans: Vec<String> = Vec::new();
     for preset in internal {
         let Some(bundled) = bundled_plugin_dir(app_handle, &preset.id) else {
             // 未找到内置插件目录：release 说明构建期 build:plugins 未打包（发布
             // 缺陷，由 build:plugins 响亮失败）；debug 自动发现 packages/* 中非私有
             // 且含 dsh 对象的包，未命中时跳过（「找不到则不装」）。
-            log::warn!(
-                "INTERNAL_PLUGIN_BUNDLE_MISSING: {}（release 需构建期 build:plugins；debug 无匹配的 packages/* 包）",
-                preset.id
-            );
+            //
+            // debug 下这是「切换 git 分支导致某内置插件源码消失」的典型场景：上一
+            // 分支把它以 `link:<packages/<id>>` 装进 profile，当前分支不再有该目录，
+            // 悬空链接指向不存在的源。此时重装无从谈起（无源），且残留悬空链接会让
+            // loader 无法解析。因此只要它仍以本地链接（`link:`/`file:`）形式安装在
+            // profile 里，就直接卸载该插件；registry/git 等非本地依赖（用户独立安装
+            // 的同名包）绝不误卸。
+            let name = installed_name(preset).to_string();
+            let is_orphan = dependencies
+                .get(&name)
+                .is_some_and(|spec| is_local_link_dep(spec));
+            if is_orphan {
+                log::warn!(
+                    "INTERNAL_PLUGIN_BUNDLE_MISSING_UNINSTALLING: {name}（link 指向的捆绑目录已不存在，卸载悬空内置插件）"
+                );
+                orphans.push(name);
+            } else {
+                log::warn!(
+                    "INTERNAL_PLUGIN_BUNDLE_MISSING: {}（release 需构建期 build:plugins；debug 无匹配的 packages/* 包）",
+                    preset.id
+                );
+            }
             continue;
         };
         let name = installed_name(preset).to_string();
@@ -558,6 +579,23 @@ async fn ensure_inner(
             // 254 退出；先只清理 node_modules 入口（绝不跟随链接删除目标），再
             // 走常规 add，令 pnpm 从当前捆绑目录重建链接。
             need.push((preset.id.clone(), name, entry));
+        }
+    }
+    // 卸载孤儿内置插件：best-effort、离线精准，不依赖 node/pnpm（其源目录已
+    // 不存在，走 `dsh plugin remove` 也没有可安装的本地链接可删）。与弃用插件
+    // 自动卸载同一模式：任何失败只记告警，绝不阻断本轮其余重装或整体启动。
+    if !orphans.is_empty() {
+        log::info!("Uninstalling orphaned internal preset plugins: {orphans:?}");
+        for name in &orphans {
+            if !super::recovery::is_actionable_plugin_ref(name) {
+                log::warn!(
+                    "INTERNAL_PLUGIN_ORPHAN_SKIPPED: {name}（核心/官方包不执行孤儿卸载）"
+                );
+                continue;
+            }
+            if let Err(e) = super::uninstall_recovery(app_handle, name) {
+                log::warn!("INTERNAL_PLUGIN_ORPHAN_UNINSTALL_FAILED: {name}: {e}");
+            }
         }
     }
     if need.is_empty() {

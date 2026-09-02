@@ -1,16 +1,17 @@
 /**
- * host/service/options.ts — 供客户端对话框/下拉使用的选项收集（工作区 / agent preset / 模型）。
+ * host/service/options.ts — 供客户端对话框/下拉使用的选项收集（工作区 / 权限 / 模型目录）。
  *
- * 能力探测约定：所有可选服务都「探测后调用」，缺失即返回空数组，绝不断言存在。
- * 任何读取失败都降级为空列表——选项是 UI 便利，不是能力。
+ * 对齐 dsh-automation（MichengAI）：
+ *   - 权限选项来自宿主 `ctx.permissionPresets` 服务（names / optionOf / defaultPreset），
+ *     不硬编码——宿主动态提供 read-only / workspace-write / danger-full-access 等；
+ *   - 模型目录用 `ctx.llm.listProviders()/listModels()/resolveModelInfo()` 枚举（含 reasoning
+ *     efforts / defaultEffort），`ctx.agentDefaultModel.currentSelection()` 定默认模型。
+ * 能力探测约定：所有可选服务「探测后调用」，缺失即返回空，绝不断言存在。
  */
 
-import type { HostContext, SchedulerOptions } from '../types/index.js'
+import type { HostContext, ModelOption, PermissionOption, SchedulerOptions } from '../types/index.js'
 
-/**
- * 收集工作区列表：遍历 workspaceRegistry 的记录（id + path）。
- * 无法枚举时返回空数组。
- */
+/** 收集工作区列表：遍历 workspaceRegistry 的记录（id + path）。无法枚举时返回空数组。 */
 async function collectWorkspaces(ctx: HostContext): Promise<SchedulerOptions['workspaces']> {
   try {
     const registry = ctx.workspaceRegistry
@@ -33,53 +34,118 @@ async function collectWorkspaces(ctx: HostContext): Promise<SchedulerOptions['wo
   }
 }
 
-/** 收集 agent preset 列表（agentPresets 服务可枚举时）。 */
-async function collectPresets(ctx: HostContext): Promise<SchedulerOptions['presets']> {
+/** 收集权限选项与默认权限（宿主 permissionPresets 服务；缺失降级）。 */
+function collectPermissions(ctx: HostContext): { permissions: PermissionOption[], defaultPermission: string } {
   try {
-    const presets = ctx.get?.('agentPresets') as { list?: () => Promise<unknown> } | undefined
-    if (typeof presets?.list !== 'function')
-      return []
-    const rows = await presets.list()
-    if (!Array.isArray(rows))
-      return []
-    return rows
-      .filter((row: unknown): row is { id?: unknown, name?: unknown } =>
-        typeof row === 'object' && row !== null && typeof row.id === 'string')
-      .map(row => ({
-        id: row.id,
-        name: typeof row.name === 'string' && row.name ? row.name : row.id,
-      }))
+    const presets = (ctx as HostContext & {
+      permissionPresets?: {
+        names?: readonly string[]
+        defaultPreset?: string
+        optionOf?: (name: string) => PermissionOption
+      }
+    }).permissionPresets
+    const names = Array.isArray(presets?.names) ? presets.names : []
+    if (names.length === 0)
+      return { permissions: [], defaultPermission: 'read-only' }
+    const permissions = names.map(name => presets.optionOf?.(name) ?? { value: name, name })
+    const defaultPermission = typeof presets?.defaultPreset === 'string' && presets.defaultPreset
+      ? presets.defaultPreset
+      : (names[0] ?? 'read-only')
+    return { permissions, defaultPermission }
   }
   catch {
-    return []
+    return { permissions: [], defaultPermission: 'read-only' }
   }
 }
 
-/** 收集默认模型（agentDefaultModel 服务存在时，作为 module 下拉的首选项）。 */
-async function collectModels(ctx: HostContext): Promise<SchedulerOptions['models']> {
+interface LlmLike {
+  listProviders?: () => readonly { id?: string, provider?: string, name?: string }[]
+  listModels?: (provider: string) => Promise<readonly { id?: string, name?: string, description?: string }[]>
+  resolveModelInfo?: (provider: string, model: string) => Promise<{
+    description?: string
+    reasoning?: {
+      efforts: readonly { id: string, name: string, description?: string }[]
+      defaultEffort?: string
+    }
+  }>
+}
+
+/** 收集模型目录（flat，含 reasoning），并返回与当前默认匹配的 defaultModel。 */
+async function collectModels(ctx: HostContext): Promise<{ models: ModelOption[], defaultModel: ModelOption | null }> {
   try {
-    const service = ctx.get?.('agentDefaultModel') as { currentSelection?: () => unknown } | undefined
-    const selection = typeof service?.currentSelection === 'function'
-      ? service.currentSelection() as { provider?: unknown, model?: unknown } | undefined
-      : undefined
-    if (!selection || typeof selection.model !== 'string' || !selection.model)
-      return []
-    const label = typeof selection.provider === 'string' && selection.provider
-      ? `${selection.provider}/${selection.model}`
-      : selection.model
-    return [{ id: selection.model, label }]
+    const current = ((ctx as HostContext).get?.('agentDefaultModel') as { currentSelection?: () => unknown } | undefined)?.currentSelection?.() as
+      { provider?: unknown, model?: unknown } | undefined
+    const llm = (ctx as HostContext).get?.('llm') as LlmLike | undefined
+    const found: ModelOption[] = []
+    const seen = new Set<string>()
+    for (const item of llm?.listProviders?.() ?? []) {
+      const provider = String(item.id ?? item.provider ?? '')
+      if (provider === '')
+        continue
+      const providerLabel = String(item.name ?? provider)
+      try {
+        const models = await llm?.listModels?.(provider) ?? []
+        for (const model of models) {
+          const modelId = String(model.id ?? '')
+          if (modelId === '')
+            continue
+          const key = `${provider}::${modelId}`
+          if (seen.has(key))
+            continue
+          seen.add(key)
+          const resolved = llm?.resolveModelInfo === undefined
+            ? undefined
+            : await llm.resolveModelInfo(provider, modelId)
+          const reasoning = resolved?.reasoning === undefined
+            ? undefined
+            : {
+                efforts: resolved.reasoning.efforts.map(effort => ({
+                  id: String(effort.id),
+                  name: String(effort.name),
+                  ...(effort.description === undefined ? {} : { description: String(effort.description) }),
+                })),
+                ...(resolved.reasoning.defaultEffort === undefined
+                  ? {}
+                  : { defaultEffort: String(resolved.reasoning.defaultEffort) }),
+              }
+          found.push({
+            provider,
+            providerLabel,
+            model: modelId,
+            label: typeof model.name === 'string' && model.name.trim() ? model.name.trim() : modelId,
+            ...((resolved?.description ?? model.description) === undefined
+              ? {}
+              : { description: String(resolved?.description ?? model.description) }),
+            ...(reasoning === undefined ? {} : { reasoning }),
+          })
+        }
+      }
+      catch {
+        /* 单个 provider 失败忽略 */
+      }
+    }
+    const defaultModel = current === null
+      ? (found[0] ?? null)
+      : (found.find(item => item.provider === current.provider && item.model === current.model) ?? found[0] ?? null)
+    return { models: found, defaultModel }
   }
   catch {
-    return []
+    return { models: [], defaultModel: null }
   }
 }
 
 /** 收集全部选项。 */
 export async function collectSchedulerOptions(ctx: HostContext): Promise<SchedulerOptions> {
-  const [workspaces, presets, models] = await Promise.all([
+  const [workspaces, permission, modelCatalog] = await Promise.all([
     collectWorkspaces(ctx),
-    collectPresets(ctx),
+    Promise.resolve(collectPermissions(ctx)),
     collectModels(ctx),
   ])
-  return { workspaces, presets, models }
+  return {
+    workspaces,
+    permissions: permission.permissions,
+    defaultPermission: permission.defaultPermission,
+    models: modelCatalog.models,
+    defaultModel: modelCatalog.defaultModel,
+  }
 }

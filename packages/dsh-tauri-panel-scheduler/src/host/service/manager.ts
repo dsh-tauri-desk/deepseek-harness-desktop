@@ -17,8 +17,10 @@ export interface TaskInput {
   schedule: SchedulerSchedule
   prompt: string
   workspaceId?: string
-  mode?: string
-  module?: string
+  permission?: string
+  provider?: string
+  model?: string
+  reasoningEffort?: string
   enabled?: boolean
 }
 
@@ -38,8 +40,10 @@ export function buildTask(input: TaskInput): SchedulerTask {
     schedule: normalized,
     prompt: input.prompt,
     workspaceId: input.workspaceId || undefined,
-    mode: input.mode || undefined,
-    module: input.module || undefined,
+    permission: input.permission || undefined,
+    provider: input.provider || undefined,
+    model: input.model || undefined,
+    reasoningEffort: input.reasoningEffort || undefined,
     enabled: input.enabled ?? true,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
@@ -93,8 +97,10 @@ export function updateTask(
       schedule: patch.schedule ?? task.schedule,
       prompt: patch.prompt ?? task.prompt,
       workspaceId: patch.workspaceId === undefined ? task.workspaceId : patch.workspaceId,
-      mode: patch.mode === undefined ? task.mode : patch.mode,
-      module: patch.module === undefined ? task.module : patch.module,
+      permission: patch.permission === undefined ? task.permission : patch.permission,
+      provider: patch.provider === undefined ? task.provider : patch.provider,
+      model: patch.model === undefined ? task.model : patch.model,
+      reasoningEffort: patch.reasoningEffort === undefined ? task.reasoningEffort : patch.reasoningEffort,
       enabled: patch.enabled ?? task.enabled,
     }
     const invalid = validateTaskInput(merged)
@@ -105,8 +111,10 @@ export function updateTask(
     task.schedule = built.schedule
     task.prompt = built.prompt
     task.workspaceId = built.workspaceId
-    task.mode = built.mode
-    task.module = built.module
+    task.permission = built.permission
+    task.provider = built.provider
+    task.model = built.model
+    task.reasoningEffort = built.reasoningEffort
     task.enabled = built.enabled
     task.updatedAt = new Date().toISOString()
     task.nextRunAt = built.nextRunAt
@@ -141,6 +149,25 @@ export function deleteTask(id: string): Promise<{ ok: true } | { ok: false, erro
       return { ok: false, error: '任务不存在' }
     state.tasks.splice(index, 1)
     return saveTasks(state.tasks).then(() => ({ ok: true }))
+  })
+}
+
+/** 删除单条执行历史。 */
+export function deleteRun(id: string): Promise<{ ok: true } | { ok: false, error: string }> {
+  return withStateLock(() => {
+    const state = loadState()
+    const index = state.runs.findIndex(run => run.id === id)
+    if (index < 0)
+      return { ok: false, error: '执行记录不存在' }
+    state.runs.splice(index, 1)
+    return saveRuns(state.runs).then(() => ({ ok: true }))
+  })
+}
+
+/** 清空全部执行历史。 */
+export function clearRuns(): Promise<{ ok: true }> {
+  return withStateLock(() => {
+    return saveRuns([]).then(() => ({ ok: true }))
   })
 }
 

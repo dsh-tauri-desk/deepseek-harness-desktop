@@ -40,8 +40,10 @@ export function createToolSet(engine: SchedulerEngine): any[] {
             required: ['kind'],
           },
           workspaceId: { type: 'string', description: 'Optional target workspace id (cwd).' },
-          mode: { type: 'string', description: 'Optional agent preset / access mode id.' },
-          module: { type: 'string', description: 'Optional model id.' },
+          permission: { type: 'string', enum: ['read-only', 'workspace-write', 'danger-full-access'], description: 'Permission boundary (read-only / workspace-write / danger-full-access). Default read-only.' },
+          provider: { type: 'string', description: 'Optional pinned model provider id (pair with model).' },
+          model: { type: 'string', description: 'Optional pinned model id (pair with provider).' },
+          reasoningEffort: { type: 'string', description: 'Optional pinned reasoning effort id for the selected model.' },
         },
         required: ['name', 'prompt', 'schedule'],
       },
@@ -67,8 +69,10 @@ export function createToolSet(engine: SchedulerEngine): any[] {
           prompt: String(args.prompt ?? ''),
           schedule: args.schedule,
           workspaceId: args.workspaceId === undefined ? undefined : String(args.workspaceId),
-          mode: args.mode === undefined ? undefined : String(args.mode),
-          module: args.module === undefined ? undefined : String(args.module),
+          permission: args.permission === undefined ? undefined : String(args.permission),
+          provider: args.provider === undefined ? undefined : String(args.provider),
+          model: args.model === undefined ? undefined : String(args.model),
+          reasoningEffort: args.reasoningEffort === undefined ? undefined : String(args.reasoningEffort),
         })
         if (!result.ok)
           return { ok: false, error: result.error }

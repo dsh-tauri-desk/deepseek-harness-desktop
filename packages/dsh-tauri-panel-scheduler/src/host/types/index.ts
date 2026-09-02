@@ -72,10 +72,18 @@ export interface SchedulerTask {
   prompt: string
   /** 目标工作区 id（可空：不指定时使用默认会话 cwd）。 */
   workspaceId?: string
-  /** Agent 模式（agentPreset / 访问模式，可空）。 */
-  mode?: string
-  /** 模块 / 模型（可空：使用默认模型）。 */
+  /** 权限边界（read-only / workspace-write；可空默认 read-only）。 */
+  permission?: string
+  /** 固定模型 provider（与 model 成对；均空 = 跟随宿主默认）。 */
+  provider?: string
+  /** 固定模型 id（与 provider 成对；均空 = 跟随宿主默认）。 */
+  model?: string
+  /** 固定模型的推理等级（可空）。 */
+  reasoningEffort?: string
+  /** 旧版单字段模型 id（向后兼容；新任务用 provider/model）。 */
   module?: string
+  /** Agent 预设（可空；默认 'standard'）。 */
+  agentPreset?: string
   /** 是否启用（paused = false）。 */
   enabled: boolean
   /** 创建时间（ISO）。 */
@@ -120,10 +128,40 @@ export interface SchedulerState {
 }
 
 /** 供对话框/下拉使用的选项。 */
+export interface PermissionOption {
+  value: string
+  name: string
+  description?: string
+}
+
+export interface ModelReasoningEffort {
+  id: string
+  name: string
+  description?: string
+}
+
+export interface ModelReasoning {
+  efforts: Array<ModelReasoningEffort>
+  defaultEffort?: string
+}
+
+export interface ModelOption {
+  provider: string
+  providerLabel: string
+  model: string
+  label: string
+  description?: string
+  reasoning?: ModelReasoning
+}
+
 export interface SchedulerOptions {
   workspaces: Array<{ id: string, path: string, title: string }>
-  presets: Array<{ id: string, name: string }>
-  models: Array<{ id: string, label: string }>
+  /** 权限选项（取自宿主 permissionPresets 服务，含 read-only / workspace-write / danger-full-access）。 */
+  permissions: Array<PermissionOption>
+  defaultPermission: string
+  /** 模型目录（flat，含 provider / reasoning）。 */
+  models: Array<ModelOption>
+  defaultModel: ModelOption | null
 }
 
 /** HTTP 路由结果（dsh-tauri routeHandler 契约）。 */

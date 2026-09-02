@@ -10,7 +10,7 @@ import type { SchedulerEngine } from '../service/scheduler.js'
 import type { HostContext, JsonBody, RouteResult } from '../types/index.js'
 import { routeHandler, withConnectionAuth } from 'dsh-tauri'
 import { SCHEDULER_API_PREFIX } from '../../shared/constants.js'
-import { createTask, deleteTask, listRuns, listTasks, recoverInterruptedRuns, setTaskEnabled, updateTask } from '../service/manager.js'
+import { clearRuns, createTask, deleteRun, deleteTask, listRuns, listTasks, recoverInterruptedRuns, setTaskEnabled, updateTask } from '../service/manager.js'
 import { collectSchedulerOptions } from '../service/options.js'
 
 /** 从 URL 或 body 提取参数（统一字符串化）。 */
@@ -97,6 +97,24 @@ export function buildRoutes(ctx: HostContext, engine: SchedulerEngine): any[] {
           return [400, { error: result.error }] as RouteResult
         return [200, { ok: true }] as RouteResult
       }, { mutate: true }),
+    },
+    {
+      kind: 'exact',
+      path: `${SCHEDULER_API_PREFIX}/history/delete`,
+      handler: routeHandler(async (body) => {
+        const id = stringParam(body, new URL('http://localhost'), 'id')
+        if (!id)
+          return [400, { error: '缺少执行记录 id' }] as RouteResult
+        const result = await deleteRun(id)
+        if (!result.ok)
+          return [400, { error: result.error }] as RouteResult
+        return [200, { ok: true }] as RouteResult
+      }, { mutate: true }),
+    },
+    {
+      kind: 'exact',
+      path: `${SCHEDULER_API_PREFIX}/history/clear`,
+      handler: routeHandler(async () => [200, await clearRuns()] as RouteResult, { mutate: true }),
     },
     {
       kind: 'exact',

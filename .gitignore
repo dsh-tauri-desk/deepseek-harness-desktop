@@ -16,6 +16,7 @@ src-tauri/resources/internal-plugins/
 release-msi-version.tmp.json
 skills
 .serena
+# 参考源码克隆（如 source/dsh-automation），不作为本仓库内容提交
 source/
 .gitmodules
 .tmp-alpha-inspect

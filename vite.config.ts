@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import process from 'node:process'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
@@ -41,5 +42,10 @@ export default defineConfig(async () => ({
       // 3. tell vite to ignore watching `src-tauri`
       ignored: ['**/src-tauri/**'],
     },
+  },
+
+  // vitest 只跑工作区包与根 test（不含 source/dsh-automation 参考克隆）。
+  test: {
+    include: ['packages/**/*.{test,spec}.?(c|m)[jt]s?(x)', 'test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
   },
 }))

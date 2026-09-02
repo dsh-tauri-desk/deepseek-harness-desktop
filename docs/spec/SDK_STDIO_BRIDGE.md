@@ -122,7 +122,7 @@ node …/bin.js --profile web --host 127.0.0.1 --port <port>   # 现状 web 通�
   - **对桌面端的含义**：**Windows 限制仅限定 wheel 线**——桌面端在 Windows 上**不能**用该 crate 的 wheel 自带 runtime，但仍可通过 npm 线（`dsh-jsonrpc-agent`，Node ≥ 22.19）自备 runtime + `DSH_CORDIS_CONFIG` 在 Windows 上使用该 crate；也可走桌面自带的 `dsh --profile sdk`。**不要概括为「桌面端只能在非 Windows 平台运行」**——平台矩阵取决于所接入 runtime 的路线，而非 crate 本身（crate 纯客户端、平台无关）。
 - **结论**：
   - ✅ **协议层逻辑（spawn + 3 方法 + close 阶梯）可参考**——它把 TS/Python client 的协议语义移植到了 Rust，桌面端对照其语义手写即可，无需重复设计。
-  - ⚠️ **不建议直接依赖 crate**：① 高层 `DeepSeekHarness` 是 eager 重 API，与桌面端「自己掌控 spawn/退出树」的主权冲突；crate 虽允许 `launch_args_override`/`runtime_bin` 注入，但自带的独立 runtime 无 Windows 发行，天然把桌面端锁到非 Windows 平台，或逼迫桌面端继续走 `dsh --profile sdk`（那也就不需要该 crate 的 runtime 解析了）。② 预发布期接口仍会变动，桌面引入后要随上游 crates.io 动线升级。③ 桌面端已内置 Node + dsh，用 crate 反而引入一层与本机 dsh CLI 的双重来源。
+  - ⚠️ **不建议直接依赖 crate**：① 高层 `DeepSeekHarness` 是 eager 重 API，与桌面端「自己掌控 spawn/退出树」的主权冲突；crate 需调用方自备 runtime——桌面端要么在 Windows 上走 npm 线（但 npm 线无内置插件树、要自管 config project），要么走桌面自身的 `dsh --profile sdk`（那就不需要该 crate 的 runtime 解析了），要么被 wheel 线锁在非 Windows 平台（wheel 无 Windows 发行），三种都绕不开「runtime 还是要桌面自己管」的核心。② 预发布期接口仍会变动，桌面引入后要随上游 crates.io 动线升级。③ 桌面端已内置 Node + dsh，用 crate 反而引入一层与本机 dsh CLI 的双重来源。
 
 ## 5. 推荐落地路径（转正时）
 

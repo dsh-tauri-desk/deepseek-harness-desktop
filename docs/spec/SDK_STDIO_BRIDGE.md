@@ -16,7 +16,7 @@
 
 来源：上游 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) `packages/sdk/`（protocol / server / client 三包，实地读取 `master` 源码核实）；版本号经 npm registry 核实（查询日期 2026-09-02，按 `dist-tags` 记录）。
 
-npm 三线 dist-tag 并存：**`latest`**（`0.0.1-rc.x`，wire 稳定旧线）、**`next`**（`0.1.1-rc.2`，当前 rc 开发线）、**`alpha`**（`0.1.2-alpha.4`，Cordis host / 上游主线线，与 DSH runtime 对齐）。`dsh-sdk-jsonrpc-demo` 的 README 亦注明需 `next` dist-tag。
+npm 三线 dist-tag 并存：**`latest`**（`0.0.1-rc.x`，旧的 latest 发布线，代码陈旧但仍是 `npm i @deepseek-ai/dsh-sdk-*` 默认会命中的版本）、**`next`**（`0.1.1-rc.2`，当前 rc 开发线）、**`alpha`**（`0.1.2-alpha.4`，Cordis host / 上游主线线，与 DSH runtime 对齐）。`dsh-sdk-jsonrpc-demo` 的 README 亦注明需 `next` dist-tag。注意：只有 `initialize` 返回的 **`serverInfo.name` 是 wire-stable**（恒为 `deepseek-harness-sdk-runtime`）且承诺不随发版变更；npm dist-tag / `version` 并不承诺跨版本 wire 兼容，转正前必须以「实际使用的那个已发布版本」为准核对。
 
 | 包 | npm 名 | latest | next | alpha |
 | --- | --- | --- | --- | --- |
@@ -119,7 +119,7 @@ node …/bin.js --profile web --host 127.0.0.1 --port <port>   # 现状 web 通�
 - **bring-your-own runtime（关键）**：crate 是**纯客户端**，不携带/下载/打包 runtime；runtime 由调用方提供，解析优先级 `launch_args_override` → `runtime_bin` → 环境变量 `DSH_RUNTIME_BIN`。crate 自身纯 Rust 平台无关；**平台矩阵完全由所接入的 runtime 决定**，与 crate 能力无关：
   - wheel 线（`deepseek-harness-runtime-bin` 单文件可执行）：**只有 linux-x64 / linux-arm64 / macos-arm64**（macOS 需同目录 `-spawn-helper`），**无 Windows 发行**。
   - npm 线（`dsh-jsonrpc-agent`，Node ≥ 22.19）：跨平台，但**没有内置插件树**——运行时经 `DSH_CORDIS_CONFIG` 指定的 config project 解析插件，配置缺失/插件加载失败即 fatal。
-  - **对桌面端的含义**：即便复用该 crate，Windows 目标仍要自备 runtime（`dsh --profile sdk`），crate 并不能在 Windows 上凭空提供 runtime；这是「不建议直接依赖」的主因之一（见下）。
+  - **对桌面端的含义**：**Windows 限制仅限定 wheel 线**——桌面端在 Windows 上**不能**用该 crate 的 wheel 自带 runtime，但仍可通过 npm 线（`dsh-jsonrpc-agent`，Node ≥ 22.19）自备 runtime + `DSH_CORDIS_CONFIG` 在 Windows 上使用该 crate；也可走桌面自带的 `dsh --profile sdk`。**不要概括为「桌面端只能在非 Windows 平台运行」**——平台矩阵取决于所接入 runtime 的路线，而非 crate 本身（crate 纯客户端、平台无关）。
 - **结论**：
   - ✅ **协议层逻辑（spawn + 3 方法 + close 阶梯）可参考**——它把 TS/Python client 的协议语义移植到了 Rust，桌面端对照其语义手写即可，无需重复设计。
   - ⚠️ **不建议直接依赖 crate**：① 高层 `DeepSeekHarness` 是 eager 重 API，与桌面端「自己掌控 spawn/退出树」的主权冲突；crate 虽允许 `launch_args_override`/`runtime_bin` 注入，但自带的独立 runtime 无 Windows 发行，天然把桌面端锁到非 Windows 平台，或逼迫桌面端继续走 `dsh --profile sdk`（那也就不需要该 crate 的 runtime 解析了）。② 预发布期接口仍会变动，桌面引入后要随上游 crates.io 动线升级。③ 桌面端已内置 Node + dsh，用 crate 反而引入一层与本机 dsh CLI 的双重来源。
@@ -139,7 +139,7 @@ node …/bin.js --profile web --host 127.0.0.1 --port <port>   # 现状 web 通�
 ## 6. 危险点 / 风险
 
 - **stdout 污染**：stdio 模式下 stdout 必须只放 JSON-RPC 帧；dsh 插件的 stdout logger 会导致解析崩溃。落地时需显式关闭。
-- **Windows 发行缺口**：`deepseek-harness-sdk` 推荐的自带 runtime（wheel 线 `deepseek-harness-runtime-bin`）无 Windows 版；桌面端 Windows 主力，强调走 `dsh --profile sdk` 而非依赖其自带 runtime。
+- **Windows 发行缺口**：`deepseek-harness-sdk` 推荐的 wheel 线自带 runtime（`deepseek-harness-runtime-bin`）无 Windows 版；桌面端 Windows 主力，若想复用该 crate 在 Windows 上自备 runtime 走 npm 线（`dsh-jsonrpc-agent` + `DSH_CORDIS_CONFIG`）或桌面自身 `dsh --profile sdk`。
 - **`DEEPSEEK_API_KEY` / 凭据**：stdio runtime 需模型凭据（`DEEPSEEK_API_KEY` 或 `base_url`+`api_key`），与桌面端现有凭据注入可能冲突，落地时需对齐来源。
 - **版本协商缺失**：协议无 version negotiation，`serverInfo.name`/`version` 须与 runtime 版本保持同步。
 - **预发布漂移**：`dsh-sdk-*`（`latest`/`next`/`alpha` 多线）与 crate（`0.1.0`）接口仍在变动；转正前须重新对照「当时已发布的最新 dist-tag/源码」核实。

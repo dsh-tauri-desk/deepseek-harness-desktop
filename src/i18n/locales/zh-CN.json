@@ -251,6 +251,8 @@
   "core.switch_confirm_desc": "切换至 {{version}} 版本吗？运行中的引擎将切换为该副本。",
   "core.recommended_warning_title": "警告",
   "core.recommended_warning_desc": "当前推荐版本是 “{{version}}”，切换到该版本可能导致软件异常，确定切换吗？",
+  "core.above_rc2_warning_title": "警告",
+  "core.above_rc2_warning_desc": "{{version}} 以上的版本引入破坏性更改，可能导致第三方插件异常，确定更新吗？你可随时在核心中切换回 {{version}}。",
   "core.activate_toast": "已切换到 {{version}}",
   "core.uninstalled_toast": "已卸载 {{version}}",
   "core.remove_confirm_title": "卸载版本",

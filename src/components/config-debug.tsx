@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { useAppConfig } from '@/hooks/use-app-config'
+import { useCoreBreakingConfirm } from '@/hooks/use-core-breaking-confirm'
 import { store } from '@/store'
 import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
@@ -42,6 +43,7 @@ export function ConfigDebug() {
   const { t, i18n } = useTranslation()
   const { serviceRunning, busyAction } = useStore(store.harness)
   const { updateInfo } = useStore(store.harnessUpdater)
+  const { holder: coreBreakingHolder, confirmCoreBreaking } = useCoreBreakingConfirm()
 
   // 端口编辑态：用户尚未输入时为 undefined，由 `data?.port ?? 3080` 提供初值。
   // 初值不写入 state（避免 queryFn 副作用 / effect 同步），渲染与保存时统一
@@ -93,6 +95,13 @@ export function ConfigDebug() {
       console.error('[ConfigDebug] copy logs failed:', err)
       toast(t('messages.logs_copy_failed'), { variant: 'danger' })
     }
+  }
+
+  /** 「存在新版本」：先按 rc.2 破坏性更改确认（高于 rc.2 则先拦截），再展示更新提示 */
+  async function handleShowNewVersion() {
+    if (updateInfo && !(await confirmCoreBreaking(updateInfo.tag)))
+      return
+    store.harnessUpdater.showToast()
   }
 
   const { mutate: onClearLogs } = useMutation({
@@ -182,6 +191,7 @@ export function ConfigDebug() {
 
   return (
     <div className="space-y-3">
+      {coreBreakingHolder}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted">
@@ -261,7 +271,7 @@ export function ConfigDebug() {
           <Info term={t('ui.dsh_version')}>
             <span>{info?.dsh_version ?? '-'}</span>
             <If cond={updateInfo}>
-              <Link className="ml-2 text-[10px] text-accent" onClick={store.harnessUpdater.showToast}>
+              <Link className="ml-2 text-[10px] text-accent" onClick={handleShowNewVersion}>
                 {t('menu.new_version')}
                 <ChevronRight className="scale-75" />
               </Link>

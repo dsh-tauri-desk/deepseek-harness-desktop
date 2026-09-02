@@ -1,8 +1,12 @@
 /**
  * utils/schedule.ts — 计划描述与下次运行时间的展示格式化（纯函数）。
+ *
+ * 时间格式化委托 date-fns（format / differenceIn*），替换手写的 Intl 与差值算法；
+ * 单位文案仍走 t() 以支持 zh/en 双语。
  */
 
 import type { ScheduleForm, Translate, Weekday } from '../types'
+import { differenceInDays, differenceInHours, differenceInMinutes, format } from 'date-fns'
 
 const WEEKDAY_LABELS: Record<Weekday, string> = {
   MO: 'dayMon',
@@ -35,29 +39,23 @@ export function formatLocalTime(iso: string | undefined): string | undefined {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime()))
     return undefined
-  return new Intl.DateTimeFormat(undefined, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date)
+  return format(date, 'MM/dd HH:mm')
 }
 
-/** 计算 nextRunAt 相对当前时刻的自然语言描述（如「3 天后」「7 小时后」）。 */
+/** 计算 nextRunAt 相对当前时刻的自然语言描述（如「3 天」「7 小时」）。 */
 export function formatRelative(iso: string | undefined, now: number, t: Translate): string {
   if (!iso)
     return t('never')
   const target = new Date(iso).getTime()
   if (!Number.isFinite(target))
     return t('never')
-  const diff = Math.max(0, target - now)
-  const minutes = Math.round(diff / 60_000)
+  const minutes = Math.max(0, differenceInMinutes(target, now))
   if (minutes < 60)
     return `${minutes}${t('unitMinutes')}`
-  const hours = Math.round(diff / 3_600_000)
+  const hours = Math.max(0, differenceInHours(target, now))
   if (hours < 24)
     return `${hours}${t('unitHours')}`
-  const days = Math.round(diff / 86_400_000)
+  const days = Math.max(0, differenceInDays(target, now))
   return `${days}${t('unitDays')}`
 }
 

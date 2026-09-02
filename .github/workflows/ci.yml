@@ -62,6 +62,9 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Build Plugins
+        run: pnpm build:plugins
+
       # 主逻辑在 Rust 侧，这里仅确认前端纯函数测试通过
       - name: Unit test
         run: pnpm run test -- --run

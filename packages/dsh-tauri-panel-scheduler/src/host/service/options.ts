@@ -9,7 +9,7 @@
  * 能力探测约定：所有可选服务「探测后调用」，缺失即返回空，绝不断言存在。
  */
 
-import type { HostContext, ModelOption, PermissionOption, SchedulerOptions } from '../types/index.js'
+import type { HostContext, ModelCatalogFailure, ModelOption, PermissionOption, SchedulerOptions } from '../types/index.js'
 
 /** 收集工作区列表：遍历 workspaceRegistry 的记录（id + path）。无法枚举时返回空数组。 */
 async function collectWorkspaces(ctx: HostContext): Promise<SchedulerOptions['workspaces']> {
@@ -73,12 +73,13 @@ interface LlmLike {
 }
 
 /** 收集模型目录（flat，含 reasoning），并返回与当前默认匹配的 defaultModel。 */
-async function collectModels(ctx: HostContext): Promise<{ models: ModelOption[], defaultModel: ModelOption | null }> {
+async function collectModels(ctx: HostContext): Promise<{ models: ModelOption[], failures: ModelCatalogFailure[], defaultModel: ModelOption | null }> {
   try {
     const current = ((ctx as HostContext).get?.('agentDefaultModel') as { currentSelection?: () => unknown } | undefined)?.currentSelection?.() as
       { provider?: unknown, model?: unknown } | undefined
     const llm = (ctx as HostContext).get?.('llm') as LlmLike | undefined
     const found: ModelOption[] = []
+    const failures: ModelCatalogFailure[] = []
     const seen = new Set<string>()
     for (const item of llm?.listProviders?.() ?? []) {
       const provider = String(item.id ?? item.provider ?? '')
@@ -122,17 +123,21 @@ async function collectModels(ctx: HostContext): Promise<{ models: ModelOption[],
           })
         }
       }
-      catch {
-        /* 单个 provider 失败忽略 */
+      catch (error) {
+        failures.push({
+          provider,
+          providerLabel,
+          message: error instanceof Error ? error.message : String(error),
+        })
       }
     }
     const defaultModel = current === null
       ? (found[0] ?? null)
       : (found.find(item => item.provider === current.provider && item.model === current.model) ?? found[0] ?? null)
-    return { models: found, defaultModel }
+    return { models: found, failures, defaultModel }
   }
   catch {
-    return { models: [], defaultModel: null }
+    return { models: [], failures: [], defaultModel: null }
   }
 }
 
@@ -148,6 +153,7 @@ export async function collectSchedulerOptions(ctx: HostContext): Promise<Schedul
     permissions: permission.permissions,
     defaultPermission: permission.defaultPermission,
     models: modelCatalog.models,
+    failures: modelCatalog.failures,
     defaultModel: modelCatalog.defaultModel,
   }
 }

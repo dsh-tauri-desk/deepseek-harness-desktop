@@ -154,6 +154,13 @@ export interface ModelOption {
   reasoning?: ModelReasoning
 }
 
+/** 模型目录加载失败的 provider（照搬 dsh-automation ModelCatalogFailure）。 */
+export interface ModelCatalogFailure {
+  provider: string
+  providerLabel: string
+  message: string
+}
+
 export interface SchedulerOptions {
   workspaces: Array<{ id: string, path: string, title: string }>
   /** 权限选项（取自宿主 permissionPresets 服务，含 read-only / workspace-write / danger-full-access）。 */
@@ -161,6 +168,8 @@ export interface SchedulerOptions {
   defaultPermission: string
   /** 模型目录（flat，含 provider / reasoning）。 */
   models: Array<ModelOption>
+  /** 模型目录加载失败项（照搬 dsh-automation ModelCatalogFailure）。 */
+  failures: Array<ModelCatalogFailure>
   defaultModel: ModelOption | null
 }
 

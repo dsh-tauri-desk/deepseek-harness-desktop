@@ -45,6 +45,13 @@ export interface ModelOption {
   reasoning?: ModelReasoning
 }
 
+/** 模型目录加载失败的 provider（照搬 dsh-automation ModelCatalogFailure）。 */
+export interface ModelCatalogFailure {
+  provider: string
+  providerLabel: string
+  message: string
+}
+
 /** 任务视图（列表卡片用）。 */
 export interface TaskView {
   id: string
@@ -110,6 +117,8 @@ export interface SchedulerOptions {
   defaultPermission: string
   /** 模型目录（flat，含 reasoning）。 */
   models: Array<ModelOption>
+  /** 模型目录加载失败项（照搬 dsh-automation ModelCatalogFailure）。 */
+  failures: Array<ModelCatalogFailure>
   defaultModel: ModelOption | null
 }
 

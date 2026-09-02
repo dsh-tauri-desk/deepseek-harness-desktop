@@ -29,7 +29,7 @@ export function blankUiState(): SchedulerUiState {
   return {
     tasks: [],
     runs: [],
-    options: { workspaces: [], permissions: [], defaultPermission: 'read-only', models: [], defaultModel: null },
+    options: { workspaces: [], permissions: [], defaultPermission: 'read-only', models: [], failures: [], defaultModel: null },
     loading: false,
     error: '',
     refreshedAt: 0,

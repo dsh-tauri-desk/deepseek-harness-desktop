@@ -14,6 +14,11 @@ export interface Translate {
   (key: string): string
 }
 
+/** 带参数插值的翻译函数（照搬 dsh-automation 的 ModelTranslate；{name} 形式）。 */
+export interface ModelTranslate {
+  (key: string, params?: Record<string, unknown>): string
+}
+
 export interface SchedulerLocaleService {
   register: (namespace: string, locale: string, dictionary: Record<string, string>) => () => void
   bind: (namespace: string) => Translate

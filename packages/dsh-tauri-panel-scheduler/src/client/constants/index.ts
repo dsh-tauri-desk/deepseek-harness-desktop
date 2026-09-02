@@ -13,6 +13,12 @@ export const PANEL_ACTION_ID = 'dsh-tauri-panel-scheduler.action'
 export const PANEL_ACTION_ORDER = 30
 export const PANEL_ACTION_PRIORITY = 0
 
+/** 「通过 Chat 创建」草稿预填桥：conversation.input.left 槽（照搬 dsh-automation）。 */
+export const CONVERSATION_INPUT_LEFT_SLOT = 'conversation.input.left'
+export const INPUT_PREFILL_ID = 'dsh-tauri-panel-scheduler.prefill'
+export const INPUT_PREFILL_ORDER = 40
+export const INPUT_PREFILL_PRIORITY = 0
+
 export const STYLE_ID = 'dsh-tauri-panel-scheduler-styles'
 
 export const STYLES_EFFECT = `${SCHEDULER_PLUGIN_NAME}: styles`
@@ -104,6 +110,38 @@ export const SCHEDULER_CLASSES = {
   selector: 'dsh-tauri-panel-scheduler-selector',
   selectorChevron: 'dsh-tauri-panel-scheduler-selector-chevron',
   selectorEffort: 'dsh-tauri-panel-scheduler-selector-effort',
+
+  // —— ModelPicker（照搬 dsh-automation create-modal.tsx 的 ModelPicker）——
+  modelSelect: 'dsh-tauri-panel-scheduler-model-select',
+  modelSelectOpen: 'dsh-tauri-panel-scheduler-model-select-open',
+  modelTrigger: 'dsh-tauri-panel-scheduler-model-trigger',
+  modelTriggerEffort: 'dsh-tauri-panel-scheduler-model-trigger-effort',
+  modelTriggerChevron: 'dsh-tauri-panel-scheduler-model-trigger-chevron',
+  modelTriggerChevronOpen: 'dsh-tauri-panel-scheduler-model-trigger-chevron-open',
+  modelSelectMenu: 'dsh-tauri-panel-scheduler-model-select-menu',
+  modelSelectMenuFloat: 'dsh-tauri-panel-scheduler-model-select-menu-float',
+  menuRow: 'dsh-tauri-panel-scheduler-menu-row',
+  menuRowOn: 'dsh-tauri-panel-scheduler-menu-row-on',
+  menuRowKv: 'dsh-tauri-panel-scheduler-menu-row-kv',
+  menuRowMain: 'dsh-tauri-panel-scheduler-menu-row-main',
+  menuRowSide: 'dsh-tauri-panel-scheduler-menu-row-side',
+  menuTick: 'dsh-tauri-panel-scheduler-menu-tick',
+  menuNext: 'dsh-tauri-panel-scheduler-menu-next',
+  menuFloat: 'dsh-tauri-panel-scheduler-menu-float',
+  menuSelect: 'dsh-tauri-panel-scheduler-menu-select',
+  menuSelectBtn: 'dsh-tauri-panel-scheduler-menu-select-btn',
+  menuSelectMenu: 'dsh-tauri-panel-scheduler-menu-select-menu',
+  chipBtn: 'dsh-tauri-panel-scheduler-chip-btn',
+  modelWarning: 'dsh-tauri-panel-scheduler-model-warning',
+  modelGroup: 'dsh-tauri-panel-scheduler-model-group',
+  modelGroupTitle: 'dsh-tauri-panel-scheduler-model-group-title',
+  modelOption: 'dsh-tauri-panel-scheduler-model-option',
+  modelOptionCopy: 'dsh-tauri-panel-scheduler-model-option-copy',
+  modelName: 'dsh-tauri-panel-scheduler-model-name',
+  modelDescription: 'dsh-tauri-panel-scheduler-model-description',
+  modelCheck: 'dsh-tauri-panel-scheduler-model-check',
+  modelEmpty: 'dsh-tauri-panel-scheduler-model-empty',
+  flyoutRoot: 'dsh-tauri-panel-scheduler-flyout-root',
 
   modal: 'dsh-tauri-panel-scheduler-modal',
 } as const

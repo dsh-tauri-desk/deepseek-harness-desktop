@@ -10,11 +10,12 @@
  */
 
 import type { ReactElement } from 'react'
-import type { ScheduleForm, SchedulerOptions, TaskFormState, Translate, Weekday } from '../types'
+import type { ModelTranslate, ScheduleForm, SchedulerOptions, TaskFormState, Translate, Weekday } from '../types'
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useRef, useState } from 'react'
 import { SCHEDULER_CLASSES as K } from '../constants'
 import { applyCreateTask, applyUpdateTask } from '../store'
+import { MenuHostProvider } from './menu'
 import { MenuSelect } from './menu-select'
 import { ModelPicker } from './model-picker'
 
@@ -71,6 +72,18 @@ function kindLabelKey(kind: (typeof SCHEDULE_KINDS)[number]): string {
   return `schedule${kind.charAt(0).toUpperCase()}${kind.slice(1)}`
 }
 
+/** 照搬 dsh-automation 的 modelT：{x} 参数插值（我们的 t 不带参数）。 */
+function makeModelT(t: Translate): ModelTranslate {
+  return (key, params) => {
+    let text = t(key)
+    if (params) {
+      for (const [name, value] of Object.entries(params))
+        text = text.replaceAll(`{${name}}`, String(value))
+    }
+    return text
+  }
+}
+
 export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskCreateDialogProps): ReactElement {
   const [form, setForm] = useState<TaskFormState>(() => initial ?? {
     name: '',
@@ -84,6 +97,7 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [menuHost, setMenuHost] = useState<HTMLDivElement | null>(null)
   // 保存中禁止关闭（Esc / 遮罩 / 关闭按钮）：用 ref 供稳定闭包读取最新值。
   const savingRef = useRef(false)
   savingRef.current = saving
@@ -146,73 +160,86 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
   if (form.permission && !permissionOptions.some(option => option.id === form.permission))
     permissionOptions.unshift({ id: form.permission, label: form.permission })
 
-  const modelValue = form.provider && form.model ? `${form.provider}::${form.model}` : ''
+  const modelT = makeModelT(t)
+  const modelKey = form.provider && form.model ? `${form.provider}::${form.model}` : 'default'
 
   return (
-    <Modal
-      open
-      onClose={closeSafe}
-      title={taskId ? t('editDialogTitle') : t('createDialogTitle')}
-      description={t('dialogHint')}
-      closeLabel={t('close')}
-      className={K.modal}
-      footer={(
-        <>
-          <button className={K.btn} type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
-          <button className={`${K.btn} ${K.btnPrimary}`} type="button" disabled={saving} onClick={() => void onSave()}>
-            {t('save')}
-          </button>
-        </>
-      )}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label className={K.field}>
-          <span className={K.fieldLabel}>{t('taskName')}</span>
-          <input
-            className={K.input}
-            type="text"
-            value={form.name}
-            placeholder={t('taskNamePlaceholder')}
-            onChange={event => setForm(state => ({ ...state, name: event.target.value }))}
-          />
-        </label>
+    <MenuHostProvider host={menuHost}>
+      <Modal
+        open
+        onClose={closeSafe}
+        title={taskId ? t('editDialogTitle') : t('createDialogTitle')}
+        description={t('dialogHint')}
+        closeLabel={t('close')}
+        className={K.modal}
+        footer={(
+          <>
+            <button className={K.btn} type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
+            <button className={`${K.btn} ${K.btnPrimary}`} type="button" disabled={saving} onClick={() => void onSave()}>
+              {t('save')}
+            </button>
+          </>
+        )}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label className={K.field}>
+            <span className={K.fieldLabel}>{t('taskName')}</span>
+            <input
+              className={K.input}
+              type="text"
+              value={form.name}
+              placeholder={t('taskNamePlaceholder')}
+              onChange={event => setForm(state => ({ ...state, name: event.target.value }))}
+            />
+          </label>
 
-        <div className={K.field}>
-          <span className={K.fieldLabel}>{t('schedule')}</span>
-          <div className={K.inline}>
-            <select
-              className={`${K.input} ${K.selectInput} ${K.inlineSelect}`}
-              value={scheduleKind}
-              aria-label={t('schedule')}
-              onChange={event => setForm(state => ({ ...state, schedule: defaultScheduleFor(event.target.value as ScheduleForm['kind']) }))}
-            >
-              {SCHEDULE_KINDS.map(kind => (
-                <option key={kind} value={kind}>{t(kindLabelKey(kind))}</option>
-              ))}
-            </select>
+          <div className={K.field}>
+            <span className={K.fieldLabel}>{t('schedule')}</span>
+            <div className={K.inline}>
+              <select
+                className={`${K.input} ${K.selectInput} ${K.inlineSelect}`}
+                value={scheduleKind}
+                aria-label={t('schedule')}
+                onChange={event => setForm(state => ({ ...state, schedule: defaultScheduleFor(event.target.value as ScheduleForm['kind']) }))}
+              >
+                {SCHEDULE_KINDS.map(kind => (
+                  <option key={kind} value={kind}>{t(kindLabelKey(kind))}</option>
+                ))}
+              </select>
 
-            {scheduleKind === 'interval'
-              ? (
-                  <select
-                    className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
-                    value={currentEveryMinutes}
-                    aria-label={t('scheduleEveryMinutes')}
-                    onChange={event => setSchedule({ kind: 'interval', everyMinutes: Number(event.target.value) })}
-                  >
-                    {INTERVAL_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{`${minutes} ${t('minuteShort')}`}</option>)}
-                  </select>
-                )
-              : scheduleKind === 'weekly'
+              {scheduleKind === 'interval'
                 ? (
-                    <>
-                      <select
-                        className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
-                        value={currentWeekday}
-                        aria-label={t('scheduleWeekdays')}
-                        onChange={event => setSchedule({ kind: 'weekly', weekdays: [event.target.value as Weekday], time: currentTime })}
-                      >
-                        {WEEKDAYS.map(day => <option key={day} value={day}>{t(WEEKDAY_KEYS[day])}</option>)}
-                      </select>
+                    <select
+                      className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
+                      value={currentEveryMinutes}
+                      aria-label={t('scheduleEveryMinutes')}
+                      onChange={event => setSchedule({ kind: 'interval', everyMinutes: Number(event.target.value) })}
+                    >
+                      {INTERVAL_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{`${minutes} ${t('minuteShort')}`}</option>)}
+                    </select>
+                  )
+                : scheduleKind === 'weekly'
+                  ? (
+                      <>
+                        <select
+                          className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
+                          value={currentWeekday}
+                          aria-label={t('scheduleWeekdays')}
+                          onChange={event => setSchedule({ kind: 'weekly', weekdays: [event.target.value as Weekday], time: currentTime })}
+                        >
+                          {WEEKDAYS.map(day => <option key={day} value={day}>{t(WEEKDAY_KEYS[day])}</option>)}
+                        </select>
+                        <select
+                          className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
+                          value={currentTime}
+                          aria-label={t('scheduleTime')}
+                          onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
+                        >
+                          {TIME_OPTIONS.map(time => <option key={time} value={time}>{time}</option>)}
+                        </select>
+                      </>
+                    )
+                  : (
                       <select
                         className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
                         value={currentTime}
@@ -221,64 +248,59 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
                       >
                         {TIME_OPTIONS.map(time => <option key={time} value={time}>{time}</option>)}
                       </select>
-                    </>
-                  )
-                : (
-                    <select
-                      className={`${K.input} ${K.selectInput} ${K.inlineSelectAuto}`}
-                      value={currentTime}
-                      aria-label={t('scheduleTime')}
-                      onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
-                    >
-                      {TIME_OPTIONS.map(time => <option key={time} value={time}>{time}</option>)}
-                    </select>
-                  )}
+                    )}
+            </div>
           </div>
-        </div>
 
-        <div className={K.field}>
-          <span className={K.fieldLabel}>{t('schedulePrompt')}</span>
-          <div className={K.promptWrap}>
-            <textarea
-              className={K.textarea}
-              value={form.prompt}
-              placeholder={t('schedulePromptPlaceholder')}
-              onChange={event => setForm(state => ({ ...state, prompt: event.target.value }))}
-            />
-            <div className={K.composer}>
-              <MenuSelect
-                label={t('workspace')}
-                value={form.workspaceId}
-                options={workspaceOptions}
-                onSelect={id => setForm(state => ({ ...state, workspaceId: id }))}
+          <div className={K.field}>
+            <span className={K.fieldLabel}>{t('schedulePrompt')}</span>
+            <div className={K.promptWrap}>
+              <textarea
+                className={K.textarea}
+                value={form.prompt}
+                placeholder={t('schedulePromptPlaceholder')}
+                onChange={event => setForm(state => ({ ...state, prompt: event.target.value }))}
               />
-              <MenuSelect
-                label={t('permission')}
-                value={form.permission}
-                options={permissionOptions}
-                onSelect={id => setForm(state => ({ ...state, permission: id }))}
-              />
-              <ModelPicker
-                value={modelValue}
-                reasoningEffort={form.reasoningEffort}
-                models={options.models ?? []}
-                followGlobalLabel={t('followGlobal')}
-                modelLabel={t('module')}
-                effortLabel={t('reasoningEffort')}
-                defaultModelLabel={t('followGlobal')}
-                providerDefaultLabel={t('moduleDefault')}
-                onSelection={(provider, model, reasoningEffort) => setForm(state => ({
-                  ...state,
-                  provider,
-                  model,
-                  reasoningEffort,
-                }))}
-              />
+              <div className={K.composer}>
+                <MenuSelect
+                  label={t('workspace')}
+                  value={form.workspaceId}
+                  options={workspaceOptions}
+                  onSelect={id => setForm(state => ({ ...state, workspaceId: id }))}
+                />
+                <MenuSelect
+                  label={t('permission')}
+                  value={form.permission}
+                  options={permissionOptions}
+                  onSelect={id => setForm(state => ({ ...state, permission: id }))}
+                />
+                <ModelPicker
+                  modelT={modelT}
+                  models={options.models ?? []}
+                  failures={options.failures ?? []}
+                  modelKey={modelKey}
+                  reasoningEffort={form.reasoningEffort === '' ? 'none' : form.reasoningEffort}
+                  onSelection={(nextKey, effort) => {
+                  // 照搬 dsh-automation：modelKey = `${provider}::${model}`，'default' 表示跟随全局。
+                    const sep = nextKey.indexOf('::')
+                    const provider = sep >= 0 ? nextKey.slice(0, sep) : ''
+                    const model = sep >= 0 ? nextKey.slice(sep + 2) : ''
+                    setForm(state => ({
+                      ...state,
+                      provider,
+                      model,
+                      // 'none' = 提供商默认 → 落库空串。
+                      reasoningEffort: effort === 'none' ? '' : effort,
+                    }))
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      {error ? <p className={K.error} role="alert">{error}</p> : null}
-    </Modal>
+        {error ? <p className={K.error} role="alert">{error}</p> : null}
+        <div className={K.flyoutRoot} ref={setMenuHost} />
+      </Modal>
+    </MenuHostProvider>
   )
 }

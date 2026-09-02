@@ -37,13 +37,15 @@ async function collectWorkspaces(ctx: HostContext): Promise<SchedulerOptions['wo
 /** 收集权限选项与默认权限（宿主 permissionPresets 服务；缺失降级）。 */
 function collectPermissions(ctx: HostContext): { permissions: PermissionOption[], defaultPermission: string } {
   try {
+    // permissionPresets 不在 inject 列表：直接属性访问抛 "cannot get property without inject"，
+    // 必须经 ctx.get 探测（与 collectModels 的 llm/agentDefaultModel 一致）。
     const presets = (ctx as HostContext & {
-      permissionPresets?: {
-        names?: readonly string[]
-        defaultPreset?: string
-        optionOf?: (name: string) => PermissionOption
-      }
-    }).permissionPresets
+      get?: (name: string) => unknown
+    }).get?.('permissionPresets') as {
+      names?: readonly string[]
+      defaultPreset?: string
+      optionOf?: (name: string) => PermissionOption
+    } | undefined
     const names = Array.isArray(presets?.names) ? presets.names : []
     if (names.length === 0)
       return { permissions: [], defaultPermission: 'read-only' }

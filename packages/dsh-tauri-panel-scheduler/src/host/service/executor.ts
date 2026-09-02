@@ -294,7 +294,10 @@ async function runSchedulerAgent(
 
     if (timeout !== undefined)
       clearTimeout(timeout)
-    await ctx.sessions?.flush?.(handle.agent.session)
+    // sessions 不在 inject 列表，直接属性访问会抛 "cannot get property without inject"；
+    // 经 ctx.get 探测，缺失即跳过 flush（事件由会话自身持久化兜底）。
+    const sessions = getOptionalService(ctx, 'sessions') as { flush?: (session: unknown) => Promise<unknown> } | undefined
+    await sessions?.flush?.(handle.agent.session)
     const outcome = summarizeRun(handle.agent.session.events, firstSeq)
     if (timedOut) {
       return { status: 'failed', error: { code: 'timeout', message: '定时任务超过最大运行时限。' } }

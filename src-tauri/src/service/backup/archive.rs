@@ -3,9 +3,12 @@
 //! 归档格式：`tar::Builder` + `zstd::stream::Encoder` 创建 `.tar.zst` 单文件，
 //! `zstd::stream::Decoder` + `tar::Archive` 解压。zstd 多线程压缩比 gzip 快
 //! 3-5 倍、压缩率更优。解压前逐条目校验路径不跳出目标目录（防路径穿越）。
+//!
+//! 除 zstd 外，也提供 `extract_archive_gzip`（复用同一条目安全校验逻辑）供
+//! 插件快照等使用 gzip 压缩的 tar.tgz 解码（见 `service::plugin::snapshot`）。
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// 创建符号链接（平台差异处理）。
@@ -168,10 +171,31 @@ pub fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     let dec = zstd::stream::Decoder::new(file)
         .map_err(|e| format!("BACKUP_EXTRACT_DECODER: {e}"))?;
     let mut archive = tar::Archive::new(dec);
+    extract_tar_entries(&mut archive, dest)
+}
+
+/// 解压 gzip 压缩的 tar.tgz 归档到 `dest` 目录（复用与 `extract_archive` 相同的
+/// 逐条目路径逃逸防护与符号链接拒绝逻辑）。
+///
+/// 供插件快照（`service::plugin::snapshot`，快照归档使用 gzip）暂存/还原时解压。
+pub fn extract_archive_gzip(archive: &Path, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| format!("BACKUP_EXTRACT_MKDIR: {e}"))?;
+    let file = fs::File::open(archive).map_err(|e| format!("BACKUP_EXTRACT_OPEN: {e}"))?;
+    let dec = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(dec);
+    extract_tar_entries(&mut archive, dest)
+}
+
+/// 从 tar 归档安全解压所有条目到 `dest`（压缩格式无关）。
+///
+/// 逐个条目：拒绝含 `..` 的路径（防逃逸）、拒绝硬链接、目录直接创建、
+/// 符号链接按 target 创建、普通文件先写临时文件再原子 rename。自定义
+/// 解压（替代 `entry.unpack`）是为了规避 macOS 上的 tar bug。
+fn extract_tar_entries<R: Read>(archive: &mut tar::Archive<R>, dest: &Path) -> Result<(), String> {
     // 禁用 ownership 保留：归档里 uid/gid 可能是 root（uid=0），非 root 用户无法 chown
     archive.set_preserve_ownerships(false);
 
-    // 单次遍历：避免重复调用 archive.entries() 导致 zstd decoder 状态错乱
+    // 单次遍历：避免重复调用 archive.entries() 导致 decoder 状态错乱
     for entry in archive.entries().map_err(|e| format!("BACKUP_EXTRACT_ENTRIES: {e}"))? {
         let mut entry = entry.map_err(|e| format!("BACKUP_EXTRACT_ENTRY: {e}"))?;
         let path = entry.path().map_err(|e| format!("BACKUP_EXTRACT_PATH: {e}"))?.into_owned();

@@ -16,7 +16,7 @@
 //! 还原为三阶段 + 回滚：
 //! 1. 预检：id 校验 + 快照存在 + 归档完整性 + 操作锁 + 停止服务；
 //! 2. 暂存：同盘解压到 `.staging-*` 并校验（package.json 可解析、无逃逸、
-//!   拒绝符号链接——复用 `archive::extract_archive`）；
+//!   拒绝符号链接——复用 `archive::extract_archive_gzip`）；
 //! 3. 切换：真实目录 → `.backup-*` rename，暂存包体 → 真实目录 rename，
 //!   校验后清理备份；任一步失败则反转已做步骤（备份还原回原位）。
 //!
@@ -622,8 +622,9 @@ pub async fn restore(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     let _ = fs::remove_dir_all(&staging);
     let _ = fs::remove_dir_all(&backup);
 
-    // 阶段 2：暂存解压（复用 archive::extract_archive：拒绝逃逸/符号链接）
-    if let Err(e) = crate::service::backup::archive::extract_archive(&archive_path, &staging) {
+    // 阶段 2：暂存解压（复用 archive::extract_archive_gzip：快照归档为 gzip 压缩；
+    // 共享 archive::extract_tar_entries，拒绝逃逸/符号链接）
+    if let Err(e) = crate::service::backup::archive::extract_archive_gzip(&archive_path, &staging) {
         let _ = fs::remove_dir_all(&staging);
         return Err(e);
     }
@@ -811,9 +812,9 @@ mod tests {
         })
         .unwrap();
 
-        // 还原到新目录
+        // 还原到新目录（快照归档为 gzip，用 extract_archive_gzip 解压）
         let target = dir.join("restored");
-        crate::service::backup::archive::extract_archive(&archive, &target).unwrap();
+        crate::service::backup::archive::extract_archive_gzip(&archive, &target).unwrap();
         let pkg = target.join(PACKAGE_PREFIX);
         assert!(pkg.join("package.json").is_file());
         assert!(pkg.join("lib").join("index.js").is_file());

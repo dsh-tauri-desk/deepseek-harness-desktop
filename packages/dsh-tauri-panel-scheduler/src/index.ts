@@ -24,10 +24,24 @@ import { SCHEDULER_API_PREFIX, SCHEDULER_PLUGIN_NAME } from './shared/constants.
 export const name = SCHEDULER_PLUGIN_NAME
 
 /**
- * 需要的宿主服务：tools（工具注册）/ webServer（HTTP 路由）/ agents（会话执行）/
- * workspaceRegistry（工作区）/ connection（连接鉴权）。
+ * 需要的宿主服务（对齐 MichengAI/dsh-automation 的 inject，另加我们路由用的
+ * webServer）：tools（工具注册）/ webServer（HTTP 路由）/ agents（会话执行）/
+ * sessions（会话 flush 持久化——工作区侧边栏收录会话的前提）/ workspaceRegistry
+ * （工作区归属）/ agentDefaultModel（默认模型回退）/ agentPresets（会话预设挂载）/
+ * permissionPresets（无人值守权限）/ llm（模型目录）/ connection（连接鉴权）。
  */
-export const inject = ['tools', 'webServer', 'agents', 'workspaceRegistry', 'connection']
+export const inject = [
+  'tools',
+  'webServer',
+  'agents',
+  'sessions',
+  'workspaceRegistry',
+  'agentDefaultModel',
+  'agentPresets',
+  'permissionPresets',
+  'llm',
+  'connection',
+]
 
 /** API 路由前缀（客户端同源 fetch）。 */
 export const API_PREFIX = SCHEDULER_API_PREFIX

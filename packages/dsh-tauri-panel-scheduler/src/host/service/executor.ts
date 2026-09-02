@@ -215,8 +215,38 @@ export async function executeTask(
   })
 
   try {
+    // 镜像 MichengAI executeAutomationRun 的前置工作区校验：目标工作区不存在或不可用
+    // 时运行直接失败（不静默降级）；未分组（无 workspaceId）任务按我们的方式回退
+    // 宿主 home 下的 automations 目录。
+    let cwd: string
+    let workspace: { attachSession?: (id: unknown) => Promise<unknown> } | undefined
+    if (task.workspaceId) {
+      const resolved = ctx.workspaceRegistry?.get?.(task.workspaceId) as
+        | { path?: string, status?: () => Promise<string>, attachSession?: (id: unknown) => Promise<unknown> }
+        | undefined
+      if (resolved === undefined || typeof resolved.path !== 'string') {
+        const outcome: ExecuteOutcome = { ok: false, sessionId, error: '目标工作区已不存在。' }
+        await finalizeRun(runId, 'failed', outcome)
+        return outcome
+      }
+      if (await resolved.status?.() !== 'ok') {
+        const outcome: ExecuteOutcome = { ok: false, sessionId, error: '目标工作区目录不可用或已变更。' }
+        await finalizeRun(runId, 'failed', outcome)
+        return outcome
+      }
+      cwd = resolved.path
+      workspace = resolved
+    }
+    else {
+      // 未分组任务：把 automations 目录注册为 DSH 工作区再挂会话。侧边栏按工作区实体
+      // 分组收录会话，未注册路径上的会话永远不可见；create 幂等（同 canonical path
+      // 重复调用返回既有记录，不改标题），因此每次执行直接调用即可。
+      cwd = await ungroupedCwd()
+      workspace = await ctx.workspaceRegistry.create(cwd, '定时任务')
+    }
+
     const selection = resolveModelSelection(ctx, task)
-    const session = await runSchedulerAgent(ctx, task, runId, sessionId, scheduledFor, selection, timeoutMs)
+    const session = await runSchedulerAgent(ctx, task, runId, sessionId, scheduledFor, cwd, workspace, selection, timeoutMs)
     const outcome: ExecuteOutcome = {
       ok: session.status === 'succeeded',
       sessionId,
@@ -246,30 +276,31 @@ async function runSchedulerAgent(
   runId: string,
   sessionId: string,
   scheduledFor: string,
+  cwd: string,
+  workspace: { attachSession?: (id: unknown) => Promise<unknown> } | undefined,
   selection: ModelSelection | undefined,
   timeoutMs: number,
 ): Promise<AgentRunResult> {
-  const cwd = await resolveWorkspacePath(ctx, task.workspaceId)
+  // 镜像 MichengAI service.ts:576：agentPreset 缺省 'standard'；meta 始终携带 cwd + agentPreset
+  // （工作区侧边栏按会话 header 的 canonical-cwd 收录，agentPreset 决定汇编预设）。
+  const agentPreset = task.agentPreset?.trim() || 'standard'
   const sid = sessionId
   let handle: any
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
-    // 镜像 MichengAI 的核心修复：setup 回调里 installModelSelection 把模型选择写入
-    // agent 上下文，解决汇编 deployment:persona 段 {{model}} 无值导致运行无反应。
-    // 其余（agentPreset/权限强制/工具白名单）保持我们的执行逻辑：任务不指定则走宿主默认、
-    // 落在未分组/默认会话，不照搬 dsh-automation 的强制预设。
     const create = () => ctx.agents.create({
       sessionId: sid,
-      meta: { ...(cwd ? { cwd } : {}) },
+      meta: { cwd, agentPreset },
       agentOptions: selection ? { provider: selection.provider, model: selection.model } : {},
       setup: async (agentCtx: any) => {
+        // 镜像 MichengAI：先挂载会话预设，再绑定模型选择（解决汇编 {{model}} 无值）。
+        await (ctx.agentPresets as { mount?: (agentCtx: unknown, presetId: string) => Promise<unknown> } | undefined)
+          ?.mount?.(agentCtx, agentPreset)
         installModelSelection(agentCtx, { current: selection, assembled: undefined })
         const agent = agentCtx.agent
         if (agent === undefined)
           throw new Error('scheduler setup has no scoped Agent')
-        const permissionPresets = getOptionalService(ctx, 'permissionPresets') as PermissionPresetService | undefined
-        if (permissionPresets !== undefined)
-          applyUnattendedPermission(permissionPresets, agent.session, task.permission)
+        applyUnattendedPermission(ctx.permissionPresets as PermissionPresetService, agent.session, task.permission)
         agentCtx.tools?.guard?.((exec: ToolExecution) => unattendedToolGuardReason(exec.name, exec.arguments))
       },
     })
@@ -277,7 +308,8 @@ async function runSchedulerAgent(
       ? await ctx.agents.withoutInitiator(create)
       : await create()
     await handle.agent.whenIdle()
-    await attachSession(ctx, task, cwd, sid)
+    if (workspace !== undefined)
+      await workspace.attachSession?.(sid)
     pinSessionTitle(ctx, handle.agent.session, schedulerSessionTitle(task.name, scheduledFor))
     const firstSeq = handle.agent.session.seq
     handle.agent.followup(createUserMessage({
@@ -295,13 +327,15 @@ async function runSchedulerAgent(
       }, timeoutMs)
     })
     await Promise.race([idle, deadline])
-
+    // 镜像 MichengAI：取消后未能在安全时限内收敛则显式失败。
+    if (timedOut && !await settlesWithin(idle, CANCEL_CONVERGENCE_TIMEOUT_MS)) {
+      return { status: 'failed', error: { code: 'cancel_convergence_timeout', message: '定时任务取消后未能在安全时限内停止。' } }
+    }
     if (timeout !== undefined)
       clearTimeout(timeout)
-    // sessions 不在 inject 列表，直接属性访问会抛 "cannot get property without inject"；
-    // 经 ctx.get 探测，缺失即跳过 flush（事件由会话自身持久化兜底）。
-    const sessions = getOptionalService(ctx, 'sessions') as { flush?: (session: unknown) => Promise<unknown> } | undefined
-    await sessions?.flush?.(handle.agent.session)
+    // sessions 已在 inject 列表：直接 flush 把会话（含 header cwd）持久化，
+    // 工作区侧边栏按 canonical-cwd header 索引收录的前提。镜像 MichengAI ctx.sessions.flush。
+    await (ctx.sessions as { flush: (session: unknown) => Promise<unknown> }).flush(handle.agent.session)
     const outcome = summarizeRun(handle.agent.session.events, firstSeq)
     if (timedOut) {
       return { status: 'failed', error: { code: 'timeout', message: '定时任务超过最大运行时限。' } }
@@ -319,42 +353,16 @@ async function runSchedulerAgent(
 }
 
 /**
- * 从 workspaceId 解析会话 cwd。
- * 未分组（无 workspaceId）任务使用宿主 home 下的 automations 目录
+ * 未分组（无 workspaceId）任务的 cwd：宿主 home 下的 automations 目录
  * （~/.dsh/automations，dev 构建为 ~/.dsh.dev/automations；优先 $DSH_HOME），
  * 目录不存在时创建——与 dsh-automation 的未分组 cwd 语义一致。
  */
-async function resolveWorkspacePath(ctx: HostContext, workspaceId: string | undefined): Promise<string | undefined> {
-  if (!workspaceId) {
-    const env = process.env.DSH_HOME
-    const home = env && env.trim() ? env.trim() : join(homedir(), '.dsh')
-    const dir = join(home, 'automations')
-    await mkdir(dir, { recursive: true }).catch(() => {})
-    return dir
-  }
-  try {
-    const workspace = ctx.workspaceRegistry?.get?.(workspaceId) as { path?: string } | undefined
-    return typeof workspace?.path === 'string' ? workspace.path : undefined
-  }
-  catch {
-    return undefined
-  }
-}
-
-/** 归属工作区（对齐 MichengAI workspace.attachSession；无 workspaceId 则跳过）。 */
-async function attachSession(ctx: HostContext, task: SchedulerTask, cwd: string | undefined, sessionId: unknown): Promise<void> {
-  if (!task.workspaceId || cwd === undefined)
-    return
-  const workspace = ctx.workspaceRegistry?.get?.(task.workspaceId) as {
-    status?: () => Promise<string>
-    path?: string
-    attachSession?: (id: unknown) => Promise<unknown>
-  } | undefined
-  if (workspace === undefined)
-    return
-  if ((await workspace.status?.()) !== 'ok' || workspace.path !== cwd)
-    return
-  await workspace.attachSession?.(sessionId)
+async function ungroupedCwd(): Promise<string> {
+  const env = process.env.DSH_HOME
+  const home = env && env.trim() ? env.trim() : join(homedir(), '.dsh')
+  const dir = join(home, 'automations')
+  await mkdir(dir, { recursive: true }).catch(() => {})
+  return dir
 }
 
 /** 会话标题钉住（对齐 MichengAI pinAutomationSessionTitle：可选查询，失败仅告警）。 */

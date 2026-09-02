@@ -415,6 +415,9 @@ importers:
       dsh-tauri-panel-placeholder:
         specifier: workspace:*
         version: link:../dsh-tauri-panel-placeholder
+      dsh-tauri-panel-scheduler:
+        specifier: workspace:*
+        version: link:../dsh-tauri-panel-scheduler
       dsh-tauri-rightclick:
         specifier: workspace:*
         version: link:../dsh-tauri-rightclick
@@ -489,6 +492,25 @@ importers:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+    devDependencies:
+      dsh-tauri-tsdown:
+        specifier: workspace:*
+        version: link:../dsh-tauri-tsdown
+      tsdown:
+        specifier: catalog:cli
+        version: 0.17.4(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(oxc-resolver@11.24.2)(publint@0.3.24)(synckit@0.11.13)(typescript@5.8.3)
+
+  packages/dsh-tauri-panel-scheduler:
+    dependencies:
+      dsh-tauri:
+        specifier: workspace:*
+        version: link:../dsh-tauri
+      hookable:
+        specifier: catalog:utils
+        version: 6.1.1
+      pathe:
+        specifier: catalog:utils
+        version: 2.0.3
     devDependencies:
       dsh-tauri-tsdown:
         specifier: workspace:*

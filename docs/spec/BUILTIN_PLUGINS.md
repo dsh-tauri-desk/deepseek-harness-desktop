@@ -2,7 +2,7 @@
 
 Built-in plugins（内置插件）are plugins bundled with the installed desktop app and treated as part of the application itself. Their source is the monorepo workspace packages under `packages/`; at build time `scripts/build-plugins.ts` uses `pnpm deploy` to pack the plugins listed in `packages/dsh-tauri-bundle/package.json` into `src-tauri/resources/node_modules/<name>`, which is shipped with the installer via `bundle.resources`, and them auto-installed (and auto-healed) at service start by `src-tauri/src/service/plugin/internal.rs`.
 
-Examples today: `dsh-tauri`, `dsh-tauri-ui`, `dsh-tauri-worktree`, `dsh-tauri-panel`, `dsh-tauri-panel-extension`, `dsh-tauri-session`, and `dsh-tauri-rightclick`.
+Examples today: `dsh-tauri`, `dsh-tauri-ui`, `dsh-tauri-worktree`, `dsh-tauri-panel`, `dsh-tauri-panel-extension`, `dsh-tauri-panel-scheduler`, `dsh-tauri-session`, and `dsh-tauri-rightclick`.
 
 ## Built-in vs. normal preset plugin
 

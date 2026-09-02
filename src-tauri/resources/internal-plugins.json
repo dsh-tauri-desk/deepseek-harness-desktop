@@ -35,6 +35,13 @@
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension"
   },
   {
+    "id": "dsh-tauri-panel-scheduler",
+    "spec": "dsh-tauri-panel-scheduler",
+    "name": "DSH Tauri Panel Scheduler",
+    "description": "Scheduled tasks for the DeepSeek Harness desktop panel: create daily/interval/workday/weekly automations, run them in fresh sessions on schedule, and review run history.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-scheduler"
+  },
+  {
     "id": "dsh-tauri-session",
     "spec": "dsh-tauri-session",
     "name": "DSH Tauri Session",

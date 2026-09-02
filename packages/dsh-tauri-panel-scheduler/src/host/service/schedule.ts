@@ -11,6 +11,8 @@ import { WORKDAY_SET } from '../../shared/constants.js'
 const MINUTE_MS = 60 * 1000
 /** 月份推进的保守上限（避免非法周次死循环）。 */
 const MAX_FORWARD_DAYS = 366
+/** 间隔上限（分钟）：1 年，防止超大间隔把 nextOccurrence 推到 Infinity/Invalid Date。 */
+const MAX_EVERY_MINUTES = 525_600
 
 /** 解析 "HH:mm" 为当日分钟数；非法返回 undefined。 */
 export function parseTimeToMinutes(time: string): number | undefined {
@@ -61,7 +63,7 @@ export function nextOccurrence(schedule: SchedulerSchedule, from: number): numbe
   switch (schedule.kind) {
     case 'interval': {
       const every = schedule.everyMinutes
-      if (!Number.isFinite(every) || every < 1)
+      if (!Number.isFinite(every) || every < 1 || every > MAX_EVERY_MINUTES)
         return undefined
       // 以 from 为锚点：下一格（不重复触发当前已过的时刻）。
       return from + every * MINUTE_MS
@@ -121,7 +123,9 @@ export function validateSchedule(schedule: unknown): schedule is SchedulerSchedu
     return false
   const value = schedule as Partial<SchedulerSchedule>
   if (value.kind === 'interval') {
-    return Number.isFinite(value.everyMinutes) && (value.everyMinutes as number) >= 1
+    return Number.isFinite(value.everyMinutes)
+      && (value.everyMinutes as number) >= 1
+      && (value.everyMinutes as number) <= MAX_EVERY_MINUTES
   }
   if (value.kind === 'daily' || value.kind === 'workdays') {
     return typeof value.time === 'string' && parseTimeToMinutes(value.time) !== undefined

@@ -24,11 +24,6 @@ function stateStore(dshHome?: string) {
   return createAtomicFsStorage(schedulerStateDir(dshHome))
 }
 
-/** 空状态（无文件/损坏时）。 */
-function emptyState(): SchedulerState {
-  return { version: 1, tasks: [], runs: [] }
-}
-
 function isTask(value: unknown): value is SchedulerTask {
   return typeof value === 'object' && value !== null
     && typeof (value as SchedulerTask).id === 'string'
@@ -48,29 +43,28 @@ function isRun(value: unknown): value is SchedulerRun {
     && typeof (value as SchedulerRun).scheduledFor === 'string'
 }
 
-/** 同步读取状态文档；缺失/损坏回退空状态（逐条过滤非法条目）。 */
+/** 同步读取状态文档；tasks/runs 各自独立容错，损坏或缺失互不影响。 */
 export function loadState(dshHome?: string): SchedulerState {
   const dir = schedulerStateDir(dshHome)
-  try {
-    const raw = JSON.parse(readFileSync(join(dir, TASKS_KEY), 'utf8')) as { tasks?: unknown[] } | null
-    const runs = (() => {
-      try {
-        const parsed = JSON.parse(readFileSync(join(dir, RUNS_KEY), 'utf8')) as { runs?: unknown[] } | null
-        return Array.isArray(parsed?.runs) ? parsed.runs.filter(isRun) : []
-      }
-      catch {
-        return []
-      }
-    })()
-    return {
-      version: 1,
-      tasks: Array.isArray(raw?.tasks) ? raw.tasks.filter(isTask) : [],
-      runs,
+  const tasks = (() => {
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, TASKS_KEY), 'utf8')) as { tasks?: unknown[] } | null
+      return Array.isArray(raw?.tasks) ? raw.tasks.filter(isTask) : []
     }
-  }
-  catch {
-    return emptyState()
-  }
+    catch {
+      return []
+    }
+  })()
+  const runs = (() => {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, RUNS_KEY), 'utf8')) as { runs?: unknown[] } | null
+      return Array.isArray(parsed?.runs) ? parsed.runs.filter(isRun) : []
+    }
+    catch {
+      return []
+    }
+  })()
+  return { version: 1, tasks, runs }
 }
 
 /** 原子持久化整个状态文档。 */

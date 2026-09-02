@@ -47,22 +47,34 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  // 保存中禁止关闭（Esc / 遮罩 / 取消）：用 ref 供稳定闭包读取最新值。
+  const savingRef = useRef(false)
+  savingRef.current = saving
+
+  function closeSafe(): void {
+    if (savingRef.current)
+      return
+    onClose()
+  }
 
   // 模态对话框基础键盘行为：挂载聚焦、Esc 关闭、卸载还原焦点。
+  // onClose 经 ref 读取，避免 effect 依赖每次渲染重建的 closeSafe。
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
     const dialog = dialogRef.current
     dialog?.focus()
     function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape')
-        onClose()
+      if (event.key === 'Escape' && !savingRef.current)
+        onCloseRef.current()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       previouslyFocused?.focus()
     }
-  }, [onClose])
+  }, [])
 
   function setSchedule(patch: Partial<ScheduleForm>): void {
     setForm(state => ({ ...state, schedule: { ...state.schedule, ...patch } as ScheduleForm }))
@@ -96,7 +108,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget)
-          onClose()
+          closeSafe()
       }}
     >
       <div className="dsch-dialog" role="dialog" aria-modal="true" aria-label={t('createTask')} tabIndex={-1} ref={dialogRef}>
@@ -240,7 +252,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
         {error ? <p className="dsch-error" role="alert">{error}</p> : null}
 
         <div className="dsch-dialogFooter">
-          <button className="dsch-button dsch-buttonGhost" type="button" onClick={onClose}>{t('cancel')}</button>
+          <button className="dsch-button dsch-buttonGhost" type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
           <button className="dsch-button dsch-buttonPrimary" type="button" disabled={saving} onClick={() => void onSave()}>
             {t('save')}
           </button>

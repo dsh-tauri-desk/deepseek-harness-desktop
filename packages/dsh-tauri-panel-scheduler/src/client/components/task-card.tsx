@@ -35,18 +35,30 @@ export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactEl
 
   const paused = !task.enabled
   const lastRun = task.lastRunAt ? new Date(task.lastRunAt).toLocaleString() : ''
+  const [actionError, setActionError] = useState('')
+
+  async function runAction(
+    action: () => Promise<{ ok: boolean, error?: string }>,
+    errorKey: 'runFailed' | 'toggleFailed' | 'deleteFailed',
+  ): Promise<void> {
+    const result = await action()
+    if (!result.ok) {
+      setActionError(result.error ?? t(errorKey))
+      return
+    }
+    setMenuOpen(false)
+    setConfirming(false)
+    setActionError('')
+  }
 
   function onRun(): void {
-    setMenuOpen(false)
-    void applyRunTask(task.id)
+    void runAction(() => applyRunTask(task.id), 'runFailed')
   }
   function onToggle(): void {
-    setMenuOpen(false)
-    void applyToggleTask(task.id, paused)
+    void runAction(() => applyToggleTask(task.id, paused), 'toggleFailed')
   }
   function onDelete(): void {
-    setMenuOpen(false)
-    void applyDeleteTask(task.id)
+    void runAction(() => applyDeleteTask(task.id), 'deleteFailed')
   }
 
   function openMenu(): void {
@@ -81,6 +93,7 @@ export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactEl
             )
           : null}
       </div>
+      {actionError ? <p className="dsch-error" role="alert">{actionError}</p> : null}
       <div className="dsch-cardActions">
         <div className="dsch-menu" ref={menuRef}>
           <button

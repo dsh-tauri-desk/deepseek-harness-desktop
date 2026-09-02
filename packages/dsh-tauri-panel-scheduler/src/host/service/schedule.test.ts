@@ -24,6 +24,12 @@ describe('nextOccurrence', () => {
     expect(next).toBe(from + 30 * 60 * 1000)
   })
 
+  it('interval rejects oversized everyMinutes (would overflow Date)', () => {
+    expect(nextOccurrence({ kind: 'interval', everyMinutes: Number.MAX_SAFE_INTEGER, timeZone: 'UTC' }, Date.now())).toBeUndefined()
+    expect(nextOccurrence({ kind: 'interval', everyMinutes: 1e9, timeZone: 'UTC' }, Date.now())).toBeUndefined()
+    expect(validateSchedule({ kind: 'interval', everyMinutes: 1e9, timeZone: 'UTC' })).toBe(false)
+  })
+
   it('daily returns today at time when still in the future', () => {
     // 2026-01-01 08:00 local
     const from = new Date(2026, 0, 1, 7, 0, 0).getTime()

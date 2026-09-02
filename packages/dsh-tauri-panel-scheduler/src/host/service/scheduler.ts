@@ -100,8 +100,12 @@ export class SchedulerEngine {
     task.lastRunAt = new Date().toISOString()
     this.hooks.callHook?.('scheduler:task-start', { id: task.id, name: task.name }, trigger)
     try {
-      await executeTask(this.ctx, task, trigger)
-      this.hooks.callHook?.('scheduler:task-end', { id: task.id, name: task.name }, { ok: true })
+      // executeTask 内部捕获异常并返回结构化 outcome；把真实成败传给 hook。
+      const outcome = await executeTask(this.ctx, task, trigger)
+      this.hooks.callHook?.('scheduler:task-end', { id: task.id, name: task.name }, {
+        ok: outcome.ok,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      })
     }
     catch (error) {
       this.hooks.callHook?.('scheduler:task-end', { id: task.id, name: task.name }, {

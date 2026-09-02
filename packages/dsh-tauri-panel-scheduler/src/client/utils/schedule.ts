@@ -2,11 +2,12 @@
  * utils/schedule.ts — 计划描述与下次运行时间的展示格式化（纯函数）。
  *
  * 时间格式化委托 date-fns（format / differenceIn*），替换手写的 Intl 与差值算法；
- * 单位文案仍走 t() 以支持 zh/en 双语。
+ * 单位文案仍走 t() 以支持 zh/en 双语。date-fns 由 dsh-tauri/client 承载导出，
+ * 本插件 client 不直接 import 外部依赖（见 AGENTS.plugins.md 客户端依赖约定）。
  */
 
 import type { ScheduleForm, Translate, Weekday } from '../types'
-import { differenceInDays, differenceInHours, differenceInMinutes, format } from 'date-fns'
+import { differenceInDays, differenceInHours, differenceInMinutes, format } from 'dsh-tauri/client'
 
 const WEEKDAY_LABELS: Record<Weekday, string> = {
   MO: 'dayMon',

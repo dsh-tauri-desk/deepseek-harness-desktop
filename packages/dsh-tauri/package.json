@@ -54,6 +54,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "date-fns": "catalog:utils",
     "hookable": "catalog:utils",
     "ofetch": "catalog:utils",
     "unstorage": "catalog:utils"

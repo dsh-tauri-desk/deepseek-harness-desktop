@@ -36,8 +36,10 @@
   "dsh": {
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
         "dsh-tauri"
       ],
       "external": [
@@ -59,7 +61,6 @@
   },
   "dependencies": {
     "cron-schedule": "catalog:utils",
-    "date-fns": "catalog:utils",
     "dsh-tauri": "workspace:*",
     "hookable": "catalog:utils",
     "pathe": "catalog:utils"

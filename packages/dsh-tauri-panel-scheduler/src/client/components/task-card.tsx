@@ -13,7 +13,7 @@ import { IconWarningOutline16, Menu, Modal, Toast } from '@deepseek-ai/dsh-clien
 import { useRef, useState } from 'react'
 import { SCHEDULER_CLASSES as K } from '../constants'
 import { applyDeleteTask, applyRunTask, applyToggleTask } from '../store'
-import { IconMore, IconPause, IconPlay, IconSchedule, IconTrash } from './icons'
+import { IconMore, IconPause, IconPlay, IconTrash } from './icons'
 import { releaseTaskRecommendation } from './recommendations'
 
 export interface TaskCardProps {
@@ -94,9 +94,20 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
           onEdit(task)
       }}
     >
-      <div>
+      <div style={{ height: 36 }}>
+        <span
+          className={K.taskToggle}
+          aria-label={paused ? t('resume') : t('pause')}
+          onClick={(event) => {
+            event.stopPropagation()
+            void onToggle()
+          }}
+        >
+          {paused ? <IconPlay /> : <IconPause />}
+        </span>
+      </div>
+      <div style={{ flex: 1 }}>
         <span className={K.cardTitle} title={task.name}>
-          <IconSchedule className={K.cardIcon} />
           {task.name}
         </span>
         <div className={K.cardMeta}>
@@ -118,17 +129,6 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
 
         </div>
       </div>
-      <button
-        type="button"
-        className={K.taskToggle}
-        aria-label={paused ? t('resume') : t('pause')}
-        onClick={(event) => {
-          event.stopPropagation()
-          void onToggle()
-        }}
-      >
-        {paused ? <IconPlay /> : <IconPause />}
-      </button>
       <Menu
         open={menuOpen}
         onClose={() => setMenuOpen(false)}

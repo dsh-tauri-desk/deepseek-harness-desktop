@@ -1,5 +1,5 @@
 /**
- * components/task-card.tsx — 任务列表卡片：名称 + 计划 + 下次运行时间 + [...] 菜单
+ * components/task-card.tsx — 任务列表卡片：名称 + 计划·下次运行 + [...] 菜单
  * （立即运行 / 暂停或恢复 / 删除）。
  */
 
@@ -14,12 +14,14 @@ export interface TaskCardProps {
   t: Translate
   describe: string
   nextRun?: string
+  paused: boolean
 }
 
-export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactElement {
+export function TaskCard({ task, t, describe, nextRun, paused }: TaskCardProps): ReactElement {
   const [menuOpen, setMenuOpen] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const [actionError, setActionError] = useState('')
 
   // 点击外部关闭菜单。
   useEffect(() => {
@@ -32,10 +34,6 @@ export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactEl
     window.addEventListener('pointerdown', onPointerDown)
     return () => window.removeEventListener('pointerdown', onPointerDown)
   }, [menuOpen])
-
-  const paused = !task.enabled
-  const lastRun = task.lastRunAt ? new Date(task.lastRunAt).toLocaleString() : ''
-  const [actionError, setActionError] = useState('')
 
   async function runAction(
     action: () => Promise<{ ok: boolean, error?: string }>,
@@ -67,65 +65,56 @@ export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactEl
   }
 
   return (
-    <li className={`dsch-card${paused ? ' dsch-cardMuted' : ''}`}>
-      <div className="dsch-cardTop">
-        <span className="dsch-cardTitle" title={task.name}>{task.name}</span>
-        <span className="dsch-tag" data-kind={paused ? 'paused' : 'active'}>{paused ? t('paused') : t('active')}</span>
-      </div>
-      <p className="dsch-cardPrompt">{describe}</p>
+    <li className={`dsch-card${paused ? ' is-paused' : ''}`}>
+      <span className="dsch-cardTitle" title={task.name}>{task.name}</span>
       <div className="dsch-cardMeta">
-        <span className="dsch-cardMetaRow">
-          <span>
-            {t('nextRun')}
-            :
-          </span>
-          <span className="dsch-runTime">{nextRun ?? t('never')}</span>
+        <span className="dsch-cardMetaText">
+          {describe}
+          {nextRun !== undefined
+            ? (
+                <>
+                  {' · '}
+                  <strong>
+                    {t('nextRun')}
+                    {' '}
+                    {nextRun}
+                  </strong>
+                </>
+              )
+            : <strong>{t('paused')}</strong>}
         </span>
-        {lastRun
-          ? (
-              <span className="dsch-cardMetaRow">
-                <span>
-                  {t('lastRun')}
-                  :
-                </span>
-                <span className="dsch-runTime">{lastRun}</span>
-              </span>
-            )
-          : null}
-      </div>
-      {actionError ? <p className="dsch-error" role="alert">{actionError}</p> : null}
-      <div className="dsch-cardActions">
         <div className="dsch-menu" ref={menuRef}>
           <button
-            className="dsch-menuButton"
+            className="dsch-more"
             type="button"
-            aria-label={t('scheduler')}
+            aria-label={task.name}
             data-open={menuOpen ? 'true' : undefined}
             aria-expanded={menuOpen}
+            aria-haspopup="menu"
             onClick={openMenu}
           >
             <IconMore />
           </button>
           {menuOpen
             ? (
-                <div className="dsch-menuPanel">
-                  <button className="dsch-menuItem" type="button" onClick={onRun}>
+                <div className="dsch-menuPanel" role="menu">
+                  <button className="dsch-menuItem" type="button" role="menuitem" onClick={onRun}>
                     <IconPlay />
                     {t('runNow')}
                   </button>
-                  <button className="dsch-menuItem" type="button" onClick={onToggle}>
+                  <button className="dsch-menuItem" type="button" role="menuitem" onClick={onToggle}>
                     <IconPause />
                     {paused ? t('resume') : t('pause')}
                   </button>
                   {confirming
                     ? (
-                        <button className="dsch-menuItem dsch-menuItemDanger" type="button" onClick={onDelete}>
+                        <button className="dsch-menuItem is-danger" type="button" role="menuitem" onClick={onDelete}>
                           <IconTrash />
-                          {t('confirmDeleteTitle')}
+                          {t('delete')}
                         </button>
                       )
                     : (
-                        <button className="dsch-menuItem dsch-menuItemDanger" type="button" onClick={() => setConfirming(true)}>
+                        <button className="dsch-menuItem is-danger" type="button" role="menuitem" onClick={() => setConfirming(true)}>
                           <IconTrash />
                           {t('delete')}
                         </button>
@@ -135,6 +124,7 @@ export function TaskCard({ task, t, describe, nextRun }: TaskCardProps): ReactEl
             : null}
         </div>
       </div>
+      {actionError ? <p className="dsch-error" role="alert">{actionError}</p> : null}
     </li>
   )
 }

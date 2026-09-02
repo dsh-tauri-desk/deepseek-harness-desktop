@@ -1,145 +1,129 @@
 /**
- * components/scheduler-panel.tsx — 定时任务面板主容器：两个 tab（定时任务/执行记录）
- * + 搜索/新建/刷新 + 顶部唤醒提示条。
+ * components/scheduler-panel.tsx — 定时任务面板主容器。
  *
- * 数据经 schedulerStore（uSES）订阅，polling 由本组件生命周期驱动；
- * 新建对话框由 TaskCreateDialog 管理。
+ * 布局对齐 issue #307 的 ASCII 设计图：
+ *   标题 + 副标题 → 工具栏（搜索 / 通过 Chat 创建 / 手动创建 / 刷新）
+ *   → 唤醒提示横幅 → Tabs（定时任务 / 执行记录）→ 任务卡片网格。
+ *
+ * 数据经 schedulerStore（uSES）订阅，轮询由本组件生命周期驱动。
  */
 
 import type { ReactElement } from 'react'
 import type { SchedulerPanelProps } from '../types'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { REFRESH_INTERVAL_MS } from '../constants'
 import { refreshScheduler, useSchedulerState } from '../store'
-import { describeSchedule, formatLocalTime } from '../utils/schedule'
-import { IconChat, IconPlus, IconRefresh } from './icons'
+import { describeSchedule, formatRelative, isTaskPaused } from '../utils/schedule'
+import { IconChat, IconInfo, IconPlus, IconRefresh, IconSearch } from './icons'
 import { RunsTab } from './runs-tab'
 import { TaskCard } from './task-card'
 import { TaskCreateDialog } from './task-create-dialog'
 
 export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElement {
   const state = useSchedulerState()
-  const tabsId = useId()
-  const tabRefsRef = useRef<Array<HTMLButtonElement | null>>([])
-  const rows = [{ id: 'tasks', label: t('tasksTab') }, { id: 'runs', label: t('runsTab') }]
-  const [activeId, setActiveId] = useState('tasks')
+  const [tab, setTab] = useState<'tasks' | 'runs'>('tasks')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  // 相对「下次运行」以刷新时刻为基准，避免每次渲染抖动。
+  const [now, setNow] = useState(() => Date.now())
 
-  // 轮询刷新：任务下次运行时间与执行记录跟随。
+  // 轮询刷新：任务下次运行时间与执行记录跟随；同时推进相对时间基准。
   useEffect(() => {
     void refreshScheduler(true)
     const timer = window.setInterval(() => {
       void refreshScheduler(false)
+      setNow(Date.now())
     }, REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [])
 
   const filtered = search
-    ? state.tasks.filter(task => task.name.toLowerCase().includes(search.toLowerCase()))
+    ? state.tasks.filter(task => `${task.name} ${task.prompt}`.toLowerCase().includes(search.toLowerCase()))
     : state.tasks
 
-  const scheduleLabels = {
-    daily: t('scheduleDaily'),
-    interval: t('scheduleInterval'),
-    workdays: t('scheduleWorkdays'),
-    weekly: t('scheduleWeekly'),
-    everyMinutes: t('scheduleEveryMinutes'),
-  }
-
   return (
-    <div className="dsch-section">
-      <div className="dsch-banner">{t('wakeHint')}</div>
+    <div className="dsch-shell">
+      <header className="dsch-top">
+        <div className="dsch-heading">
+          <h1>{t('scheduler')}</h1>
+          <p>{t('subtitle')}</p>
+        </div>
+        <div className="dsch-toolbar">
+          <div className="dsch-searchWrap">
+            <IconSearch className="dsch-searchIcon" />
+            <input
+              className="dsch-search"
+              type="search"
+              aria-label={t('searchPlaceholder')}
+              placeholder={t('searchPlaceholder')}
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+            />
+          </div>
+          <button className="dsch-btn" type="button" onClick={onViaChat}>
+            <IconChat />
+            {t('viaChat')}
+          </button>
+          <button className="dsch-btn dsch-btn--primary" type="button" onClick={() => setCreateOpen(true)}>
+            <IconPlus />
+            {t('createManual')}
+          </button>
+          <button className="dsch-iconBtn" type="button" aria-label={t('refresh')} title={t('refresh')} onClick={() => void refreshScheduler(true)}>
+            <IconRefresh />
+          </button>
+        </div>
+      </header>
 
-      <div className="dsch-head">
-        <h2>{t('scheduler')}</h2>
-        <div className="dsch-spacer" />
-        <input
-          className="dsch-search"
-          type="search"
-          aria-label={t('searchPlaceholder')}
-          placeholder={t('searchPlaceholder')}
-          value={search}
-          onChange={event => setSearch(event.target.value)}
-        />
-        <button className="dsch-button dsch-buttonGhost" type="button" aria-label={t('viaChat')} title={t('viaChat')} onClick={onViaChat}>
-          <IconChat />
-        </button>
-        <button className="dsch-button dsch-buttonIcon" type="button" aria-label={t('refresh')} title={t('refresh')} onClick={() => void refreshScheduler(true)}>
-          <IconRefresh />
-        </button>
-        <button className="dsch-button dsch-buttonPrimary" type="button" onClick={() => setCreateOpen(true)}>
-          <IconPlus />
-          {t('createTask')}
-        </button>
+      <div className="dsch-banner" role="note">
+        <span>
+          <IconInfo />
+          {t('wakeHint')}
+        </span>
       </div>
 
       <div className="dsch-tabs" role="tablist" aria-label={t('scheduler')}>
-        {rows.map((row, index) => {
-          const selected = row.id === activeId
-          return (
-            <button
-              key={row.id}
-              ref={(element) => { tabRefsRef.current[index] = element }}
-              id={`${tabsId}-tab-${row.id}`}
-              type="button"
-              role="tab"
-              className="dsch-tab"
-              aria-selected={selected}
-              aria-controls={`${tabsId}-panel-${row.id}`}
-              data-active={selected ? 'true' : undefined}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setActiveId(row.id)}
-              onKeyDown={(event) => {
-                let next: number
-                if (event.key === 'ArrowRight')
-                  next = (index + 1) % rows.length
-                else if (event.key === 'ArrowLeft')
-                  next = (index - 1 + rows.length) % rows.length
-                else if (event.key === 'Home')
-                  next = 0
-                else if (event.key === 'End')
-                  next = rows.length - 1
-                else return
-                event.preventDefault()
-                setActiveId(rows[next]?.id ?? 'tasks')
-                tabRefsRef.current[next]?.focus()
-              }}
-            >
-              {row.label}
-            </button>
-          )
-        })}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'tasks'}
+          className={tab === 'tasks' ? 'dsch-tab is-on' : 'dsch-tab'}
+          onClick={() => setTab('tasks')}
+        >
+          {t('tasksTab')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'runs'}
+          className={tab === 'runs' ? 'dsch-tab is-on' : 'dsch-tab'}
+          onClick={() => setTab('runs')}
+        >
+          {t('runsTab')}
+        </button>
       </div>
 
       {state.error ? <p className="dsch-error" role="alert">{state.error}</p> : null}
 
-      {rows.map((row) => {
-        const selected = row.id === activeId
-        return (
-          <div key={row.id} id={`${tabsId}-panel-${row.id}`} className="dsch-tabPanel" role="tabpanel" aria-labelledby={`${tabsId}-tab-${row.id}`} hidden={!selected}>
-            {row.id === 'tasks'
-              ? (
-                  filtered.length === 0
-                    ? <p className="dsch-empty">{search ? t('noMatch') : t('emptyTasks')}</p>
-                    : (
-                        <ul className="dsch-cards">
-                          {filtered.map(task => (
-                            <TaskCard
-                              key={task.id}
-                              task={task}
-                              t={t}
-                              describe={describeSchedule(task.schedule, scheduleLabels)}
-                              nextRun={formatLocalTime(task.nextRunAt)}
-                            />
-                          ))}
-                        </ul>
-                      )
+      {tab === 'tasks'
+        ? (
+            filtered.length === 0
+              ? <p className="dsch-empty">{search ? t('noMatch') : t('emptyTasks')}</p>
+              : (
+                  <ul className="dsch-cards">
+                    {filtered.map(task => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        t={t}
+                        describe={describeSchedule(task.schedule, t)}
+                        nextRun={task.enabled ? formatRelative(task.nextRunAt, now, t) : undefined}
+                        paused={isTaskPaused(task)}
+                      />
+                    ))}
+                  </ul>
                 )
-              : <RunsTab t={t} runs={state.runs} />}
-          </div>
-        )
-      })}
+          )
+        : <RunsTab t={t} runs={state.runs} />}
 
       {createOpen
         ? <TaskCreateDialog t={t} options={state.options} onClose={() => setCreateOpen(false)} />

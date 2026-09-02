@@ -1,14 +1,20 @@
 /**
  * components/task-create-dialog.tsx — 新建任务对话框。
  *
- * 字段：名称、计划模式选择（每天/间隔/工作日/每周 + 动态时间参数组件）、
- * 任务指令 textarea + workspace-select + mode-select + module-select、取消/保存。
+ * 布局对齐 issue #307 的 ASCII 设计图，控件一律用原生
+ * <input>/<select>/<textarea>/<button>（DeepSeek 设计令牌样式，不自绘）：
+ *   标题 + [X] → 提示「请编写完整、独立的任务说明…」→ 名称
+ *   → 计划（模式 Select + 动态参数：每天/工作日=时间段 Select；间隔=时长 Select；
+ *      每周=星期周期 Select + 时间段 Select）
+ *   → 任务指令 textarea + 底部 composer（workspace / mode / module 三个 Select）
+ *   → 取消 / 保存。
  */
 
 import type { ReactElement } from 'react'
 import type { ScheduleForm, SchedulerOptions, TaskFormState, Translate, Weekday } from '../types'
 import { useEffect, useRef, useState } from 'react'
 import { applyCreateTask } from '../store'
+import { IconClose } from './icons'
 
 export interface TaskCreateDialogProps {
   t: Translate
@@ -17,9 +23,28 @@ export interface TaskCreateDialogProps {
 }
 
 const WEEKDAYS: Weekday[] = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
+const WEEKDAY_KEYS: Record<Weekday, string> = {
+  MO: 'dayMon',
+  TU: 'dayTue',
+  WE: 'dayWed',
+  TH: 'dayThu',
+  FR: 'dayFri',
+  SA: 'daySat',
+  SU: 'daySun',
+}
 
-/** 计划模式标签键映射（用于分段选择器）。 */
-const SCHEDULE_KIND_KEYS = ['daily', 'interval', 'workdays', 'weekly'] as const
+/** 时间段选项：00:00 ~ 23:45，每 15 分钟一档。 */
+const TIME_OPTIONS = Array.from({ length: 96 }, (_, index) => {
+  const total = index * 15
+  const h = String(Math.floor(total / 60)).padStart(2, '0')
+  const m = String(total % 60).padStart(2, '0')
+  return `${h}:${m}`
+})
+
+/** 间隔时长选项（分钟）。 */
+const INTERVAL_OPTIONS = [5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 720, 1440]
+
+const SCHEDULE_KINDS = ['daily', 'interval', 'workdays', 'weekly'] as const
 
 /** 各计划模式的默认参数（切换模式时初始化，保证字段齐整）。 */
 function defaultScheduleFor(kind: ScheduleForm['kind']): ScheduleForm {
@@ -27,12 +52,16 @@ function defaultScheduleFor(kind: ScheduleForm['kind']): ScheduleForm {
     case 'interval':
       return { kind: 'interval', everyMinutes: 30 }
     case 'weekly':
-      return { kind: 'weekly', weekdays: WEEKDAYS.slice(0, 5), time: '09:00' }
+      return { kind: 'weekly', weekdays: ['MO'], time: '09:00' }
     case 'workdays':
       return { kind: 'workdays', time: '09:00' }
     default:
       return { kind: 'daily', time: '09:00' }
   }
+}
+
+function kindLabelKey(kind: (typeof SCHEDULE_KINDS)[number]): string {
+  return `schedule${kind.charAt(0).toUpperCase()}${kind.slice(1)}`
 }
 
 export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps): ReactElement {
@@ -47,7 +76,7 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const dialogRef = useRef<HTMLDivElement | null>(null)
-  // 保存中禁止关闭（Esc / 遮罩 / 取消）：用 ref 供稳定闭包读取最新值。
+  // 保存中禁止关闭（Esc / 遮罩 / 取消 / [X]）：用 ref 供稳定闭包读取最新值。
   const savingRef = useRef(false)
   savingRef.current = saving
 
@@ -101,23 +130,35 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
   }
 
   const scheduleKind = form.schedule.kind
+  const currentTime = (form.schedule.kind === 'daily' || form.schedule.kind === 'workdays' || form.schedule.kind === 'weekly')
+    ? form.schedule.time
+    : '09:00'
+  const currentEveryMinutes = form.schedule.kind === 'interval' ? form.schedule.everyMinutes : 30
+  const currentWeekday: Weekday = form.schedule.kind === 'weekly' ? (form.schedule.weekdays[0] ?? 'MO') : 'MO'
 
   return (
     <div
-      className="dsch-overlay"
+      className="dsch-mask"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget)
           closeSafe()
       }}
     >
-      <div className="dsch-dialog" role="dialog" aria-modal="true" aria-label={t('createTask')} tabIndex={-1} ref={dialogRef}>
-        <h3>{t('createTask')}</h3>
+      <div className="dsch-dialog" role="dialog" aria-modal="true" aria-label={t('createDialogTitle')} tabIndex={-1} ref={dialogRef}>
+        <div className="dsch-dialogHead">
+          <div>
+            <h2>{t('createDialogTitle')}</h2>
+            <p>{t('dialogHint')}</p>
+          </div>
+          <button className="dsch-dialogClose" type="button" aria-label={t('close')} onClick={closeSafe}>
+            <IconClose />
+          </button>
+        </div>
 
         <label className="dsch-field">
-          <span>{t('taskName')}</span>
+          <span className="dsch-fieldLabel">{t('taskName')}</span>
           <input
-            className="dsch-input"
             type="text"
             value={form.name}
             placeholder={t('taskNamePlaceholder')}
@@ -126,134 +167,111 @@ export function TaskCreateDialog({ t, options, onClose }: TaskCreateDialogProps)
         </label>
 
         <div className="dsch-field">
-          <span>{t('schedule')}</span>
-          <div className="dsch-segments" role="radiogroup" aria-label={t('schedule')}>
-            {SCHEDULE_KIND_KEYS.map(kind => (
-              <button
-                key={kind}
-                type="button"
-                className="dsch-segment"
-                role="radio"
-                aria-checked={scheduleKind === kind}
-                data-active={scheduleKind === kind ? 'true' : undefined}
-                onClick={() => setForm(state => ({ ...state, schedule: defaultScheduleFor(kind) }))}
-              >
-                {t(`schedule${kind.charAt(0).toUpperCase()}${kind.slice(1)}`)}
-              </button>
-            ))}
+          <span className="dsch-fieldLabel">{t('schedule')}</span>
+          <div className="dsch-inline">
+            <select
+              className="dsch-select"
+              value={scheduleKind}
+              aria-label={t('schedule')}
+              onChange={event => setForm(state => ({ ...state, schedule: defaultScheduleFor(event.target.value as ScheduleForm['kind']) }))}
+            >
+              {SCHEDULE_KINDS.map(kind => (
+                <option key={kind} value={kind}>{t(kindLabelKey(kind))}</option>
+              ))}
+            </select>
+
+            {scheduleKind === 'interval'
+              ? (
+                  <select
+                    className="dsch-select dsch-select--auto"
+                    value={currentEveryMinutes}
+                    aria-label={t('scheduleEveryMinutes')}
+                    onChange={event => setSchedule({ kind: 'interval', everyMinutes: Number(event.target.value) })}
+                  >
+                    {INTERVAL_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{`${minutes} ${t('minuteShort')}`}</option>)}
+                  </select>
+                )
+              : scheduleKind === 'weekly'
+                ? (
+                    <>
+                      <select
+                        className="dsch-select dsch-select--auto"
+                        value={currentWeekday}
+                        aria-label={t('scheduleWeekdays')}
+                        onChange={event => setSchedule({ kind: 'weekly', weekdays: [event.target.value as Weekday], time: currentTime })}
+                      >
+                        {WEEKDAYS.map(day => <option key={day} value={day}>{t(WEEKDAY_KEYS[day])}</option>)}
+                      </select>
+                      <select
+                        className="dsch-select dsch-select--auto"
+                        value={currentTime}
+                        aria-label={t('scheduleTime')}
+                        onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
+                      >
+                        {TIME_OPTIONS.map(time => <option key={time} value={time}>{time}</option>)}
+                      </select>
+                    </>
+                  )
+                : (
+                    <select
+                      className="dsch-select dsch-select--auto"
+                      value={currentTime}
+                      aria-label={t('scheduleTime')}
+                      onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
+                    >
+                      {TIME_OPTIONS.map(time => <option key={time} value={time}>{time}</option>)}
+                    </select>
+                  )}
           </div>
         </div>
 
         <div className="dsch-field">
-          <span>{t('scheduleTime')}</span>
-          {scheduleKind === 'interval'
-            ? (
-                <input
-                  className="dsch-input"
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={form.schedule.kind === 'interval' ? form.schedule.everyMinutes : 30}
-                  aria-label={t('scheduleEveryMinutes')}
-                  onChange={event => setSchedule({ kind: 'interval', everyMinutes: Math.max(5, Number(event.target.value) || 30) })}
-                />
-              )
-            : (
-                <input
-                  className="dsch-input"
-                  type="time"
-                  value={form.schedule.kind === 'daily' || form.schedule.kind === 'workdays'
-                    ? form.schedule.time
-                    : form.schedule.time}
-                  aria-label={t('scheduleTime')}
-                  onChange={event => setSchedule({ ...form.schedule, time: event.target.value } as ScheduleForm)}
-                />
-              )}
-        </div>
-
-        {scheduleKind === 'weekly'
-          ? (
-              <div className="dsch-field">
-                <span>{t('scheduleWeekdays')}</span>
-                <div className="dsch-weekdays">
-                  {WEEKDAYS.map((day) => {
-                    const active = form.schedule.kind === 'weekly' && form.schedule.weekdays.includes(day)
-                    return (
-                      <button
-                        key={day}
-                        type="button"
-                        className="dsch-weekday"
-                        aria-pressed={active}
-                        data-active={active ? 'true' : undefined}
-                        onClick={() => {
-                          if (form.schedule.kind !== 'weekly')
-                            return
-                          const weekdays = active
-                            ? form.schedule.weekdays.filter(d => d !== day)
-                            : [...form.schedule.weekdays, day]
-                          setSchedule({ ...form.schedule, weekdays } as ScheduleForm)
-                        }}
-                      >
-                        {day}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )
-          : null}
-
-        <label className="dsch-field">
-          <span>{t('schedulePrompt')}</span>
+          <span className="dsch-fieldLabel">{t('schedulePrompt')}</span>
           <textarea
-            className="dsch-textarea"
             value={form.prompt}
             placeholder={t('schedulePromptPlaceholder')}
             onChange={event => setForm(state => ({ ...state, prompt: event.target.value }))}
           />
-        </label>
+        </div>
 
-        <div className="dsch-row">
-          <label className="dsch-field" style={{ flex: '1' }}>
-            <span>{t('workspace')}</span>
-            <select
-              className="dsch-select"
-              value={form.workspaceId}
-              onChange={event => setForm(state => ({ ...state, workspaceId: event.target.value }))}
-            >
-              <option value="">{t('workspaceDefault')}</option>
-              {options.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
-            </select>
-          </label>
-          <label className="dsch-field" style={{ flex: '1' }}>
-            <span>{t('mode')}</span>
-            <select
-              className="dsch-select"
-              value={form.mode}
-              onChange={event => setForm(state => ({ ...state, mode: event.target.value }))}
-            >
-              <option value="">{t('modeDefault')}</option>
-              {options.presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-            </select>
-          </label>
-          <label className="dsch-field" style={{ flex: '1' }}>
-            <span>{t('module')}</span>
-            <select
-              className="dsch-select"
-              value={form.module}
-              onChange={event => setForm(state => ({ ...state, module: event.target.value }))}
-            >
-              <option value="">{t('moduleDefault')}</option>
-              {options.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
-            </select>
-          </label>
+        <div className="dsch-composer">
+          <select
+            className="dsch-select"
+            value={form.workspaceId}
+            aria-label={t('workspace')}
+            title={t('workspace')}
+            onChange={event => setForm(state => ({ ...state, workspaceId: event.target.value }))}
+          >
+            <option value="">{t('workspaceDefault')}</option>
+            {options.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
+          </select>
+          <select
+            className="dsch-select"
+            value={form.mode}
+            aria-label={t('mode')}
+            title={t('mode')}
+            onChange={event => setForm(state => ({ ...state, mode: event.target.value }))}
+          >
+            <option value="">{t('mode')}</option>
+            {options.presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+          </select>
+          <select
+            className="dsch-select"
+            value={form.module}
+            aria-label={t('module')}
+            title={t('module')}
+            onChange={event => setForm(state => ({ ...state, module: event.target.value }))}
+          >
+            <option value="">{t('moduleDefault')}</option>
+            {options.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+          </select>
         </div>
 
         {error ? <p className="dsch-error" role="alert">{error}</p> : null}
 
         <div className="dsch-dialogFooter">
-          <button className="dsch-button dsch-buttonGhost" type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
-          <button className="dsch-button dsch-buttonPrimary" type="button" disabled={saving} onClick={() => void onSave()}>
+          <button className="dsch-btn" type="button" disabled={saving} onClick={closeSafe}>{t('cancel')}</button>
+          <button className="dsch-btn dsch-btn--primary" type="button" disabled={saving} onClick={() => void onSave()}>
             {t('save')}
           </button>
         </div>

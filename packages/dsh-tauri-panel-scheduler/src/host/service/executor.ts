@@ -21,9 +21,13 @@ import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import type { HostContext, RunTrigger, SchedulerTask } from '../types/index.js'
 import type { PermissionPresetService } from './permission-presets.js'
 import { randomUUID } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import process from 'node:process'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
+import { join } from 'pathe'
 import { RUNS_HISTORY_LIMIT } from '../constants/index.js'
 import { loadState, saveRuns, withStateLock } from '../storage/index.js'
 import { schedulerSessionTitle } from './run-title.js'
@@ -314,10 +318,20 @@ async function runSchedulerAgent(
   }
 }
 
-/** 从 workspaceId 解析会话 cwd（未知工作区返回 undefined）。 */
+/**
+ * 从 workspaceId 解析会话 cwd。
+ * 未分组（无 workspaceId）任务使用宿主 home 下的 automations 目录
+ * （~/.dsh/automations，dev 构建为 ~/.dsh.dev/automations；优先 $DSH_HOME），
+ * 目录不存在时创建——与 dsh-automation 的未分组 cwd 语义一致。
+ */
 async function resolveWorkspacePath(ctx: HostContext, workspaceId: string | undefined): Promise<string | undefined> {
-  if (!workspaceId)
-    return undefined
+  if (!workspaceId) {
+    const env = process.env.DSH_HOME
+    const home = env && env.trim() ? env.trim() : join(homedir(), '.dsh')
+    const dir = join(home, 'automations')
+    await mkdir(dir, { recursive: true }).catch(() => {})
+    return dir
+  }
   try {
     const workspace = ctx.workspaceRegistry?.get?.(workspaceId) as { path?: string } | undefined
     return typeof workspace?.path === 'string' ? workspace.path : undefined

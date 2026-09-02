@@ -3,7 +3,8 @@ import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
-import { basename, join, resolve } from 'pathe'
+import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
+import { join, resolve } from 'pathe'
 
 const execFileAsync = promisify(execFile)
 
@@ -150,7 +151,7 @@ export async function gitToplevel(path: string): Promise<string | null> {
 }
 
 export function projectDirname(projectPath: string): string {
-  return basename(resolve(projectPath))
+  return workspaceTitleOf(resolve(projectPath))
 }
 
 export async function shortHead(worktreePath: string): Promise<string> {

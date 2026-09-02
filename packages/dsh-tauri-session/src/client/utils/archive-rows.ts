@@ -4,6 +4,7 @@
  */
 
 import type { ArchiveRow, SessionListSnapshot, WorkspaceListSnapshot, WorkspaceViewLike } from '../types'
+import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
 import { isEnglishLocale, text } from '../locales'
 
 /** 按出现顺序合并多个 id 列表（去重；GET 载荷优先，快照补漏）。 */
@@ -19,11 +20,6 @@ export function unionIds(...lists: readonly (readonly string[])[]): string[] {
     }
   }
   return out
-}
-
-function workspaceTitleOf(path: string): string {
-  const parts = path.replace(/[\\/]+$/, '').split(/[\\/]/)
-  return parts[parts.length - 1] ?? ''
 }
 
 /**

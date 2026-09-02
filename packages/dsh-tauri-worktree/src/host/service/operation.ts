@@ -143,7 +143,26 @@ export async function ensureWorktree(
     log,
   }
   ledger[sessionId] = binding
-  await saveLedger(worktreesRoot, ledger)
+  // ledger 落盘失败时回滚刚创建的 git worktree 与分支，避免留下未被 ledger 引用的
+  // 孤儿目录（失败重试会以新 sessionId 再建一份，累积成「多点几次多出一堆工作树」）。
+  // saveLedger 内部已对瞬时 EPERM 做退避重试，这里兜底覆盖其余硬失败（如权限/磁盘）。
+  try {
+    await saveLedger(worktreesRoot, ledger)
+  }
+  catch {
+    const rollbackFailures: string[] = []
+    const removed = await git(['worktree', 'remove', '--force', path], root, { signal: opts.signal })
+    if (!removed.ok)
+      rollbackFailures.push(`移除工作树失败：${removed.error}`)
+    await git(['worktree', 'prune'], root, { signal: opts.signal })
+    if (branchName) {
+      const dropped = await git(['branch', '-D', branchName], root, { signal: opts.signal })
+      if (!dropped.ok)
+        rollbackFailures.push(`删除分支失败：${dropped.error}`)
+    }
+    const suffix = rollbackFailures.length > 0 ? `；回滚不完整：${rollbackFailures.join('；')}` : '，已回滚'
+    return { ok: false, error: `保存工作树记录失败${suffix}` }
+  }
 
   // 不注册成普通 DSH Workspace：否则「新建会话」会复用 blank worktree 会话，
   // 造成默认进入工作树。隔离会话直接以 sessions.create({ cwd }) 绑定此路径。

@@ -1,16 +1,16 @@
 /**
  * host/service/schedule.ts — 调度计划的下次触发时间计算。
  *
- * 纯函数、无副作用，便于单测锁定 DST/跨天/跨周语义。时间一律用宿主本地时区
- * （与「电脑保持唤醒时运行」的产品语义一致），返回 ms 时间戳。
+ * 时间点类计划（daily / workdays / weekly）委托 cron-schedule 解析 5 段 cron
+ * 表达式并求「下一个触发时刻」；interval 是纯间隔（无 cron 等价），保留锚点加法。
+ * cron-schedule 在宿主本地时区上求值，与「电脑保持唤醒时运行」的产品语义一致
+ * （schedule.timeZone 仅作展示记录，执行统一用宿主本地钟面时间）。返回 ms 时间戳。
  */
 
 import type { SchedulerSchedule, Weekday } from '../types/index.js'
-import { WORKDAY_SET } from '../../shared/constants.js'
+import { parseCronExpression } from 'cron-schedule'
 
 const MINUTE_MS = 60 * 1000
-/** 月份推进的保守上限（避免非法周次死循环）。 */
-const MAX_FORWARD_DAYS = 366
 /** 间隔上限（分钟）：1 年，防止超大间隔把 nextOccurrence 推到 Infinity/Invalid Date。 */
 const MAX_EVERY_MINUTES = 525_600
 
@@ -26,8 +26,8 @@ export function parseTimeToMinutes(time: string): number | undefined {
   return hours * 60 + minutes
 }
 
-/** 星期短名 → JS 的 getDay()（0=周日）。 */
-const WEEKDAY_TO_JS_DAY: Record<Weekday, number> = {
+/** 星期短名 → cron 星期字段值（0/7=周日，与 JS Date#getDay 一致）。 */
+const WEEKDAY_TO_CRON_DAY: Record<Weekday, number> = {
   MO: 1,
   TU: 2,
   WE: 3,
@@ -37,21 +37,36 @@ const WEEKDAY_TO_JS_DAY: Record<Weekday, number> = {
   SU: 0,
 }
 
-/** 本地日期对象上按"当日 HH:mm"构造时间戳（不足/越界返回 undefined）。 */
-function timeOnDay(date: Date, minutes: number): number | undefined {
-  const hours = Math.floor(minutes / 60)
-  const mins = minutes % 60
-  const ts = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hours, mins, 0, 0).getTime()
-  return Number.isNaN(ts) ? undefined : ts
-}
+/** 时间点类计划（有 cron 表达式可表达的三种 kind）。 */
+type TimeSchedule = Extract<SchedulerSchedule, { kind: 'daily' | 'workdays' | 'weekly' }>
 
 /**
- * 从锚点日期开始，按「本地日历日」逐日推进 days 天并取"当日 HH:mm"时间戳。
- * 用日历日加法而非 24h 毫秒加法，跨 DST 拨钟（春季前拨/秋季回拨）时保持本地钟面时间。
+ * 把「时间点 + 星期」计划映射为 5 段 cron 表达式（minute hour dom month dow）。
+ * time 非法、weekly 无有效星期时返回 undefined（调用方按不可达处理）。
  */
-function timeOnDayAfter(date: Date, days: number, minutes: number): number | undefined {
-  const shifted = new Date(date.getFullYear(), date.getMonth(), date.getDate() + days)
-  return timeOnDay(shifted, minutes)
+function toCronExpression(schedule: TimeSchedule): string | undefined {
+  const minutes = parseTimeToMinutes(schedule.time)
+  if (minutes === undefined)
+    return undefined
+  const hour = Math.floor(minutes / 60)
+  const minute = minutes % 60
+  switch (schedule.kind) {
+    case 'daily':
+      return `${minute} ${hour} * * *`
+    case 'workdays':
+      return `${minute} ${hour} * * 1-5`
+    case 'weekly': {
+      const days: number[] = []
+      for (const day of schedule.weekdays) {
+        if (!Object.hasOwn(WEEKDAY_TO_CRON_DAY, day))
+          return undefined
+        days.push(WEEKDAY_TO_CRON_DAY[day])
+      }
+      if (days.length === 0)
+        return undefined
+      return `${minute} ${hour} * * ${[...new Set(days)].sort((a, b) => a - b).join(',')}`
+    }
+  }
 }
 
 /**
@@ -59,7 +74,6 @@ function timeOnDayAfter(date: Date, days: number, minutes: number): number | und
  * 返回 ms 时间戳；计划非法或不可达时返回 undefined。
  */
 export function nextOccurrence(schedule: SchedulerSchedule, from: number): number | undefined {
-  const anchor = new Date(from)
   switch (schedule.kind) {
     case 'interval': {
       const every = schedule.everyMinutes
@@ -68,51 +82,13 @@ export function nextOccurrence(schedule: SchedulerSchedule, from: number): numbe
       // 以 from 为锚点：下一格（不重复触发当前已过的时刻）。
       return from + every * MINUTE_MS
     }
-    case 'daily': {
-      const minutes = parseTimeToMinutes(schedule.time)
-      if (minutes === undefined)
-        return undefined
-      const today = timeOnDay(anchor, minutes)
-      if (today === undefined)
-        return undefined
-      // 今天未过则今天；已过则取下一个日历日的同钟面时间（DST 安全）。
-      return today > from ? today : timeOnDayAfter(anchor, 1, minutes)
-    }
-    case 'workdays': {
-      const minutes = parseTimeToMinutes(schedule.time)
-      if (minutes === undefined)
-        return undefined
-      for (let offset = 0; offset < MAX_FORWARD_DAYS; offset++) {
-        const candidate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + offset)
-        const day = candidate.getDay()
-        const weekday = Object.keys(WEEKDAY_TO_JS_DAY).find(
-          key => WEEKDAY_TO_JS_DAY[key as Weekday] === day,
-        ) as Weekday | undefined
-        if (weekday === undefined || !WORKDAY_SET.has(weekday))
-          continue
-        const ts = timeOnDay(candidate, minutes)
-        if (ts !== undefined && ts > from)
-          return ts
-      }
-      return undefined
-    }
+    case 'daily':
+    case 'workdays':
     case 'weekly': {
-      const minutes = parseTimeToMinutes(schedule.time)
-      if (minutes === undefined)
+      const expression = toCronExpression(schedule)
+      if (expression === undefined)
         return undefined
-      const weekdays = schedule.weekdays
-      if (!Array.isArray(weekdays) || weekdays.length === 0)
-        return undefined
-      const targetDays = new Set(weekdays.map(day => WEEKDAY_TO_JS_DAY[day]))
-      for (let offset = 0; offset < MAX_FORWARD_DAYS; offset++) {
-        const candidate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + offset)
-        if (!targetDays.has(candidate.getDay()))
-          continue
-        const ts = timeOnDay(candidate, minutes)
-        if (ts !== undefined && ts > from)
-          return ts
-      }
-      return undefined
+      return parseCronExpression(expression).getNextDate(new Date(from)).getTime()
     }
   }
 }
@@ -135,7 +111,7 @@ export function validateSchedule(schedule: unknown): schedule is SchedulerSchedu
       && parseTimeToMinutes(value.time) !== undefined
       && Array.isArray(value.weekdays)
       && (value.weekdays as Weekday[]).length > 0
-      && (value.weekdays as Weekday[]).every(day => Object.hasOwn(WEEKDAY_TO_JS_DAY, day))
+      && (value.weekdays as Weekday[]).every(day => Object.hasOwn(WEEKDAY_TO_CRON_DAY, day))
   }
   return false
 }

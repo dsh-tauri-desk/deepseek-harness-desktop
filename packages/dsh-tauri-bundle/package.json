@@ -6,7 +6,6 @@
     "dsh-tauri": "workspace:*",
     "dsh-tauri-panel": "workspace:*",
     "dsh-tauri-panel-extension": "workspace:*",
-    "dsh-tauri-panel-placeholder": "workspace:*",
     "dsh-tauri-panel-scheduler": "workspace:*",
     "dsh-tauri-rightclick": "workspace:*",
     "dsh-tauri-session": "workspace:*",

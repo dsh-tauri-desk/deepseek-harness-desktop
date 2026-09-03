@@ -13,6 +13,7 @@ src-tauri/resources/internal-plugins/
 *.local
 .env
 .tmp
+.temp/
 release-msi-version.tmp.json
 skills
 .serena

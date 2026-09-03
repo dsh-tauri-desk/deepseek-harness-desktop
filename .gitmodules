@@ -7,3 +7,6 @@
 [submodule "source/BongoCat"]
 	path = source/BongoCat
 	url = https://github.com/ayangweb/BongoCat
+[submodule "source/dsh-dafeiyu"]
+	path = source/dsh-dafeiyu
+	url = https://github.com/QCYTSN/dsh-dafeiyu

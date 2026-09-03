@@ -1,18 +1,16 @@
 import type { ReactElement } from 'react'
-import type { ScheduleForm, Translate } from '../types'
-import { useSyncExternalStore } from 'react'
+import type { ScheduleForm, TaskFormState, TaskView, Translate } from '../types'
 import { SCHEDULER_CLASSES as K } from '../constants'
 import { applyCreateTask } from '../store'
+import { recommendationMatchesTask } from '../utils/recommendations'
 import { describeSchedule } from '../utils/schedule'
 import { IconCalendar } from './icons'
 
 /**
  * components/recommendations.tsx — 推荐（预置）定时任务，展示在任务列表下方。
  *
- * 每项 = 着色图标 + 名称 + 计划摘要 + 说明文案。点击不经编辑弹窗，**直接创建**
- * 任务；创建成功后该项从列表移除。若删除某个由推荐创建的任务（名称匹配其推荐项），
- * 该项**立刻**回到列表——已添加集合用微型 uSES 存储承载，add()/releaseTaskRecommendation
- * 都在成功时即时通知（不等待宿主刷新往返）。schedule 结构即 TaskFormState.schedule。
+ * 推荐消费状态由任务记录中的 recommendationId 持久化承载；对旧版本创建的任务，
+ * 仍用名称、计划和指令做兼容匹配。这样刷新页面或重新打开面板时，已添加项不会回到列表。
  */
 
 interface IconLike {
@@ -30,7 +28,7 @@ export interface Recommendation {
   form: (t: Translate) => TaskFormState
 }
 
-const RECOMMENDATIONS: Recommendation[] = [
+export const RECOMMENDATIONS: Recommendation[] = [
   {
     id: 'weekly-review',
     nameKey: 'recReviewName',
@@ -40,64 +38,37 @@ const RECOMMENDATIONS: Recommendation[] = [
     icon: IconCalendar,
     form: t => ({ name: t('recReviewName'), schedule: { kind: 'weekly', weekdays: ['FR'], time: '16:00' }, prompt: t('recReviewPrompt'), workspaceId: '', permission: 'read-only', provider: '', model: '', reasoningEffort: '' }),
   },
+  {
+    id: 'weekday-briefing',
+    nameKey: 'recWeekdayBriefingName',
+    promptKey: 'recWeekdayBriefingPrompt',
+    schedule: { kind: 'workdays', time: '08:00' },
+    accent: '#3D9A80',
+    icon: IconCalendar,
+    form: t => ({ name: t('recWeekdayBriefingName'), schedule: { kind: 'workdays', time: '08:00' }, prompt: t('recWeekdayBriefingPrompt'), workspaceId: '', permission: 'read-only', provider: '', model: '', reasoningEffort: '' }),
+  },
 ]
-
-let version = 0
-const listeners = new Set<() => void>()
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
-}
-function getVersion(): number {
-  return version
-}
-
-/** 已添加成功的推荐 id（模块级，切 tab 重建后仍保持）。 */
-const addedRecIds = new Set<string>()
-
-/** 变更即通知订阅者（uSES），让推荐列表立刻重渲染。 */
-function notifyRecommendationsChanged(): void {
-  version += 1
-  for (const listener of listeners)
-    listener()
-}
-
-/**
- * 释放与某任务名称匹配的推荐（任务删除成功后调用），使该推荐项立刻回到列表。
- * @param name - 被删任务名称。
- * @param t - 翻译函数（按当前语言匹配推荐项名称）。
- */
-export function releaseTaskRecommendation(name: string, t: Translate): void {
-  for (const rec of RECOMMENDATIONS) {
-    if (t(rec.nameKey) === name)
-      addedRecIds.delete(rec.id)
-  }
-  notifyRecommendationsChanged()
-}
 
 export interface RecommendationsProps {
   t: Translate
+  tasks: TaskView[]
 }
 
-/** 推荐（预置）定时任务列表：点击直接创建，成功后该项移除。 */
-export function Recommendations({ t }: RecommendationsProps): ReactElement {
-  useSyncExternalStore(subscribe, getVersion)
-
+/** 推荐（预置）定时任务列表：点击直接创建，成功后该项从任务列表中消失。 */
+export function Recommendations({ t, tasks }: RecommendationsProps): ReactElement {
   async function add(rec: Recommendation): Promise<void> {
     const form = rec.form(t)
-    const result = await applyCreateTask({
+    await applyCreateTask({
       name: form.name,
       schedule: form.schedule,
       prompt: form.prompt,
       workspaceId: form.workspaceId || undefined,
+      recommendationId: rec.id,
+      enabled: false,
     })
-    if (result.ok) {
-      addedRecIds.add(rec.id)
-      notifyRecommendationsChanged()
-    }
   }
 
-  const visible = RECOMMENDATIONS.filter(rec => !addedRecIds.has(rec.id))
+  const visible = RECOMMENDATIONS.filter(rec => !tasks.some(task => recommendationMatchesTask(rec, task, t)))
 
   return (
     <section className={K.recs} aria-label={t('recommended')}>

@@ -14,7 +14,6 @@ import { useRef, useState } from 'react'
 import { SCHEDULER_CLASSES as K } from '../constants'
 import { applyDeleteTask, applyRunTask, applyToggleTask } from '../store'
 import { IconMore, IconPause, IconPlay, IconTrash } from './icons'
-import { releaseTaskRecommendation } from './recommendations'
 
 export interface TaskCardProps {
   task: TaskView
@@ -72,8 +71,6 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
       return
     }
     setActionError('')
-    // 若删除的是由推荐创建的任务（名称匹配其推荐项），让该推荐项回到列表。
-    releaseTaskRecommendation(task.name, t)
   }
 
   const items: MenuEntry[] = [

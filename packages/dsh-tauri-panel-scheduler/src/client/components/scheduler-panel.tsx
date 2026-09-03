@@ -140,7 +140,7 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
                       ))}
                     </ul>
                   )}
-              <Recommendations t={t} />
+              <Recommendations t={t} tasks={state.tasks} />
             </>
           )
         : (

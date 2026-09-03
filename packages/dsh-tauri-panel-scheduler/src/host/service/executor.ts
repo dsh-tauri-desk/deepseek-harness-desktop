@@ -56,6 +56,8 @@ interface SchedulerRuntimeModules {
   setApprovalPolicy: (session: unknown, policy: 'ask' | 'never') => void
 }
 
+type RuntimeModuleExports = Partial<SchedulerRuntimeModules>
+
 interface SessionEventLike {
   readonly seq: number
   readonly type: string
@@ -90,6 +92,25 @@ const CANCEL_CONVERGENCE_TIMEOUT_MS = 10_000
  * 从平台 loader 加载 DSH-owned 核心模块。内置插件位于独立 resources/node_modules，
  * 原生 ESM 裸导入会错误地从该资源树查找这些包；loader 才持有 DSH 安装目录的解析基址。
  */
+function resolveRuntimeExport<T extends keyof SchedulerRuntimeModules>(
+  loader: PlatformModuleLoader,
+  moduleExports: unknown,
+  name: T,
+): SchedulerRuntimeModules[T] {
+  // DSH modules may expose both named exports and a default export. `unwrapExports()`
+  // intentionally returns the default in that case, so prefer the namespace's named
+  // export and only unwrap as a compatibility fallback for CJS-shaped modules.
+  const direct = (moduleExports as RuntimeModuleExports | null)?.[name]
+  if (typeof direct === 'function')
+    return direct as SchedulerRuntimeModules[T]
+
+  const unwrapped = loader.unwrapExports(moduleExports) as RuntimeModuleExports | null
+  const fallback = unwrapped?.[name]
+  if (typeof fallback !== 'function')
+    throw new TypeError(`SCHEDULER_RUNTIME_EXPORT_MISSING: ${String(name)}`)
+  return fallback as SchedulerRuntimeModules[T]
+}
+
 export async function loadSchedulerRuntimeModules(loader: PlatformModuleLoader): Promise<SchedulerRuntimeModules> {
   const [agent, llm, approval] = await Promise.all([
     loader.import('@deepseek-ai/dsh-agent'),
@@ -97,9 +118,9 @@ export async function loadSchedulerRuntimeModules(loader: PlatformModuleLoader):
     loader.import('@deepseek-ai/dsh-user-approval'),
   ])
   return {
-    installModelSelection: (loader.unwrapExports(agent) as Pick<SchedulerRuntimeModules, 'installModelSelection'>).installModelSelection,
-    createUserMessage: (loader.unwrapExports(llm) as Pick<SchedulerRuntimeModules, 'createUserMessage'>).createUserMessage,
-    setApprovalPolicy: (loader.unwrapExports(approval) as Pick<SchedulerRuntimeModules, 'setApprovalPolicy'>).setApprovalPolicy,
+    installModelSelection: resolveRuntimeExport(loader, agent, 'installModelSelection'),
+    createUserMessage: resolveRuntimeExport(loader, llm, 'createUserMessage'),
+    setApprovalPolicy: resolveRuntimeExport(loader, approval, 'setApprovalPolicy'),
   }
 }
 

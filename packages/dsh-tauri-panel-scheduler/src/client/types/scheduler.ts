@@ -58,6 +58,7 @@ export interface TaskView {
   name: string
   schedule: ScheduleForm & { timeZone?: string }
   prompt: string
+  recommendationId?: string
   workspaceId?: string
   /** 权限边界（宿主 permissionPreset 值，如 read-only / workspace-write / danger-full-access）。 */
   permission?: string

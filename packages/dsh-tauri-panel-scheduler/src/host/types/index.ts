@@ -70,6 +70,8 @@ export interface SchedulerTask {
   schedule: SchedulerSchedule
   /** 任务指令（作为新会话的首条用户消息）。 */
   prompt: string
+  /** 创建任务时使用的推荐项 id（可空；用于跨刷新恢复推荐消费状态）。 */
+  recommendationId?: string
   /** 目标工作区 id（可空：不指定时使用默认会话 cwd）。 */
   workspaceId?: string
   /** 权限边界（read-only / workspace-write；可空默认 read-only）。 */

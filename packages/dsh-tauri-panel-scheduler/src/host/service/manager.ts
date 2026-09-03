@@ -16,6 +16,7 @@ export interface TaskInput {
   name: string
   schedule: SchedulerSchedule
   prompt: string
+  recommendationId?: string
   workspaceId?: string
   permission?: string
   provider?: string
@@ -39,6 +40,7 @@ export function buildTask(input: TaskInput): SchedulerTask {
     name: input.name.trim(),
     schedule: normalized,
     prompt: input.prompt,
+    recommendationId: input.recommendationId || undefined,
     workspaceId: input.workspaceId || undefined,
     permission: input.permission || undefined,
     provider: input.provider || undefined,
@@ -96,6 +98,7 @@ export function updateTask(
       name: patch.name ?? task.name,
       schedule: patch.schedule ?? task.schedule,
       prompt: patch.prompt ?? task.prompt,
+      recommendationId: patch.recommendationId === undefined ? task.recommendationId : patch.recommendationId,
       workspaceId: patch.workspaceId === undefined ? task.workspaceId : patch.workspaceId,
       permission: patch.permission === undefined ? task.permission : patch.permission,
       provider: patch.provider === undefined ? task.provider : patch.provider,
@@ -110,6 +113,7 @@ export function updateTask(
     task.name = built.name
     task.schedule = built.schedule
     task.prompt = built.prompt
+    task.recommendationId = built.recommendationId
     task.workspaceId = built.workspaceId
     task.permission = built.permission
     task.provider = built.provider

@@ -130,32 +130,28 @@ const style = c([
     fontWeight: '650',
   }),
   c('.dshpet-tabTools', { display: 'flex', alignItems: 'center', gap: '6px' }),
-  // —— 工具栏按钮：复刻官方 `.zGbnIq_secondaryButton`（36px 胶囊 secondary）——
-  // 值取自官方 ModelsSection `.secondaryButton`（见 docs/plugins/插件样式对照.done.md §4.4），
-  // 与 dsh-tauri-panel-scheduler 的 K.btn 几何一致；令牌驱动浅/深色自适应。
+  // —— 工具栏按钮：小型 secondary（与 .dshpet-cardAction 小号按钮一致的几何/令牌）——
+  // 官方 `.zGbnIq_secondaryButton`（36px 胶囊）在本工具栏过大会挤压页签行，故取
+  // 与卡片操作按钮同尺寸的小号 secondary（28px，radius 8px，12px/18px 字体），
+  // 仍走 `--dsw-*` 令牌使浅/深色自适应，并保留官方共用焦点环。
   c('.dshpet-toolBtn', {
+    flex: 'none',
     appearance: 'none',
-    boxSizing: 'border-box',
-    height: '36px',
-    font: 'inherit',
     cursor: 'pointer',
-    border: '.5px solid var(--dsw-alias-border-l3)',
-    borderRadius: '18px',
-    justifyContent: 'center',
+    padding: '5px 10px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-border-weak, rgba(127,127,127,0.2))',
+    background: 'transparent',
+    color: 'var(--dsw-alias-label-primary)',
+    fontSize: '12px',
+    lineHeight: '18px',
+    display: 'inline-flex',
     alignItems: 'center',
     gap: '4px',
-    padding: '0 14px',
-    fontSize: '14px',
-    lineHeight: '22px',
-    display: 'inline-flex',
     whiteSpace: 'nowrap',
-    color: 'var(--dsw-alias-label-primary)',
-    background: 'transparent',
   }, [
-    c('&:not(:disabled):hover', {
-      background: 'var(--dsw-alias-interactive-bg-hover-solid)',
-    }),
-    c('&:disabled', { opacity: '.4', cursor: 'default' }),
+    c('&:hover:not(:disabled)', { background: 'var(--dsw-alias-interactive-bg-hover)' }),
+    c('&:disabled', { opacity: '0.4', cursor: 'default' }),
     c('&:focus-visible', {
       boxShadow: '0 0 0 2px var(--dsw-alias-border-l3)',
       outline: 'none',

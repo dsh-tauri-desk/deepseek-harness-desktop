@@ -37,8 +37,7 @@ export function RunsTab({ t, runs, onDelete }: RunsTabProps): ReactElement {
               {run.error ? <p className={K.runError}>{run.error}</p> : null}
             </div>
             <div className={K.runMeta}>
-              <span className={K.chip} data-status={run.status}>{statusKey(t, run.status)}</span>
-              <span className={K.chip}>{run.trigger === 'manual' ? t('triggerManual') : t('triggerSchedule')}</span>
+              {run.status !== 'succeeded' && <span className={K.chip} data-status={run.status}>{statusKey(t, run.status)}</span>}
               <span className={K.runTime}>{formatLocalTime(run.startedAt) ?? ''}</span>
               <button type="button" className={K.runDelete} onClick={() => onDelete(run.id)} aria-label={t('deleteRun')}>{t('delete')}</button>
             </div>

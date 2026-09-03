@@ -275,6 +275,7 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
                   options={permissionOptions}
                   onSelect={id => setForm(state => ({ ...state, permission: id }))}
                 />
+                <div style={{ flex: 1 }} />
                 <ModelPicker
                   modelT={modelT}
                   models={options.models ?? []}

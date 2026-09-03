@@ -9,7 +9,7 @@ import type { ReactElement, ReactNode, SVGProps } from 'react'
  * License: MIT, © 2022 YANDEX LLC.
  */
 
-export type IconProps = SVGProps<SVGSVGElement>
+export type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
 /** 共享 16×16 描边外壳；`size` 控制渲染尺寸，其余 SVG 属性透传。 */
 function IconShell({ size = 16, children, ...rest }: IconProps & { children: ReactNode }): ReactElement {

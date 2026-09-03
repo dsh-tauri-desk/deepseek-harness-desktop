@@ -153,7 +153,7 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
               setMenuOpen(openState => !openState)
             }}
           >
-            <IconMore />
+            <IconMore size={12} />
           </button>
         )}
       />

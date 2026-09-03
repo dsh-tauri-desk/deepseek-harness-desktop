@@ -89,13 +89,25 @@ const styles = c([
   c(`.${K.textarea}`, { boxSizing: 'border-box', border: `.5px solid ${borderL4}`, width: '100%', height: 'auto', minHeight: '240px', font: 'inherit', background: layer1, color: primary, borderRadius: '8px', padding: '10px', paddingBottom: '46px', fontSize: '14px', lineHeight: '1.55', resize: 'vertical', outline: 'none' }),
   c(`.${K.textarea}:focus`, { borderColor: brand }),
   c(`.${K.textarea}::placeholder`, { color: dimmed }),
-
   // —— 官方控件复刻：iconButton ——
-  c(`.${K.iconButton}`, { boxSizing: 'border-box', width: '28px', height: '28px', color: tertiary, cursor: 'pointer', background: 'transparent', border: 'none', borderRadius: '6px', justifyContent: 'center', alignItems: 'center', display: 'inline-flex' }),
-  c(`.${K.iconButton}:hover:not(:disabled)`, { background: hover, color: primary }),
-  c(`.${K.iconButton}:disabled`, { cursor: 'default', opacity: '.4' }),
-  c(`.${K.iconButtonDanger}:hover:not(:disabled)`, { background: hoverDanger, color: error }),
   c(`.${K.iconButton}:focus-visible`, focusRing),
+  c(`.${K.iconButton}`, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '20px',
+    height: '20px',
+    padding: 0,
+    border: 'none',
+    borderRadius: '6px',
+    background: 'transparent',
+    color: 'var(--dsw-alias-label-secondary)',
+    cursor: 'pointer',
+    fontSize: '18px',
+    lineHeight: '1',
+  }, [
+    c('&:hover', { background: 'var(--dsw-alias-interactive-bg-hover)' }),
+  ]),
 
   // —— 官方控件复刻：36px 胶囊按钮（primary / secondary / danger）——
   c(`.${K.btn},.${K.btnPrimary},.${K.btnDanger}`, { boxSizing: 'border-box', height: '36px', font: 'inherit', cursor: 'pointer', border: 'none', borderRadius: '18px', justifyContent: 'center', alignItems: 'center', gap: '4px', padding: '0 14px', fontSize: '14px', lineHeight: '22px', display: 'inline-flex', whiteSpace: 'nowrap' }),
@@ -114,15 +126,15 @@ const styles = c([
   c(`.${K.inline}`, { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }),
   c(`.${K.inlineSelect}`, { flex: '1', minWidth: '120px' }),
   c(`.${K.inlineSelectAuto}`, { flex: 'none', width: 'auto', minWidth: '120px' }),
-  c(`.${K.composer}`, { position: 'absolute', left: '10px', bottom: '10px', display: 'flex', gap: '8px', alignItems: 'stretch' }),
-  c(`.${K.promptWrap}`, { position: 'relative' }),
+  c(`.${K.composer}`, { position: 'absolute', left: '10px', bottom: '10px', display: 'flex', gap: '8px', alignItems: 'center', right: '10px' }),
+  c(`.${K.promptWrap}`, { position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }),
   c(`.${K.selector}`, { background: modulePlatform, height: '36px', font: 'inherit', color: primary, cursor: 'pointer', border: 'none', borderRadius: '18px', alignItems: 'center', gap: '12px', padding: '0 14px', fontSize: '14px', lineHeight: '22px', display: 'inline-flex', whiteSpace: 'nowrap' }),
   c(`.${K.selector}:hover`, { background: hover }),
   c(`.${K.selectorChevron}`, { flex: 'none' }),
   c(`.${K.selectorEffort}`, { color: tertiary, fontSize: '12px', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }),
 
   // —— ModelPicker（照搬 dsh-automation create-modal ModelPicker 样式值）——
-  c(`.${K.modelSelect}`, { position: 'relative', zIndex: '1', minWidth: '0', flex: 'none' }),
+  c(`.${K.modelSelect}`, { position: 'relative', zIndex: '1', minWidth: '0', flex: 'none', height: '28px' }),
   c(`.${K.modelSelectOpen}`, { zIndex: '30' }),
   c(`.${K.modelTrigger}`, { display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0', maxWidth: '260px', height: '28px', padding: '0 4px 0 8px', border: '0', borderRadius: '24px', background: 'transparent', color: secondary, fontSize: '13px', fontWeight: '500', lineHeight: '20px', cursor: 'pointer' }),
   c(`.${K.modelTrigger}:hover`, { background: hover, color: primary }),
@@ -198,6 +210,7 @@ const styles = c([
   c(`.${K.recList}`, { display: 'flex', flexDirection: 'column', gap: '8px', margin: '0', padding: '0', listStyle: 'none' }),
   c(`.${K.recItem}`, { boxSizing: 'border-box', display: 'flex', alignItems: 'flex-start', gap: '10px', width: '100%', minWidth: '0', padding: '10px 12px', border: `1px solid ${border}`, borderRadius: '10px', background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '13px', lineHeight: '20px', textAlign: 'left', cursor: 'pointer' }),
   c(`.${K.recItem}:hover`, { background: hover }),
+
   c(`.${K.recIcon}`, { flex: 'none', display: 'inline-flex', marginTop: '2px', fontSize: '16px' }),
   c(`.${K.recBody}`, { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '0' }),
   c(`.${K.recName}`, { color: primary, fontSize: '13px', lineHeight: '18px', fontWeight: '500' }),

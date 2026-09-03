@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react'
 import { SCHEDULER_CLASSES as K, REFRESH_INTERVAL_MS } from '../constants'
 import { applyDeleteRun, refreshScheduler, useSchedulerState } from '../store'
 import { describeSchedule, formatRelative, isTaskPaused } from '../utils/schedule'
-import { IconChat, IconPlus, IconRefresh, IconSearch } from './icons'
+import { IconChat, IconPlus, IconSearch } from './icons'
 import { Recommendations } from './recommendations'
 import { RunsTab } from './runs-tab'
 import { TaskCard } from './task-card'
@@ -83,9 +83,6 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
             />
           </div>
           <div className={K.toolbarSpacer} />
-          <button className={K.iconButton} type="button" aria-label={t('refresh')} title={t('refresh')} onClick={() => void refreshScheduler(true)}>
-            <IconRefresh />
-          </button>
           <button className={K.btn} type="button" onClick={onViaChat}>
             <IconChat />
             {t('viaChat')}

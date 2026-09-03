@@ -741,15 +741,21 @@ mod tests {
 
     #[test]
     fn legacy_fallback_target_detection_is_path_component_aware() {
-        assert!(is_legacy_profile_fallback_target(Path::new(
-            r"C:\Users\test\.dsh\profiles\web\.dsh-module-fallback\node_modules\anymatch",
-        )));
-        assert!(!is_legacy_profile_fallback_target(Path::new(
-            r"C:\Users\test\.dsh\profiles\web\node_modules\anymatch",
-        )));
-        assert!(!is_legacy_profile_fallback_target(Path::new(
-            r"C:\Users\test\.dsh\profiles\web\.dsh-module-fallback-old\anymatch",
-        )));
+        let base = Path::new("home").join("test").join(".dsh").join("profiles").join("web");
+        assert!(is_legacy_profile_fallback_target(
+            &base
+                .join(".dsh-module-fallback")
+                .join("node_modules")
+                .join("anymatch"),
+        ));
+        assert!(!is_legacy_profile_fallback_target(
+            &base.join("node_modules").join("anymatch"),
+        ));
+        assert!(!is_legacy_profile_fallback_target(
+            &base
+                .join(".dsh-module-fallback-old")
+                .join("anymatch"),
+        ));
     }
 
     #[tokio::test]

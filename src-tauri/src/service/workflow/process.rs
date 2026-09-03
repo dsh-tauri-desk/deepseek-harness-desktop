@@ -311,6 +311,21 @@ fn command_line_has_argument(cmdline: &str, argument: &str) -> bool {
     })
 }
 
+/// 判断一个参数是否紧跟在另一个完整参数之后。
+#[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
+fn command_line_has_argument_after(cmdline: &str, preceding: &str, argument: &str) -> bool {
+    if preceding.is_empty() || argument.is_empty() {
+        return false;
+    }
+
+    cmdline.match_indices(preceding).any(|(start, matched)| {
+        let end = start + matched.len();
+        let rest = cmdline[end..].trim_start_matches(char::is_whitespace);
+        rest.strip_prefix(argument)
+            .is_some_and(|tail| tail.chars().next().map_or(true, char::is_whitespace))
+    })
+}
+
 /// 判断命令行是否为「从本应用 dsh 安装目录启动的 Harness 服务」。
 ///
 /// 除入口路径外同时核对桌面端服务启动参数，避免清扫时误伤用户并行执行的
@@ -318,8 +333,8 @@ fn command_line_has_argument(cmdline: &str, argument: &str) -> bool {
 #[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
 fn is_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
     command_line_has_argument(cmdline, dsh_bin)
-        && command_line_has_argument(cmdline, "--host")
-        && command_line_has_argument(cmdline, "127.0.0.1")
+        && !command_line_has_argument_after(cmdline, dsh_bin, "plugin")
+        && command_line_has_argument(cmdline, "--profile")
         && command_line_has_argument(cmdline, "--port")
 }
 
@@ -353,11 +368,11 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
         };
         // 进程名过滤保证 PowerShell 自身（其命令行同样包含该路径）不被误杀；
         // 路径中的单引号按 PS 字符串字面量规则转义，避免用户目录含 `'` 时语法错误。
-        // 与 is_harness_command_line 一致，额外要求服务参数（--host 127.0.0.1
-        // 与 --port），避免误伤用户并行执行的 `dsh plugin` 等短命令。
+        // 与 is_harness_command_line 一致，额外要求服务参数（--profile 与
+        // --port），兼容已移除的 --host 参数，同时避免误伤 `dsh plugin` 等短命令。
         let escaped = dsh_bin.replace('\'', "''");
         let script = format!(
-            "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object {{ $_.CommandLine -like '*{escaped}*' -and $_.CommandLine -like '*--host 127.0.0.1*' -and $_.CommandLine -like '*--port*' }} | Select-Object -ExpandProperty ProcessId"
+            "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object {{ $_.CommandLine -like '*{escaped}*' -and $_.CommandLine -notlike '*{escaped} plugin *' -and $_.CommandLine -like '*--profile*' -and $_.CommandLine -like '*--port*' }} | Select-Object -ExpandProperty ProcessId"
         );
         let Ok(output) = Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -628,7 +643,7 @@ mod tests {
     fn harness_cmdline_matches_service_arguments() {
         let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
         assert!(is_harness_command_line(
-            &format!("node {bin} --profile web --host 127.0.0.1 --port 3083"),
+            &format!("node {bin} --profile web --port 3083"),
             bin
         ));
     }
@@ -636,8 +651,7 @@ mod tests {
     #[test]
     fn harness_cmdline_matches_macos_app_data_path_with_spaces() {
         let bin = "/Users/simon/Library/Application Support/io.github.hairyf.deepseek-harness-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
-        let cmdline =
-            format!("/opt/homebrew/bin/node {bin} --profile web --host 127.0.0.1 --port 3084");
+        let cmdline = format!("/opt/homebrew/bin/node {bin} --profile web --port 3084");
         assert!(is_harness_command_line(&cmdline, bin));
     }
 
@@ -656,7 +670,7 @@ mod tests {
         ));
         // 完整路径只是另一参数的前缀时不能命中
         assert!(!is_harness_command_line(
-            &format!("node {bin}.backup --profile web --host 127.0.0.1 --port 3083"),
+            &format!("node {bin}.backup --profile web --port 3083"),
             bin
         ));
         // 同一 dsh 入口执行插件命令时不是 Harness 服务，不能清扫
@@ -664,9 +678,19 @@ mod tests {
             &format!("node {bin} plugin list"),
             bin
         ));
+        // 即使插件转发了服务参数，也不能被清扫
+        assert!(!is_harness_command_line(
+            &format!("node {bin} plugin --profile web add --port 3083"),
+            bin
+        ));
+        // 名为 plugin 的 profile 仍是合法的 Harness 服务
+        assert!(is_harness_command_line(
+            &format!("node {bin} --profile plugin --port 3083"),
+            bin
+        ));
         // 路径作为另一个参数的后缀时不能命中
         assert!(!is_harness_command_line(
-            &format!("node prefix{bin} --host 127.0.0.1 --port 3083"),
+            &format!("node prefix{bin} --profile web --port 3083"),
             bin
         ));
         // 空命令行

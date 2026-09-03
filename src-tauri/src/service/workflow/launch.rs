@@ -31,17 +31,16 @@ use super::utils::{is_port_in_use, rotate_service_log, spawn_output_readers};
 use super::win_inspector;
 
 #[cfg(windows)]
-type SpawnResult = std::io::Result<(
-    Option<std::fs::File>,
-    Option<std::fs::File>,
-    u32,
-)>;
+type SpawnResult = std::io::Result<(Option<std::fs::File>, Option<std::fs::File>, u32)>;
 #[cfg(unix)]
-type SpawnResult = Result<(
-    Option<std::process::ChildStdout>,
-    Option<std::process::ChildStderr>,
-    u32,
-), String>;
+type SpawnResult = Result<
+    (
+        Option<std::process::ChildStdout>,
+        Option<std::process::ChildStderr>,
+        u32,
+    ),
+    String,
+>;
 
 /// 端口释放等待上限：刚结束/清扫过上个会话的残留 dsh 进程后，TCP 端口释放
 /// 存在短暂滞后（taskkill 返回 ≠ 端口已可复用）。等待窗口内端口回落为空闲则
@@ -547,8 +546,6 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 dsh_binary_path.as_os_str().to_os_string(),
                 OsString::from("--profile"),
                 OsString::from(active_profile.as_str()),
-                OsString::from("--host"),
-                OsString::from("127.0.0.1"),
                 OsString::from("--port"),
                 OsString::from(setting.port.to_string()),
             ];
@@ -663,8 +660,6 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             cmd.arg(&dsh_binary_path)
                 .arg("--profile")
                 .arg(active_profile.as_str())
-                .arg("--host")
-                .arg("127.0.0.1")
                 .arg("--port")
                 .arg(&setting.port.to_string());
             if no_open {
@@ -711,8 +706,6 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                         cmd.arg(&dsh_binary_path)
                                             .arg("--profile")
                                             .arg(active_profile.as_str())
-                                            .arg("--host")
-                                            .arg("127.0.0.1")
                                             .arg("--port")
                                             .arg(setting.port.to_string());
                                         if no_open {

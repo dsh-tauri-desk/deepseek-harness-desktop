@@ -15,6 +15,7 @@ import {
   showPet,
 } from '../service/pet'
 import { beginPetStatusFetch, commitPetStatusFetch, getPetUiSnapshot, setPetStatus, subscribePetUi } from '../store'
+import { IconImport, IconPlus } from './icons'
 
 interface PetCardProps {
   actionLabel: string
@@ -286,7 +287,7 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
             ? (
                 <>
                   <button type="button" className="dshpet-toolBtn" disabled={busy} onClick={() => { void createPet() }}>
-                    <span aria-hidden="true">＋</span>
+                    <IconPlus />
                     {text('create')}
                   </button>
                   <button type="button" className="dshpet-toolBtn" disabled={busy} onClick={() => { void toggleVisibility() }}>
@@ -296,7 +297,7 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
               )
             : (
                 <label className="dshpet-toolBtn" aria-disabled={busy}>
-                  <span aria-hidden="true">↓</span>
+                  <IconImport />
                   {text('import')}
                   <input
                     type="file"

@@ -465,9 +465,6 @@ importers:
 
   packages/dsh-tauri:
     dependencies:
-      date-fns:
-        specifier: catalog:utils
-        version: 4.4.0
       hookable:
         specifier: catalog:utils
         version: 6.1.1
@@ -493,6 +490,9 @@ importers:
       css-render:
         specifier: catalog:ui
         version: 0.15.14
+      date-fns:
+        specifier: catalog:utils
+        version: 4.4.0
       dsh-tauri-tsdown:
         specifier: workspace:*
         version: link:../dsh-tauri-tsdown

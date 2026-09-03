@@ -45,7 +45,7 @@ export const dshExternal = [
  * "missed the module table"（build-time externals drift）。
  * 因此 client entry 必须把它们内联；host entry 保持 external（Node 运行时按
  * 插件 dependencies 解析）。子路径（unstorage/drivers/*）一并覆盖。
- * date-fns 是 client 侧时间格式化依赖（dsh-tauri-panel-scheduler），同样内联。
+ * date-fns 仅作为构建期 devDependency，并按实际使用导出 tree-shake 后内联。
  */
 const dshClientInline = [/^(unstorage|hookable|ofetch|pathe|date-fns)([/-].*)?$/]
 

@@ -27,10 +27,7 @@ export type { ClientContext } from './types'
 export { compat, resolveStartSession } from './utils/compat'
 export { CssRender } from 'css-render'
 
-/**
- * date-fns（客户端时间格式化）由 dsh-tauri 承载并内联进其 client bundle；
- * 插件 client 禁止直接 import 'date-fns'，一律从本 barrel（`dsh-tauri/client`）导入。
- */
+/** 仅构建期 tree-shake 内联所用导出；date-fns 不进入 release production 资源闭包。 */
 export { differenceInDays, differenceInHours, differenceInMinutes, format } from 'date-fns'
 
 export { createHooks } from 'hookable'

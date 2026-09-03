@@ -24,9 +24,6 @@ import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import process from 'node:process'
-import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import { join } from 'pathe'
 import { RUNS_HISTORY_LIMIT } from '../constants/index.js'
 import { loadState, saveRuns, withStateLock } from '../storage/index.js'
@@ -39,6 +36,24 @@ export interface ExecuteOutcome {
   error?: string
   /** 实际触发的模型选择（调试/展示用）。 */
   model?: string
+}
+
+/** 宿主 loader 的最小接口：从 DSH 自身模块根解析核心包，而非插件资源目录。 */
+interface PlatformModuleLoader {
+  import: (name: string) => Promise<unknown>
+  unwrapExports: (exports: unknown) => unknown
+}
+
+interface SchedulerRuntimeModules {
+  installModelSelection: (agentCtx: unknown, selection: {
+    current: ModelSelection | undefined
+    assembled: ModelSelection | undefined
+  }) => () => void
+  createUserMessage: (value: {
+    content: readonly { type: 'text', text: string }[]
+    source: unknown
+  }) => unknown
+  setApprovalPolicy: (session: unknown, policy: 'ask' | 'never') => void
 }
 
 interface SessionEventLike {
@@ -70,6 +85,23 @@ const UNATTENDED_TOOL_ALLOWLIST = new Set([
 ])
 
 const CANCEL_CONVERGENCE_TIMEOUT_MS = 10_000
+
+/**
+ * 从平台 loader 加载 DSH-owned 核心模块。内置插件位于独立 resources/node_modules，
+ * 原生 ESM 裸导入会错误地从该资源树查找这些包；loader 才持有 DSH 安装目录的解析基址。
+ */
+export async function loadSchedulerRuntimeModules(loader: PlatformModuleLoader): Promise<SchedulerRuntimeModules> {
+  const [agent, llm, approval] = await Promise.all([
+    loader.import('@deepseek-ai/dsh-agent'),
+    loader.import('@deepseek-ai/dsh-llm'),
+    loader.import('@deepseek-ai/dsh-user-approval'),
+  ])
+  return {
+    installModelSelection: (loader.unwrapExports(agent) as Pick<SchedulerRuntimeModules, 'installModelSelection'>).installModelSelection,
+    createUserMessage: (loader.unwrapExports(llm) as Pick<SchedulerRuntimeModules, 'createUserMessage'>).createUserMessage,
+    setApprovalPolicy: (loader.unwrapExports(approval) as Pick<SchedulerRuntimeModules, 'setApprovalPolicy'>).setApprovalPolicy,
+  }
+}
 
 /** 对不保证及时响应 AbortSignal 的宿主任务设置第二道退出上限（对齐 MichengAI）。 */
 export function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -105,6 +137,7 @@ export function applyUnattendedPermission(
   presets: PermissionPresetService,
   session: unknown,
   permission: string | undefined,
+  setApprovalPolicy: SchedulerRuntimeModules['setApprovalPolicy'],
 ): void {
   presets.set(session, permission ?? presets.defaultPreset)
   setApprovalPolicy(session, 'never')
@@ -181,6 +214,10 @@ export async function executeTask(
     })
 
   try {
+    const runtime = await loadSchedulerRuntimeModules(
+      (ctx as HostContext & { loader: PlatformModuleLoader }).loader,
+    )
+
     // 2. 解析工作区 CWD
     let cwd: string
     let workspace: { attachSession?: (id: unknown) => Promise<unknown> } | undefined
@@ -236,11 +273,16 @@ export async function executeTask(
         agentOptions: selection ? { provider: selection.provider, model: selection.model } : {},
         setup: async (agentCtx: any) => {
           await (ctx.agentPresets as { mount?: (agentCtx: unknown, presetId: string) => Promise<unknown> } | undefined)?.mount?.(agentCtx, agentPreset)
-          installModelSelection(agentCtx, { current: selection, assembled: undefined })
+          runtime.installModelSelection(agentCtx, { current: selection, assembled: undefined })
           const agent = agentCtx.agent
           if (!agent)
             throw new Error('scheduler setup has no scoped Agent')
-          applyUnattendedPermission(ctx.permissionPresets as PermissionPresetService, agent.session, task.permission)
+          applyUnattendedPermission(
+            ctx.permissionPresets as PermissionPresetService,
+            agent.session,
+            task.permission,
+            runtime.setApprovalPolicy,
+          )
           agentCtx.tools?.guard?.((exec: ToolExecution) => unattendedToolGuardReason(exec.name, exec.arguments))
         },
       })
@@ -260,7 +302,7 @@ export async function executeTask(
       }
 
       const firstSeq = handle.agent.session.seq
-      handle.agent.followup(createUserMessage({
+      handle.agent.followup(runtime.createUserMessage({
         content: [{ type: 'text', text: task.prompt }],
         source: { kind: 'scheduler', taskId: task.id, runId, scheduledFor },
       }))

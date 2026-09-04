@@ -35,6 +35,9 @@ pub const PET_SPRITE_BASE_WIDTH: f64 = 220.0;
 const PET_WINDOW_PAD_X: f64 = 32.0;
 const PET_WINDOW_TOP_PAD: f64 = 72.0;
 const PET_WINDOW_BOTTOM_PAD: f64 = 10.0;
+/// 顶栏 Toast 区的最小窗口宽度（逻辑像素）：桌宠较小时仍保证气泡可读，
+/// 与 pet WebView 的 PET_BUBBLE_MIN_WIDTH 保持一致。
+const PET_WINDOW_MIN_WIDTH: f64 = 420.0;
 /// 内置宠物的 id（与 bridge 的 DEFAULT_ACTIVE_PET_ID 一致）；用于判断资源画布比例。
 const PET_BUILTIN_ID: &str = "maid-deepseek-whale";
 /// 内置 WebM 画布 16:9（高/宽 = 9/16），与 pet WebView 的内置画布比例保持一致。
@@ -142,7 +145,7 @@ pub fn pet_window_aspect<R: Runtime>(app: &AppHandle<R>) -> f64 {
 pub fn pet_window_logical_size(percent: f64, aspect: f64) -> (f64, f64) {
     let scale = percent / 100.0;
     (
-        (PET_SPRITE_BASE_WIDTH * scale) + PET_WINDOW_PAD_X,
+        ((PET_SPRITE_BASE_WIDTH * scale) + PET_WINDOW_PAD_X).max(PET_WINDOW_MIN_WIDTH),
         (PET_SPRITE_BASE_WIDTH * aspect * scale) + PET_WINDOW_TOP_PAD + PET_WINDOW_BOTTOM_PAD,
     )
 }
@@ -450,7 +453,11 @@ mod tests {
         for percent in [50.0, 100.0, 200.0] {
             let (width, height) = pet_window_logical_size(percent, PET_CUSTOM_ASPECT);
             let scale = percent / 100.0;
-            assert_eq!(width, PET_SPRITE_BASE_WIDTH * scale + PET_WINDOW_PAD_X);
+            // 大比例时窗口跟随宠物宽度，小比例时兜底到 Toast 区最小宽度。
+            assert_eq!(
+                width,
+                (PET_SPRITE_BASE_WIDTH * scale + PET_WINDOW_PAD_X).max(PET_WINDOW_MIN_WIDTH)
+            );
             assert_eq!(height, PET_SPRITE_BASE_WIDTH * PET_CUSTOM_ASPECT * scale + 82.0);
         }
         // 内置鲸鱼为 16:9 画布，窗口高度远小于 8x11 图集，避免窗口过高产生大片透明区。

@@ -7,14 +7,14 @@
 //! 错误遵循仓库约定：`Result<_, String>`，Err 以大写协议前缀开头（如
 //! `PET_SIZE_OUT_OF_RANGE:`）。
 //!
-//! 实时性：一切会改变状态（开关/选择/大小）的命令都通过 `pet://status` 事件
-//! 把最新 PetStatus 推给 pet 窗口——设置页拖动条拖动中实时调整宠物大小就是
-//! 走这条通道；pet 窗口的 get_pet_status 轮询仅作兜底。
+//! 实时性：一切会改变设置状态（开关/选择/大小）的命令都通过 `pet://status`
+//! 事件把最新设置推给 pet 窗口；会话 CRUD 则通过独立的 `session:*` 事件直接转发。
 
 use crate::config;
 use crate::desktop::pet as pet_window;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -33,10 +33,6 @@ pub const PET_SIZE_MAX: f64 = pet_window::PET_SIZE_MAX_PERCENT;
 
 /// 缺省选择对外统一呈现的精确内置宠物 id。
 pub const DEFAULT_ACTIVE_PET_ID: &str = "maid-deepseek-whale";
-/// 气泡文本最大字符数，限制跨 WebView 事件负载并避免异常大气泡遮挡屏幕。
-pub const PET_BUBBLE_MAX_CHARS: usize = 280;
-/// 会话实时描述最大字符数（思考/工具/需决策…），同气泡上限，防止事件负载膨胀。
-pub const PET_DESCRIPTION_MAX_CHARS: usize = 280;
 /// 导入桌宠资源包的压缩大小上限（32 MiB）。
 const PET_PACKAGE_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// 防止 zip 炸弹的条目数与解压后总大小上限。
@@ -51,7 +47,7 @@ const PET_SPRITE_VERSION: u8 = 2;
 const PET_SPRITE_COLUMNS: u8 = 8;
 const PET_SPRITE_ROWS: u8 = 11;
 
-/// 状态变化推送给 pet 窗口的事件名（实时同步大小/选择/动作；轮询兜底）。
+/// 设置变化推送给 pet 窗口的事件名；会话生命周期使用 `session:*` 事件。
 pub const PET_STATUS_EVENT: &str = "pet://status";
 
 #[cfg(target_os = "windows")]
@@ -65,6 +61,7 @@ const BUILTIN_ASSET_NAMES: &[(&str, &str)] = &[
     ("idle", "maid-idle.webm"),
     ("turn", "maid-turn.webm"),
     ("move", "maid-move.webm"),
+    ("drag", "maid-drag.webm"),
     ("wave", "maid-wave.webm"),
     ("waiting", "maid-waiting.webm"),
     ("running", "maid-running.webm"),
@@ -79,72 +76,15 @@ pub struct BuiltinPetAssets {
     pub assets: std::collections::BTreeMap<String, String>,
 }
 
-/// 桌宠动作白名单；连字符命名与视频资源和插件协议保持一致。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PetActivity {
-    #[default]
-    Idle,
-    Turn,
-    MovingLeft,
-    MovingRight,
-    Waving,
-    Waiting,
-    Running,
-    Review,
-    Failed,
-}
-
-impl PetActivity {
-    /// 将 iframe 传入的不可信字符串严格收敛到动作白名单。
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "idle" => Some(Self::Idle),
-            "turn" => Some(Self::Turn),
-            "moving-left" => Some(Self::MovingLeft),
-            "moving-right" => Some(Self::MovingRight),
-            "waving" => Some(Self::Waving),
-            "waiting" => Some(Self::Waiting),
-            "running" => Some(Self::Running),
-            "review" => Some(Self::Review),
-            "failed" => Some(Self::Failed),
-            _ => None,
-        }
-    }
-
-    fn is_session_activity(self) -> bool {
-        matches!(self, Self::Idle | Self::Waiting | Self::Running | Self::Review | Self::Failed)
-    }
-}
-
-/// 只驻留当前进程的可见性与动作；重启后恢复显示、idle 且无气泡。
+/// 只驻留当前进程的可见性；会话动作和 Toast 完全由 pet WebView 管理。
 #[derive(Debug, Clone)]
 struct PetTransientState {
     visible: bool,
-    activity: PetActivity,
-    bubble: Option<String>,
-    sessions: Vec<PetSessionStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PetSessionStatus {
-    pub id: String,
-    pub activity: PetActivity,
-    /// 固定标题（会话名），toast title 与桌宠气泡共用。
-    pub bubble: Option<String>,
-    /// 实时描述（思考 / 工具 + 工具名 / 需决策…），toast description 原地刷新。
-    #[serde(default)]
-    pub description: Option<String>,
 }
 
 impl Default for PetTransientState {
     fn default() -> Self {
-        Self {
-            visible: true,
-            activity: PetActivity::default(),
-            bubble: None,
-            sessions: Vec::new(),
-        }
+        Self { visible: true }
     }
 }
 
@@ -164,12 +104,6 @@ pub struct PetStatus {
     pub active_pet: String,
     /// 宠物大小百分比（50–200，100 = 精灵图原始尺寸）；None = 未设置（默认 100）。
     pub pet_size: Option<f64>,
-    /// 当前瞬态动作。
-    pub activity: PetActivity,
-    /// 当前瞬态气泡；None 表示不展示。
-    pub bubble: Option<String>,
-    #[serde(default)]
-    pub sessions: Vec<PetSessionStatus>,
 }
 
 /// 文件系统宠物的数据来源。
@@ -247,37 +181,6 @@ fn normalize_active_pet(active_pet: Option<&str>) -> String {
     }
 }
 
-/// 校验并归一化一段可选文本：纯空白视为清空，其余保留原始排版，超长报错。
-fn normalize_optional_text(
-    value: Option<String>,
-    max_chars: usize,
-    too_long_prefix: &str,
-) -> Result<Option<String>, String> {
-    let value = value.and_then(|text| {
-        if text.trim().is_empty() {
-            None
-        } else {
-            Some(text)
-        }
-    });
-    if value.as_deref().map(|text| text.chars().count()).unwrap_or(0) > max_chars {
-        return Err(format!(
-            "{too_long_prefix}: text must not exceed {max_chars} characters"
-        ));
-    }
-    Ok(value)
-}
-
-/// 校验并归一化气泡：纯空白视为清空，其余保留原始排版。
-fn normalize_bubble(bubble: Option<String>) -> Result<Option<String>, String> {
-    normalize_optional_text(bubble, PET_BUBBLE_MAX_CHARS, "PET_BUBBLE_TOO_LONG:")
-}
-
-/// 校验并归一化实时描述：规则同气泡，但错误前缀区分（PET_DESCRIPTION_TOO_LONG:）。
-fn normalize_description(description: Option<String>) -> Result<Option<String>, String> {
-    normalize_optional_text(description, PET_DESCRIPTION_MAX_CHARS, "PET_DESCRIPTION_TOO_LONG:")
-}
-
 /// 将持久设置和进程内瞬态状态合并为唯一的对外状态。
 fn status_from_setting(setting: &config::Setting) -> PetStatus {
     let transient = transient_state()
@@ -289,9 +192,6 @@ fn status_from_setting(setting: &config::Setting) -> PetStatus {
         visible: setting.pet_enabled && transient.visible,
         active_pet: normalize_active_pet(setting.active_pet.as_deref()),
         pet_size: setting.pet_size,
-        activity: transient.activity,
-        bubble: transient.bubble,
-        sessions: transient.sessions,
     }
 }
 
@@ -359,82 +259,42 @@ pub fn set_pet_size(app: AppHandle, size: f64) -> Result<PetStatus, String> {
     Ok(status)
 }
 
-/// 更新瞬态动作与气泡；动作严格校验白名单，空气泡归一化为 None。
+/// 将 DSH 会话原始数据推送到独立桌宠 WebView，不在桌面端构造宠物专用结构。
 #[tauri::command]
-pub fn set_pet_activity(
+pub fn push_pet_session(
     app: AppHandle,
-    activity: String,
-    bubble: Option<String>,
-) -> Result<PetStatus, String> {
-    let activity = PetActivity::parse(activity.trim()).ok_or_else(|| {
-        "PET_ACTIVITY_INVALID: activity must be idle/turn/moving-left/moving-right/waving/waiting/running/review/failed".to_string()
-    })?;
-    let bubble = normalize_bubble(bubble)?;
-    {
-        let mut transient = transient_state()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        transient.activity = activity;
-        transient.bubble = bubble;
-        transient.sessions.clear();
+    action: String,
+    session: Value,
+) -> Result<(), String> {
+    let action = action.trim();
+    if !matches!(action, "create" | "update" | "remove") {
+        return Err("PET_SESSION_ACTION_INVALID: action must be create/update/remove".to_string());
     }
-    let status = status_from_setting(&config::get_store_dat_setting(&app));
-    emit_pet_status(&app, &status);
-    Ok(status)
-}
-
-/// 更新完整会话快照。会话气泡是事件语义的输入，重复快照不会由 Rust 追加队列；
-/// pet WebView 按稳定 session id 精确创建/关闭 Toast。
-#[tauri::command]
-pub fn set_pet_sessions(
-    app: AppHandle,
-    sessions: Vec<PetSessionStatus>,
-) -> Result<PetStatus, String> {
-    if sessions.len() > 128 {
-        return Err("PET_SESSIONS_TOO_MANY: sessions must not exceed 128 entries".to_string());
-    }
-    let mut seen = HashSet::new();
-    let mut normalized = Vec::with_capacity(sessions.len());
-    for mut session in sessions {
-        session.id = session.id.trim().to_string();
-        if session.id.is_empty() || session.id.len() > 256 || !seen.insert(session.id.clone()) {
-            return Err("PET_SESSION_ID_INVALID: session ids must be unique, non-empty, and at most 256 bytes".to_string());
-        }
-        if !session.activity.is_session_activity() {
-            return Err("PET_SESSION_ACTIVITY_INVALID: session activity must be idle/waiting/running/review/failed".to_string());
-        }
-        session.bubble = normalize_bubble(session.bubble)?;
-        session.description = normalize_description(session.description)?;
-        normalized.push(session);
-    }
-    let selected = normalized
-        .iter()
-        .enumerate()
-        .max_by_key(|(index, session)| {
-            let rank = match session.activity {
-                PetActivity::Failed => 5,
-                PetActivity::Review => 4,
-                PetActivity::Running => 3,
-                PetActivity::Waiting => 2,
-                PetActivity::Idle => 0,
-                _ => unreachable!("session activity was validated above"),
-            };
-            (rank, std::cmp::Reverse(*index))
-        })
-        .map(|(_, session)| session)
-        .cloned();
-    {
-        let mut transient = transient_state().lock().unwrap_or_else(|error| error.into_inner());
-        transient.sessions = normalized;
-        transient.activity = selected.as_ref().map(|session| session.activity).unwrap_or(PetActivity::Idle);
-        transient.bubble = selected.and_then(|session| session.bubble);
-    }
-    let status = status_from_setting(&config::get_store_dat_setting(&app));
-    emit_pet_status(&app, &status);
-    Ok(status)
+    let id = session
+        .get("id")
+        .or_else(|| session.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "PET_SESSION_ID_INVALID: raw session must include id".to_string())?;
+    let event = match action {
+        "create" => "session:create",
+        "update" => "session:update",
+        "remove" => "session:remove",
+        _ => unreachable!("session action was validated above"),
+    };
+    app.emit_to(
+        pet_window::PET_WINDOW_LABEL,
+        event,
+        session,
+    )
+    .map_err(|error| format!("PET_SESSION_PUSH_FAILED: failed to emit session {id}: {error}"))
 }
 
 /// 按物理像素增量移动桌宠窗口，限制在可见显示器并保存最终位置。
+///
+/// 缩放（`pet://status` 收到新 pet_size）后由 pet WebView 调用 `move_pet_window(0, 0)`
+/// 把放大后的窗口夹回可见屏幕，避免右侧/底部被推出屏幕。
 #[tauri::command]
 pub fn move_pet_window(app: AppHandle, delta_x: i32, delta_y: i32) -> Result<(), String> {
     pet_window::move_pet_window(&app, delta_x, delta_y)
@@ -1279,59 +1139,6 @@ mod tests {
                 "旧版或非法 id {legacy_or_invalid} 应回落内置宠物"
             );
         }
-    }
-
-    #[test]
-    fn pet_activity_accepts_only_protocol_whitelist() {
-        for activity in [
-            "idle",
-            "turn",
-            "moving-left",
-            "moving-right",
-            "waving",
-            "waiting",
-            "running",
-            "review",
-            "failed",
-        ] {
-            assert!(PetActivity::parse(activity).is_some(), "应接受 {activity}");
-        }
-        for activity in ["move", "MovingLeft", "idle ", "success", ""] {
-            assert!(
-                PetActivity::parse(activity).is_none(),
-                "不应接受 {activity}"
-            );
-        }
-    }
-
-    #[test]
-    fn pet_activity_serializes_with_kebab_case() {
-        assert_eq!(
-            serde_json::to_string(&PetActivity::MovingLeft).unwrap(),
-            "\"moving-left\""
-        );
-        assert_eq!(
-            serde_json::to_string(&PetActivity::MovingRight).unwrap(),
-            "\"moving-right\""
-        );
-    }
-
-    #[test]
-    fn bubble_validation_counts_unicode_characters() {
-        assert_eq!(normalize_bubble(Some("  ".to_string())).unwrap(), None);
-        let max = "鲸".repeat(PET_BUBBLE_MAX_CHARS);
-        assert_eq!(normalize_bubble(Some(max.clone())).unwrap(), Some(max));
-        let error = normalize_bubble(Some("鲸".repeat(PET_BUBBLE_MAX_CHARS + 1))).unwrap_err();
-        assert!(error.starts_with("PET_BUBBLE_TOO_LONG:"));
-    }
-
-    #[test]
-    fn description_validation_counts_unicode_and_prefixes_error() {
-        assert_eq!(normalize_description(Some("  ".to_string())).unwrap(), None);
-        let max = "思".repeat(PET_DESCRIPTION_MAX_CHARS);
-        assert_eq!(normalize_description(Some(max.clone())).unwrap(), Some(max));
-        let error = normalize_description(Some("思".repeat(PET_DESCRIPTION_MAX_CHARS + 1))).unwrap_err();
-        assert!(error.starts_with("PET_DESCRIPTION_TOO_LONG:"));
     }
 
     #[test]

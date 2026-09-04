@@ -18,7 +18,7 @@ import type { ClientContext } from 'dsh-tauri/client'
 import { PET_CLIENT_PLUGIN, PET_STYLES_EFFECT } from './constants'
 import { installLocale } from './locales'
 import { installPetIconPatch, registerPetPrefill, registerPetSection } from './register/pet'
-import { installPetActivity } from './service/activity'
+import { installPetSessionForwarder } from './service/activity'
 import { mountPetStyles } from './styles'
 
 /** 插件显示名（诊断元数据）。 */
@@ -39,5 +39,5 @@ export function apply(ctx: ClientContext): void {
   registerPetSection(ctx)
   installPetIconPatch(ctx)
   registerPetPrefill(ctx)
-  installPetActivity(ctx)
+  installPetSessionForwarder(ctx)
 }

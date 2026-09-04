@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react'
+import type { ToastUpdateEvent } from '@/utils/toast'
+import { useEventBus } from '@hairy/react-lib'
 import { Toast } from '@heroui/react'
+import { useState } from 'react'
 import { If } from 'react-if-lite'
 import { placements, queues } from '@/utils/toast'
 
@@ -13,6 +16,18 @@ interface ToastProviderProps {
  * 自定义渲染分支，仍复用这里的 queues 与 src/utils/toast.ts API。
  */
 export function ToastProvider(props: ToastProviderProps) {
+  const [updates, setUpdates] = useState(() => new Map<string, ToastUpdateEvent['options']>())
+
+  useEventBus<ToastUpdateEvent>('toast.update').on((event) => {
+    if (event === undefined || typeof event.key !== 'string')
+      return
+    setUpdates((current) => {
+      const next = new Map(current)
+      next.set(event.key, { ...(current.get(event.key) ?? {}), ...event.options })
+      return next
+    })
+  })
+
   return (
     <>
       {placements.map(placement => (
@@ -23,7 +38,7 @@ export function ToastProvider(props: ToastProviderProps) {
         >
           {props.hideCloseButton
             ? ({ toast: item }) => {
-                const content = item.content
+                const content = { ...item.content, ...updates.get(item.key) }
                 return (
                   <Toast toast={item} variant={content?.variant}>
                     <Toast.Content>

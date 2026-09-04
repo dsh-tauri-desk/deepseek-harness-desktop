@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@config "../../tailwind.config.js";
+@import "@heroui/styles";
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    background: transparent;
+  }
+
+  body {
+    overflow: hidden;
+  }
+}

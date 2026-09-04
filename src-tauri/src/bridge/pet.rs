@@ -17,11 +17,14 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{
+    http::{header::CONTENT_LENGTH, Method, Request, Response, StatusCode},
+    AppHandle, Emitter, Manager,
+};
 use zip::ZipArchive;
 
 /// 宠物大小百分比合法区间（精灵图缩放 50%–200%，与插件设置页滑条一致）。
@@ -32,6 +35,8 @@ pub const PET_SIZE_MAX: f64 = pet_window::PET_SIZE_MAX_PERCENT;
 pub const DEFAULT_ACTIVE_PET_ID: &str = "maid-deepseek-whale";
 /// 气泡文本最大字符数，限制跨 WebView 事件负载并避免异常大气泡遮挡屏幕。
 pub const PET_BUBBLE_MAX_CHARS: usize = 280;
+/// 会话实时描述最大字符数（思考/工具/需决策…），同气泡上限，防止事件负载膨胀。
+pub const PET_DESCRIPTION_MAX_CHARS: usize = 280;
 /// 导入桌宠资源包的压缩大小上限（32 MiB）。
 const PET_PACKAGE_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// 防止 zip 炸弹的条目数与解压后总大小上限。
@@ -48,6 +53,31 @@ const PET_SPRITE_ROWS: u8 = 11;
 
 /// 状态变化推送给 pet 窗口的事件名（实时同步大小/选择/动作；轮询兜底）。
 pub const PET_STATUS_EVENT: &str = "pet://status";
+
+#[cfg(target_os = "windows")]
+const BUILTIN_ASSET_ORIGIN: &str = "http://dsh-pet.localhost";
+#[cfg(not(target_os = "windows"))]
+const BUILTIN_ASSET_ORIGIN: &str = "dsh-pet://localhost";
+
+/// 内置宠物媒体的固定白名单；资源所有权属于 dsh-tauri-pet 包，不能由前端源码
+/// 相对路径直接注入桌面 bundle。
+const BUILTIN_ASSET_NAMES: &[(&str, &str)] = &[
+    ("idle", "maid-idle.webm"),
+    ("turn", "maid-turn.webm"),
+    ("move", "maid-move.webm"),
+    ("wave", "maid-wave.webm"),
+    ("waiting", "maid-waiting.webm"),
+    ("running", "maid-running.webm"),
+    ("review", "maid-review.webm"),
+    ("failed", "maid-failed.webm"),
+    ("bubble", "maid-bubble.webm"),
+    ("fallback", "maid-deepseek-whale.gif"),
+];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BuiltinPetAssets {
+    pub assets: std::collections::BTreeMap<String, String>,
+}
 
 /// 桌宠动作白名单；连字符命名与视频资源和插件协议保持一致。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +111,10 @@ impl PetActivity {
             _ => None,
         }
     }
+
+    fn is_session_activity(self) -> bool {
+        matches!(self, Self::Idle | Self::Waiting | Self::Running | Self::Review | Self::Failed)
+    }
 }
 
 /// 只驻留当前进程的可见性与动作；重启后恢复显示、idle 且无气泡。
@@ -89,6 +123,18 @@ struct PetTransientState {
     visible: bool,
     activity: PetActivity,
     bubble: Option<String>,
+    sessions: Vec<PetSessionStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PetSessionStatus {
+    pub id: String,
+    pub activity: PetActivity,
+    /// 固定标题（会话名），toast title 与桌宠气泡共用。
+    pub bubble: Option<String>,
+    /// 实时描述（思考 / 工具 + 工具名 / 需决策…），toast description 原地刷新。
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl Default for PetTransientState {
@@ -97,6 +143,7 @@ impl Default for PetTransientState {
             visible: true,
             activity: PetActivity::default(),
             bubble: None,
+            sessions: Vec::new(),
         }
     }
 }
@@ -121,6 +168,8 @@ pub struct PetStatus {
     pub activity: PetActivity,
     /// 当前瞬态气泡；None 表示不展示。
     pub bubble: Option<String>,
+    #[serde(default)]
+    pub sessions: Vec<PetSessionStatus>,
 }
 
 /// 文件系统宠物的数据来源。
@@ -198,26 +247,35 @@ fn normalize_active_pet(active_pet: Option<&str>) -> String {
     }
 }
 
-/// 校验并归一化气泡：纯空白视为清空，其余保留原始排版。
-fn normalize_bubble(bubble: Option<String>) -> Result<Option<String>, String> {
-    let bubble = bubble.and_then(|value| {
-        if value.trim().is_empty() {
+/// 校验并归一化一段可选文本：纯空白视为清空，其余保留原始排版，超长报错。
+fn normalize_optional_text(
+    value: Option<String>,
+    max_chars: usize,
+    too_long_prefix: &str,
+) -> Result<Option<String>, String> {
+    let value = value.and_then(|text| {
+        if text.trim().is_empty() {
             None
         } else {
-            Some(value)
+            Some(text)
         }
     });
-    if bubble
-        .as_deref()
-        .map(|value| value.chars().count())
-        .unwrap_or(0)
-        > PET_BUBBLE_MAX_CHARS
-    {
+    if value.as_deref().map(|text| text.chars().count()).unwrap_or(0) > max_chars {
         return Err(format!(
-            "PET_BUBBLE_TOO_LONG: bubble must not exceed {PET_BUBBLE_MAX_CHARS} characters"
+            "{too_long_prefix}: text must not exceed {max_chars} characters"
         ));
     }
-    Ok(bubble)
+    Ok(value)
+}
+
+/// 校验并归一化气泡：纯空白视为清空，其余保留原始排版。
+fn normalize_bubble(bubble: Option<String>) -> Result<Option<String>, String> {
+    normalize_optional_text(bubble, PET_BUBBLE_MAX_CHARS, "PET_BUBBLE_TOO_LONG:")
+}
+
+/// 校验并归一化实时描述：规则同气泡，但错误前缀区分（PET_DESCRIPTION_TOO_LONG:）。
+fn normalize_description(description: Option<String>) -> Result<Option<String>, String> {
+    normalize_optional_text(description, PET_DESCRIPTION_MAX_CHARS, "PET_DESCRIPTION_TOO_LONG:")
 }
 
 /// 将持久设置和进程内瞬态状态合并为唯一的对外状态。
@@ -233,6 +291,7 @@ fn status_from_setting(setting: &config::Setting) -> PetStatus {
         pet_size: setting.pet_size,
         activity: transient.activity,
         bubble: transient.bubble,
+        sessions: transient.sessions,
     }
 }
 
@@ -291,7 +350,10 @@ pub fn set_pet_size(app: AppHandle, size: f64) -> Result<PetStatus, String> {
     let updated = config::update_store_dat_setting(&app, |setting| {
         setting.pet_size = Some(size);
     });
-    pet_window::apply_pet_size(&app);
+    // 窗口尺寸由 pet WebView（知道当前资源真实画布比例）在收到状态事件后实时设置；
+    // Rust 不再绕开前端重复 set_size，避免内置鲸鱼（16:9）与自定义图集比例不一致时被
+    // 两处高度交替重设，造成大小变更时上下闪烁（issue #308）。DPI 变化仍由 Rust 的
+    // ScaleFactorChanged 分支按当前宠物比例重设。
     let status = status_from_setting(&updated);
     emit_pet_status(&app, &status);
     Ok(status)
@@ -314,6 +376,58 @@ pub fn set_pet_activity(
             .unwrap_or_else(|error| error.into_inner());
         transient.activity = activity;
         transient.bubble = bubble;
+        transient.sessions.clear();
+    }
+    let status = status_from_setting(&config::get_store_dat_setting(&app));
+    emit_pet_status(&app, &status);
+    Ok(status)
+}
+
+/// 更新完整会话快照。会话气泡是事件语义的输入，重复快照不会由 Rust 追加队列；
+/// pet WebView 按稳定 session id 精确创建/关闭 Toast。
+#[tauri::command]
+pub fn set_pet_sessions(
+    app: AppHandle,
+    sessions: Vec<PetSessionStatus>,
+) -> Result<PetStatus, String> {
+    if sessions.len() > 128 {
+        return Err("PET_SESSIONS_TOO_MANY: sessions must not exceed 128 entries".to_string());
+    }
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(sessions.len());
+    for mut session in sessions {
+        session.id = session.id.trim().to_string();
+        if session.id.is_empty() || session.id.len() > 256 || !seen.insert(session.id.clone()) {
+            return Err("PET_SESSION_ID_INVALID: session ids must be unique, non-empty, and at most 256 bytes".to_string());
+        }
+        if !session.activity.is_session_activity() {
+            return Err("PET_SESSION_ACTIVITY_INVALID: session activity must be idle/waiting/running/review/failed".to_string());
+        }
+        session.bubble = normalize_bubble(session.bubble)?;
+        session.description = normalize_description(session.description)?;
+        normalized.push(session);
+    }
+    let selected = normalized
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, session)| {
+            let rank = match session.activity {
+                PetActivity::Failed => 5,
+                PetActivity::Review => 4,
+                PetActivity::Running => 3,
+                PetActivity::Waiting => 2,
+                PetActivity::Idle => 0,
+                _ => unreachable!("session activity was validated above"),
+            };
+            (rank, std::cmp::Reverse(*index))
+        })
+        .map(|(_, session)| session)
+        .cloned();
+    {
+        let mut transient = transient_state().lock().unwrap_or_else(|error| error.into_inner());
+        transient.sessions = normalized;
+        transient.activity = selected.as_ref().map(|session| session.activity).unwrap_or(PetActivity::Idle);
+        transient.bubble = selected.and_then(|session| session.bubble);
     }
     let status = status_from_setting(&config::get_store_dat_setting(&app));
     emit_pet_status(&app, &status);
@@ -651,7 +765,167 @@ fn find_pet_directory(
     Ok(None)
 }
 
-/// 按来源限定 id 读取真实精灵图，内置默认宠物继续由前端打包资源渲染。
+fn builtin_asset_file(name: &str) -> Option<(&'static str, &'static str)> {
+    BUILTIN_ASSET_NAMES
+        .iter()
+        .find(|(key, file)| *key == name || *file == name)
+        .map(|(_, file)| {
+            let mime = if file.ends_with(".webm") {
+                "video/webm"
+            } else {
+                "image/gif"
+            };
+            (*file, mime)
+        })
+}
+
+fn resolve_builtin_asset_path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
+    let plugin = crate::service::plugin::bundled_plugin_dir(app, "dsh-tauri-pet")
+        .ok_or_else(|| "PET_BUILTIN_ASSET_NOT_FOUND: dsh-tauri-pet is not deployed".to_string())?;
+    let assets_root = plugin.join("assets").canonicalize().map_err(|error| {
+        format!("PET_BUILTIN_ASSET_ROOT_FAILED: failed to resolve assets directory: {error}")
+    })?;
+    let candidate = assets_root.join(file);
+    let link_metadata = fs::symlink_metadata(&candidate).map_err(|error| {
+        format!("PET_BUILTIN_ASSET_READ_FAILED: failed to inspect {}: {error}", candidate.display())
+    })?;
+    if link_metadata.file_type().is_symlink() || !link_metadata.is_file() {
+        return Err(format!(
+            "PET_BUILTIN_ASSET_INVALID: {} is not a regular file",
+            candidate.display()
+        ));
+    }
+    let resolved = candidate.canonicalize().map_err(|error| {
+        format!("PET_BUILTIN_ASSET_READ_FAILED: failed to resolve {}: {error}", candidate.display())
+    })?;
+    if !resolved.starts_with(&assets_root) {
+        return Err("PET_BUILTIN_ASSET_INVALID: asset escapes dsh-tauri-pet/assets".to_string());
+    }
+    let metadata = fs::metadata(&resolved).map_err(|error| {
+        format!("PET_BUILTIN_ASSET_READ_FAILED: failed to inspect {}: {error}", resolved.display())
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "PET_BUILTIN_ASSET_INVALID: {} is not a regular file",
+            resolved.display()
+        ));
+    }
+    if metadata.len() > PET_SPRITESHEET_MAX_BYTES {
+        return Err(format!(
+            "PET_BUILTIN_ASSET_TOO_LARGE: {} exceeds {PET_SPRITESHEET_MAX_BYTES} bytes",
+            resolved.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+fn protocol_error(status: StatusCode, error: &str) -> Response<Vec<u8>> {
+    log::warn!("{error}");
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(error.as_bytes().to_vec())
+        .unwrap()
+}
+
+/// 从不同平台的自定义协议请求路径中提取单一资源名。Windows WebView 有时会
+/// 把 authority 规范化进 path（`/localhost/idle`），因此这里兼容该表示，仍只
+/// 接受固定白名单，不能借此访问任意目录。
+fn builtin_asset_name(path: &str) -> Option<&str> {
+    let path = path.trim_matches('/');
+    let name = path.strip_prefix("localhost/").unwrap_or(path);
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains(':') || name.contains("..") {
+        return None;
+    }
+    Some(name)
+}
+
+/// 受控内置媒体的 URL manifest；实际字节由 dsh-pet 协议按需流式提供。
+#[tauri::command]
+pub fn get_builtin_pet_assets() -> BuiltinPetAssets {
+    let assets = BUILTIN_ASSET_NAMES
+        .iter()
+        .map(|(key, file)| ((*key).to_string(), format!("{BUILTIN_ASSET_ORIGIN}/{file}")))
+        .collect();
+    BuiltinPetAssets { assets }
+}
+
+/// 为 dsh-pet 自定义协议读取固定白名单资源；调用方已在 builder 中限制为 pet WebView。
+pub fn builtin_pet_asset_response(
+    app: &AppHandle,
+    webview_label: &str,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    if webview_label != pet_window::PET_WINDOW_LABEL {
+        return protocol_error(StatusCode::FORBIDDEN, "PET_BUILTIN_ASSET_FORBIDDEN: request is not from pet window");
+    }
+    if request.method() != Method::GET && request.method() != Method::HEAD {
+        return protocol_error(StatusCode::METHOD_NOT_ALLOWED, "PET_BUILTIN_ASSET_METHOD_INVALID: only GET and HEAD are allowed");
+    }
+    let Some(name) = builtin_asset_name(request.uri().path()) else {
+        return protocol_error(StatusCode::FORBIDDEN, "PET_BUILTIN_ASSET_PATH_INVALID: path is not a safe asset name");
+    };
+    let Some((file_name, mime)) = builtin_asset_file(name) else {
+        return protocol_error(StatusCode::NOT_FOUND, "PET_BUILTIN_ASSET_NOT_FOUND: asset is not in the built-in whitelist");
+    };
+    let path = match resolve_builtin_asset_path(app, file_name) {
+        Ok(path) => path,
+        Err(error) => return protocol_error(StatusCode::NOT_FOUND, &error),
+    };
+    let Ok(file) = fs::File::open(&path) else {
+        return protocol_error(StatusCode::NOT_FOUND, "PET_BUILTIN_ASSET_READ_FAILED: asset could not be opened");
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return protocol_error(StatusCode::NOT_FOUND, "PET_BUILTIN_ASSET_READ_FAILED: asset metadata unavailable");
+    };
+    let base = Response::builder()
+        .header("Content-Type", mime)
+        .header("Accept-Ranges", "bytes");
+    if request.method() == Method::HEAD {
+        return base.header(CONTENT_LENGTH, length).status(StatusCode::OK).body(Vec::new()).unwrap();
+    }
+    let Some(range) = request.headers().get("range").and_then(|value| value.to_str().ok()) else {
+        let mut bytes = Vec::new();
+        let mut limited = file.take(PET_SPRITESHEET_MAX_BYTES.saturating_add(1));
+        if limited.read_to_end(&mut bytes).is_err() || bytes.len() as u64 > PET_SPRITESHEET_MAX_BYTES {
+            return Response::builder().status(StatusCode::PAYLOAD_TOO_LARGE).body(Vec::new()).unwrap();
+        }
+        return base.header(CONTENT_LENGTH, bytes.len()).status(StatusCode::OK).body(bytes).unwrap();
+    };
+    let Some((start, end)) = parse_single_byte_range(range, length) else {
+        return base.header("Content-Range", format!("bytes */{length}")).status(StatusCode::RANGE_NOT_SATISFIABLE).body(Vec::new()).unwrap();
+    };
+    let size = end - start + 1;
+    let Ok(capacity) = usize::try_from(size) else {
+        return Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE).body(Vec::new()).unwrap();
+    };
+    let mut bytes = vec![0; capacity];
+    let mut file = file;
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut bytes).is_err() {
+        return Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Vec::new()).unwrap();
+    }
+    base.header(CONTENT_LENGTH, size)
+        .header("Content-Range", format!("bytes {start}-{end}/{length}"))
+        .status(StatusCode::PARTIAL_CONTENT)
+        .body(bytes)
+        .unwrap()
+}
+
+fn parse_single_byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
+    let value = value.strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (start, end) = value.split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().ok()?;
+        if suffix == 0 || length == 0 { return None; }
+        return Some((length.saturating_sub(suffix), length - 1));
+    }
+    let start = start.parse::<u64>().ok()?;
+    if start >= length { return None; }
+    let end = if end.is_empty() { length - 1 } else { end.parse::<u64>().ok()?.min(length - 1) };
+    (end >= start).then_some((start, end))
+}
+
+/// 按来源限定 id 读取真实精灵图。
 #[tauri::command]
 pub fn get_pet_asset(app: AppHandle, id: String) -> Result<PetAsset, String> {
     let id = id.trim();
@@ -1049,6 +1323,15 @@ mod tests {
         assert_eq!(normalize_bubble(Some(max.clone())).unwrap(), Some(max));
         let error = normalize_bubble(Some("鲸".repeat(PET_BUBBLE_MAX_CHARS + 1))).unwrap_err();
         assert!(error.starts_with("PET_BUBBLE_TOO_LONG:"));
+    }
+
+    #[test]
+    fn description_validation_counts_unicode_and_prefixes_error() {
+        assert_eq!(normalize_description(Some("  ".to_string())).unwrap(), None);
+        let max = "思".repeat(PET_DESCRIPTION_MAX_CHARS);
+        assert_eq!(normalize_description(Some(max.clone())).unwrap(), Some(max));
+        let error = normalize_description(Some("思".repeat(PET_DESCRIPTION_MAX_CHARS + 1))).unwrap_err();
+        assert!(error.starts_with("PET_DESCRIPTION_TOO_LONG:"));
     }
 
     #[test]

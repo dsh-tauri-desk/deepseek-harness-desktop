@@ -30,12 +30,18 @@ use tauri_plugin_store::StoreExt;
 pub const PET_WINDOW_LABEL: &str = "pet";
 /// 内置视频基准尺寸（dsh-pet 呆味预览帧 220x124，透明画布）。
 pub const PET_SPRITE_BASE_WIDTH: f64 = 220.0;
-/// Codex v2 标准精灵帧为 192x208，比内置视频更高，窗口高度按两者较大者预留。
-const PET_SPRITE_MAX_HEIGHT: f64 = PET_SPRITE_BASE_WIDTH * 208.0 / 192.0;
-/// 窗口留白（逻辑像素）：横向保留阴影；顶部完整容纳气泡；底部保留阴影。
+/// 窗口留白（逻辑像素）：顶部为 Toast 绘制区，但由 pet WebView 根据
+/// 实际 DOM 命中区域动态调用 setIgnoreCursorEvents 控制透明区域穿透。
 const PET_WINDOW_PAD_X: f64 = 32.0;
-const PET_WINDOW_TOP_PAD: f64 = 120.0;
+const PET_WINDOW_TOP_PAD: f64 = 72.0;
 const PET_WINDOW_BOTTOM_PAD: f64 = 10.0;
+/// 内置宠物的 id（与 bridge 的 DEFAULT_ACTIVE_PET_ID 一致）；用于判断资源画布比例。
+const PET_BUILTIN_ID: &str = "maid-deepseek-whale";
+/// 内置 WebM 画布 16:9（高/宽 = 9/16），与 pet WebView 的内置画布比例保持一致。
+const PET_BUILTIN_ASPECT: f64 = 9.0 / 16.0;
+/// 自定义 Codex v2 精灵图默认 8x11 的 192x208 比例；实际比例以前端加载后为准，
+/// 这里仅作为窗口初始/DPI 尺寸的近似，避免与前端内置画布比例互相打架。
+const PET_CUSTOM_ASPECT: f64 = 208.0 / 192.0;
 /// 宠物大小百分比合法区间（设置页滑条 50%–200%；bridge/pet.rs 引用同一常量）。
 pub const PET_SIZE_MIN_PERCENT: f64 = 50.0;
 pub const PET_SIZE_MAX_PERCENT: f64 = 200.0;
@@ -115,12 +121,29 @@ pub fn get_pet_size_percent<R: Runtime>(app: &AppHandle<R>) -> f64 {
         .clamp(PET_SIZE_MIN_PERCENT, PET_SIZE_MAX_PERCENT)
 }
 
-/// 由百分比换算桌宠窗口逻辑尺寸：最高精灵按比例缩放，气泡与阴影留白保持可读固定高度。
-pub fn pet_window_logical_size(percent: f64) -> (f64, f64) {
+/// 当前激活宠物使用的画布比例（高度/宽度）：内置 WebM 固定 9/16，自定义精灵图用
+/// 208/192 作为窗口初始/DPI 尺寸的近似。真正的自定义比例由前端加载后修正，因此这
+/// 里不再把 208/192 硬编码给所有宠物，避免窗口大小的两个来源互相冲突。
+pub fn pet_window_aspect<R: Runtime>(app: &AppHandle<R>) -> f64 {
+    let setting = crate::config::get_store_dat_setting(app);
+    let active = setting
+        .active_pet
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if active.map(|value| value == PET_BUILTIN_ID).unwrap_or(true) {
+        PET_BUILTIN_ASPECT
+    } else {
+        PET_CUSTOM_ASPECT
+    }
+}
+
+/// 由百分比换算桌宠窗口逻辑尺寸：按当前宠物画布比例缩放，气泡与阴影留白保持可读固定高度。
+pub fn pet_window_logical_size(percent: f64, aspect: f64) -> (f64, f64) {
     let scale = percent / 100.0;
     (
         (PET_SPRITE_BASE_WIDTH * scale) + PET_WINDOW_PAD_X,
-        (PET_SPRITE_MAX_HEIGHT * scale) + PET_WINDOW_TOP_PAD + PET_WINDOW_BOTTOM_PAD,
+        (PET_SPRITE_BASE_WIDTH * aspect * scale) + PET_WINDOW_TOP_PAD + PET_WINDOW_BOTTOM_PAD,
     )
 }
 
@@ -129,7 +152,7 @@ pub fn apply_pet_size<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) else {
         return;
     };
-    let (width, height) = pet_window_logical_size(get_pet_size_percent(app));
+    let (width, height) = pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
     if window
         .set_size(tauri::LogicalSize::new(width, height))
         .is_ok()
@@ -261,7 +284,7 @@ pub fn ensure_pet_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvie
         return Ok(window);
     }
     let app_handle = app.clone();
-    let (width, height) = pet_window_logical_size(get_pet_size_percent(app));
+    let (width, height) = pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
     // 非 Windows 平台在此前加入注入脚本时再赋值，故需要 mut；Windows 下保持只读。
     #[allow(unused_mut)]
     let mut builder =
@@ -324,7 +347,10 @@ fn position_on_any_monitor<R: Runtime>(window: &WebviewWindow<R>, x: i32, y: i32
     };
     // 以当前设置的窗口逻辑尺寸 × 缩放系数近似命中矩形，允许窗口底部/右侧
     // 探出一点点也不误判。
-    let (lw, lh) = pet_window_logical_size(get_pet_size_percent(window.app_handle()));
+    let (lw, lh) = pet_window_logical_size(
+        get_pet_size_percent(window.app_handle()),
+        pet_window_aspect(window.app_handle()),
+    );
     let w = (lw * window.scale_factor().unwrap_or(1.0)) as i32;
     let h = (lh * window.scale_factor().unwrap_or(1.0)) as i32;
     let hit_left = x;
@@ -350,7 +376,7 @@ fn place_pet_at_default<R: Runtime>(window: &WebviewWindow<R>) {
     let mon_pos = monitor.position();
     let mon_size = monitor.size();
     // 距屏幕右下角 32px 的物理偏移；尺寸 = 当前设置逻辑尺寸 × 屏幕缩放系数。
-    let (lw, lh) = pet_window_logical_size(get_pet_size_percent(app));
+    let (lw, lh) = pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
     let w = (lw * monitor.scale_factor()) as i32;
     let h = (lh * monitor.scale_factor()) as i32;
     let x = mon_pos.x + mon_size.width as i32 - w - 32;
@@ -376,10 +402,19 @@ pub fn set_pet_window_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) -> 
     Ok(())
 }
 
-/// 创建桌宠窗口并沿用永久启用设置；临时隐藏状态不跨重启保留。
+/// 在 setup 阶段预创建两个隐藏窗口，再沿用永久启用设置显示它们。
+/// 这样设置页同步 command 只会 show/hide 已存在窗口，不会在 command handler
+/// 内调用 WebviewWindowBuilder，避免 Tauri/Windows 的消息循环死锁。
 pub fn init_pet_window<R: Runtime>(app: &AppHandle<R>) {
     let enabled = crate::config::get_store_dat_setting(app).pet_enabled;
-    let _ = set_pet_window_visible(app, enabled);
+    let pet = ensure_pet_window(app);
+    if let Ok(pet) = pet {
+        if enabled {
+            let _ = pet.show();
+        }
+    } else {
+        log::error!("PET_WINDOW_INIT_FAILED: failed to pre-create pet windows");
+    }
 }
 
 #[cfg(test)]
@@ -411,13 +446,35 @@ mod tests {
 
     #[test]
     fn pet_window_logical_size_scales_with_percent() {
-        // 高度由按比例缩放的 192x208 Codex v2 帧，加固定 120px 气泡区与 10px 阴影区组成。
+        // 窗口顶部为 Toast 区，宠物资源本身仍按内置 16:9 画布或 8x11 atlas 尺寸绘制。
         for percent in [50.0, 100.0, 200.0] {
-            let (width, height) = pet_window_logical_size(percent);
+            let (width, height) = pet_window_logical_size(percent, PET_CUSTOM_ASPECT);
             let scale = percent / 100.0;
             assert_eq!(width, PET_SPRITE_BASE_WIDTH * scale + PET_WINDOW_PAD_X);
-            assert_eq!(height, PET_SPRITE_MAX_HEIGHT * scale + 130.0);
+            assert_eq!(height, PET_SPRITE_BASE_WIDTH * PET_CUSTOM_ASPECT * scale + 82.0);
         }
+        // 内置鲸鱼为 16:9 画布，窗口高度远小于 8x11 图集，避免窗口过高产生大片透明区。
+        let (_, builtin_height) = pet_window_logical_size(100.0, PET_BUILTIN_ASPECT);
+        assert_eq!(builtin_height, PET_SPRITE_BASE_WIDTH * PET_BUILTIN_ASPECT + 82.0);
+    }
+
+    #[test]
+    fn pet_window_aspect_matches_builtin_and_custom() {
+        // 未设置 / 空白 / 内置 id 都走内置 16:9 比例；来源限定 id 走自定义图集比例。
+        // 使用一个真实 AppHandle 才能读设置，这里仅验证比例常量与归一化分支的纯逻辑。
+        assert_eq!(PET_BUILTIN_ASPECT, 9.0 / 16.0);
+        assert_eq!(PET_CUSTOM_ASPECT, 208.0 / 192.0);
+        assert_eq!(PET_BUILTIN_ID, "maid-deepseek-whale");
+        let is_builtin = |active: Option<&str>| {
+            active.map(str::trim).filter(|v| !v.is_empty())
+                .map(|v| v == PET_BUILTIN_ID)
+                .unwrap_or(true)
+        };
+        assert!(is_builtin(None));
+        assert!(is_builtin(Some("   ")));
+        assert!(is_builtin(Some("maid-deepseek-whale")));
+        assert!(!is_builtin(Some("codex:blue_whale")));
+        assert!(!is_builtin(Some("chat:cat")));
     }
 
     #[test]

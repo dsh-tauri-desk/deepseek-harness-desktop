@@ -1,4 +1,4 @@
-import type { CSSProperties, Ref, SyntheticEvent } from 'react'
+import type { CSSProperties, Ref, RefObject, SyntheticEvent } from 'react'
 import type { PetHandle, PetStatus } from '../hooks/use-pet'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -26,6 +26,12 @@ const IDLE_DURATIONS = [280, 110, 110, 140, 140, 320] as const
  */
 const IDLE_TURN_DELAY_MIN = 25000
 const IDLE_TURN_DELAY_MAX = 50000
+/**
+ * 拖拽/点击命中区（视频筐内百分比），与 dsh-pet 的 HIT_BOX 一致
+ * （source/dsh-pet/dsh-pet/src/shared/constants.ts:8，640×360 画布坐标
+ * x0:200 y0:50 x1:440 y1:335）：命中区 = 宠物身体，视频/空白区不响应事件。
+ */
+const PET_HIT_BOX = { left: '31.25%', top: '13.8888888889%', width: '37.5%', height: '79.1666666667%' } as const
 const ACTIONS = {
   'moving-right': { row: 1, frames: 8, duration: 120, lastDuration: 220 },
   'moving-left': { row: 2, frames: 8, duration: 120, lastDuration: 220 },
@@ -56,6 +62,7 @@ interface RustPetStatus {
 
 export interface PetProps {
   ref?: Ref<PetHandle | null>
+  hitboxRef?: RefObject<HTMLDivElement | null>
   status?: PetStatus
   /** 原生拖拽会话进行中；内置宠物据此播放拖拽浮动动画（忽略方向）。 */
   dragging?: boolean
@@ -357,13 +364,16 @@ export function Pet(props: PetProps) {
   return (
     <If cond={visible}>
       <main className="pointer-events-none fixed inset-0 flex items-end justify-center overflow-visible" style={style}>
-        <div className="pointer-events-auto relative h-[calc(var(--pet-width)*var(--pet-aspect))] w-[var(--pet-width)] select-none">
+        {/* 视频筐本身不响应事件：可交互面收缩到下方 PET_HIT_BOX 命中区（与 dsh-pet
+            .dsh-pet-hit 一致），事件从命中区冒泡到 app.tsx 的 dragRef 壳触发拖拽。 */}
+        <div className="pointer-events-none relative h-[calc(var(--pet-width)*var(--pet-aspect))] w-[var(--pet-width)] select-none">
           <If cond={isBuiltin}>
             {/* 双 video 缓冲：前台 opacity-100 淡入、后台 opacity-0 淡出，
-                切换经 loadeddata 就绪后交换（见开关 effect），无空窗/黑帧闪跳。 */}
+                切换经 loadeddata 就绪后交换（见开关 effect），无空窗/黑帧闪跳。
+                视频均 pointer-events-none，避免截获命中区外的点击。 */}
             <video
               ref={videoARef}
-              className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${frontIdx === 0 ? 'opacity-100' : 'opacity-0'}`}
+              className={`pointer-events-none absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${frontIdx === 0 ? 'opacity-100' : 'opacity-0'}`}
               muted
               playsInline
               preload="auto"
@@ -371,7 +381,7 @@ export function Pet(props: PetProps) {
             />
             <video
               ref={videoBRef}
-              className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${frontIdx === 1 ? 'opacity-100' : 'opacity-0'}`}
+              className={`pointer-events-none absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${frontIdx === 1 ? 'opacity-100' : 'opacity-0'}`}
               muted
               playsInline
               preload="auto"
@@ -381,7 +391,7 @@ export function Pet(props: PetProps) {
           <If cond={!isBuiltin && hasCustomAsset}>
             <div
               ref={spriteRef}
-              className="absolute inset-0 bg-contain bg-no-repeat"
+              className="pointer-events-none absolute inset-0 bg-contain bg-no-repeat"
               style={{
                 backgroundImage: customAsset ? `url(${customAsset.spritesheet})` : undefined,
                 backgroundSize: customAsset ? `${customAsset.columns * 100}% ${customAsset.rows * 100}%` : undefined,
@@ -398,8 +408,14 @@ export function Pet(props: PetProps) {
             />
           </If>
           <If cond={failed && assets.fallback !== undefined}>
-            <img className="absolute inset-0 h-full w-full object-contain" src={assets.fallback} alt="" draggable={false} />
+            <img className="pointer-events-none absolute inset-0 h-full w-full object-contain" src={assets.fallback} alt="" draggable={false} />
           </If>
+          {/* 命中区：唯一可交互面（拖拽/双击），尺寸与 dsh-pet .dsh-pet-hit 一致。 */}
+          <div
+            ref={props.hitboxRef}
+            className="pointer-events-auto absolute cursor-grab touch-none select-none"
+            style={PET_HIT_BOX}
+          />
         </div>
       </main>
     </If>

@@ -20,6 +20,10 @@ const DESCRIPTION_MAX_LENGTH = 120
 /** 终态气泡自动隐藏时长（毫秒）：失败展示 4s、待审阅 2.5s（对齐参考实现的完成脉冲）。实时状态（running / waiting）常驻，由后续会话事件更新内容。 */
 const FAILED_BUBBLE_TIMEOUT = 4000
 const REVIEW_BUBBLE_TIMEOUT = 2500
+/** 失败动画脉冲时长（毫秒）：对齐参考实现 companion-reducer 的工具失败脉冲 ttlMs=1800。
+ * 失败只作为瞬态脉冲展示一次，到期自动恢复到底层会话状态，避免 DSH 快照上粘性的
+ * lastAgentError 经插件 250ms 心跳重发后永久占用 'failed'、阻塞其他会话的动画切换。 */
+const FAILED_PULSE_TTL = 1800
 
 /** 桌宠窗口的会话气泡：DSH 发送原始会话快照，本 hook 私有管理会话→toast key 映射，仅暴露聚合宠物状态。 */
 export function useBubble(): BubbleHandle {
@@ -30,6 +34,11 @@ export function useBubble(): BubbleHandle {
     const toastKeys = new Map<string, string>()
     const hideTimers = new Map<string, number>()
     const previousStatus = new Map<string, PetStatus | undefined>()
+    /** 失败脉冲截止时间戳（参考实现 ttlMs=1800）：截止前该会话贡献 'failed'，到期后忽略其失败信号。 */
+    const failedUntil = new Map<string, number>()
+    const pulseTimers = new Map<string, number>()
+    /** 已消费的失败会话：脉冲播完一次后记录，粘性 lastAgentError 心跳重发 / 刷新重连不再重播。 */
+    const consumedFailed = new Set<string>()
     /** 已自动隐藏的终态会话：保持隐藏直到状态离开终态，避免插件心跳重发 update 反复重建气泡。 */
     const dismissed = new Set<string>()
     let disposed = false
@@ -43,16 +52,65 @@ export function useBubble(): BubbleHandle {
         sessions.delete(session.id)
         previousStatus.delete(session.id)
         dismissed.delete(session.id)
+        failedUntil.delete(session.id)
+        consumedFailed.delete(session.id)
+        clearPulseTimer(session.id)
         clearHideTimer(session.id)
         closeToast(session.id)
       }
       else {
         sessions.set(session.id, session)
+        trackFailedPulse(session)
         syncToast(session)
       }
 
       if (!disposed)
-        setStatus(statusOf(sessions))
+        setStatus(statusOf(sessions, failedUntil, Date.now()))
+    }
+
+    /**
+     * 参考实现 companion-reducer 的失败脉冲语义：工具失败以 ttlMs=1800 的 PULSE
+     * 发射，动画播完失败片段后恢复到底层工作状态，而不是把记录钉死在 ERROR。
+     * 这里在会话状态跃迁到 failed 的瞬间启动一次脉冲计时器；插件心跳（250ms）重发
+     * 相同的失败快照不会刷新截止时间，刷新/重连后首次收到失败快照也只是重新播一次
+     * 脉冲，随后立即让位给 waiting / review / running / idle。
+     */
+    function trackFailedPulse(session: BubbleSession): void {
+      const current = sessionStatus(session)
+      const previous = previousStatus.get(session.id)
+      if (current === 'failed') {
+        // 粘性失败快照（lastAgentError 不随心跳清除）：脉冲只在首次跃迁时播一次，
+        // 心跳重发 / 刷新重连后该会话的失败信号保持已消费，直到状态真正离开 failed。
+        if (previous === 'failed' || consumedFailed.has(session.id))
+          return
+        const deadline = Date.now() + FAILED_PULSE_TTL
+        failedUntil.set(session.id, deadline)
+        clearPulseTimer(session.id)
+        const timer = window.setTimeout(() => {
+          if (disposed)
+            return
+          if (failedUntil.get(session.id) !== deadline)
+            return
+          failedUntil.delete(session.id)
+          clearPulseTimer(session.id)
+          consumedFailed.add(session.id)
+          setStatus(statusOf(sessions, failedUntil, Date.now()))
+        }, FAILED_PULSE_TTL)
+        pulseTimers.set(session.id, timer)
+      }
+      else {
+        failedUntil.delete(session.id)
+        clearPulseTimer(session.id)
+        consumedFailed.delete(session.id)
+      }
+    }
+
+    function clearPulseTimer(id: string): void {
+      const timer = pulseTimers.get(id)
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        pulseTimers.delete(id)
+      }
     }
 
     function syncToast(session: BubbleSession): void {
@@ -156,6 +214,9 @@ export function useBubble(): BubbleHandle {
       for (const timer of hideTimers.values())
         window.clearTimeout(timer)
       hideTimers.clear()
+      for (const timer of pulseTimers.values())
+        window.clearTimeout(timer)
+      pulseTimers.clear()
       for (const key of toastKeys.values())
         toast.close(key)
       toastKeys.clear()
@@ -222,13 +283,42 @@ function statusLabel(status: PetStatus | undefined): string {
   }
 }
 
-function statusOf(sessions: ReadonlyMap<string, BubbleSession>): PetStatus | undefined {
-  const statuses = [...sessions.values()].map(sessionStatus)
-  return statuses.find(value => value === 'failed')
-    ?? statuses.find(value => value === 'waiting')
+/**
+ * 聚合优先级对齐参考实现 companion-reducer 的 statePriority：WAITING(60) > ERROR(50)
+ * > WORKING(30)/THINKING(20)。因此 waiting / review（等待用户）优先于 failed，
+ * 任一会话处于等待时动画必须让位给等待状态，失败不再拥有绝对优先级。
+ * failed 仅在其脉冲窗口（FAILED_PULSE_TTL）内生效，窗口过后恢复到底层状态
+ * （underlyingStatus），避免粘性 lastAgentError 永久占用聚合状态。
+ */
+function statusOf(
+  sessions: ReadonlyMap<string, BubbleSession>,
+  failedUntil: ReadonlyMap<string, number>,
+  now: number,
+): PetStatus | undefined {
+  const statuses = [...sessions.values()].map((session) => {
+    const status = sessionStatus(session)
+    if (status !== 'failed')
+      return status
+    const deadline = failedUntil.get(session.id)
+    return deadline !== undefined && now < deadline ? 'failed' : underlyingStatus(session)
+  })
+  return statuses.find(value => value === 'waiting')
     ?? statuses.find(value => value === 'review')
+    ?? statuses.find(value => value === 'failed')
     ?? statuses.find(value => value === 'running')
     ?? undefined
+}
+
+/** 忽略粘性 lastAgentError / 终态 value 后该会话的底层状态：失败脉冲结束后的恢复目标（参考实现 resumeState）。 */
+function underlyingStatus(session: BubbleSession): PetStatus | undefined {
+  const value = session.status ?? session.activity ?? session.phase
+  if (value === 'review' || value === 'reviewing' || value === 'plan-review')
+    return 'review'
+  if (value === 'waiting' || value === 'pending' || value === 'blocked' || hasPendingInteraction(session.pendingInteraction) || hasPendingItems(session.pending))
+    return 'waiting'
+  if (value === 'running' || value === 'working' || value === 'thinking' || session.running === true)
+    return 'running'
+  return undefined
 }
 
 function isTerminalStatus(status: PetStatus): boolean {

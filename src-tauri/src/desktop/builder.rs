@@ -589,12 +589,14 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::import_pet,
         crate::bridge::get_pet_asset,
         crate::bridge::get_builtin_pet_assets,
+        crate::desktop::pet_mouse::start_pet_mouse_stream,
     ]
 }
 
 // configure tauri builder
 pub fn builder() -> tauri::Builder<tauri::Wry> {
     let builder = tauri::Builder::default()
+        .manage(crate::desktop::pet_mouse::PetMouseStreamState::default())
         .register_asynchronous_uri_scheme_protocol("dsh-pet", |context, request, responder| {
             let app = context.app_handle().clone();
             let label = context.webview_label().to_owned();

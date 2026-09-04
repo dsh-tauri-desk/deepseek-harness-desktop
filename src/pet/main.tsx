@@ -10,7 +10,7 @@ root.style.height = '100%'
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    <ToastProvider>
+    <ToastProvider hideCloseButton>
       <PetWindow />
     </ToastProvider>
   </React.StrictMode>,

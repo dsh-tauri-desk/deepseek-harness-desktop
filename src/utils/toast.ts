@@ -1,5 +1,6 @@
 import type { ToastContentValue } from '@heroui/react/toast'
 import type { ToastVariants } from '@heroui/styles'
+import type { ReactNode } from 'react'
 import { ToastQueue } from '@heroui/react'
 
 /** toast() 可选项：库内未暴露的 HeroUIToastOptions（toast-queue 收敛的 content + 超时回调），这里用公开的 ToastContentValue 组合 */
@@ -22,12 +23,15 @@ export const queues = Object.fromEntries(
 const placementsKeys = new Map<string, Placement>()
 
 export function toast(
-  message: string,
+  message: string | ReactNode,
   options?: ToastOptions,
 ) {
   // 默认右下角；个别调用方需要其他位置时显式传 placement
-  const { placement = 'bottom end', ...rest } = options || {}
-  const key = queues[placement].add({ title: message, ...rest })
+  const { placement = 'bottom end', timeout, onClose, ...rest } = options || {}
+  const key = queues[placement].add(
+    { title: message, ...rest },
+    { timeout, onClose },
+  )
   placementsKeys.set(key, placement)
   return key
 }

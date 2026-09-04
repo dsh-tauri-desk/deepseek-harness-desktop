@@ -24,7 +24,7 @@
    URL/数据提供给 pet WebView。
 6. 必须重新对照以下三个参考实现，不得只做表面样式模仿：
    - `source/dsh-pet`
-   - `source/dsh-plugin-codex-pets`
+   - `source/codex-to-dsh-pet`
    - `source/BongoCat`
 
 ## 2. 不得改变的产品规格
@@ -94,7 +94,7 @@ git submodule update --init --recursive
 | 子模块 | 固定提交 | 用途 |
 |---|---|---|
 | `source/dsh-pet` | `899150eb85c819820b9e990b595dfc261f341bc2` | WebM 动作权重、连续播放、气泡样式与交互 |
-| `source/dsh-plugin-codex-pets` | `22e93f403d8795627042e0df8bc5855d35047f89` | Codex v2 atlas、会话状态映射、动作优先级 |
+| `source/codex-to-dsh-pet` | `b8d2de30255488d3fc497d7d667b1d828910a3e3` | Codex v2 atlas、会话状态映射、动作优先级 |
 | `source/BongoCat` | `44f44bcf2b17b8e16463ad479a477a949d01cc9a` | Tauri 桌宠窗口、原生拖动、尺寸、DPI 与鼠标穿透基准 |
 
 ### 3.1 dsh-pet 必查位置
@@ -112,15 +112,21 @@ git submodule update --init --recursive
 
 ### 3.2 Codex pets 必查位置
 
-- `source/dsh-plugin-codex-pets/lib/client.js:11-54`
-  定义 9 行动作状态及动作播放后返回 idle 的序列。
-- `source/dsh-plugin-codex-pets/lib/client.js:459-495`
-  状态映射：pendingInteraction→waiting、running→running、completed→review、
-  lastAgentError→failed、其他→idle。
-- `source/dsh-plugin-codex-pets/lib/client.js:617-672`
-  拖动方向到 running-left/right、点击 waving、hover jumping 及优先级。
-- `source/dsh-plugin-codex-pets/lib/client.js:748-773`
-  活动 badge/session panel，可用于会话提示信息设计对照。
+替换后的仓库 `codex-to-dsh-pet` 结构已变：入口 `lib/client.js` 由 `build.js` 注入配置/图集后从
+`lib/client.template.js` 生成（未入库），因此按函数名定位（行号会随版本漂移，不标注）：
+
+- `source/codex-to-dsh-pet/lib/client.template.js`：`ANIMATIONS` 表（`createCodexPet` 内）
+  定义各动作的行号/帧数，`setAnimation`/`play` 支持 `mode:"once"` + `then`，即一次性
+  动作播放后回到指定动作（默认 idle）的序列。
+- `source/codex-to-dsh-pet/lib/client.template.js`：`deriveActivity()`
+  （`packages/dsh-codex-pet/src/client.js` 有同函数）——会话状态映射已改为
+  pending→waiting、runningCalls→running、running===true→review、其余→idle；
+  旧快照字段 pendingInteraction/completed/lastAgentError 与 failed 会话映射已不存在。
+- `source/codex-to-dsh-pet/lib/client.template.js`：`createCodexPet` 的 pointer 事件处理
+  （拖动方向→runningLeft/runningRight、hover→waving、双击→jumping）；
+  `PetOverlay` 的 `RESTORE_BY_ACTIVITY`/`syncToActivity` 负责播放后按会话活动恢复。
+- `source/codex-to-dsh-pet/packages/dsh-codex-pet/src/client.js`：完整预构建插件的
+  `PetOverlay`（活动气泡、摘要气泡与 activity journal 面板），可用于会话提示信息设计对照。
 
 继续时必须重点复核“高优先级动作阻塞低优先级动作”的机制，不能继续使用简单的
 `localActivity ?? sessionActivity`。

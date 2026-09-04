@@ -1,6 +1,7 @@
-import type { PetActivity, PetAsset, PetListItem, PetSource, PetStatus } from '../types'
+import type { PetActivity, PetAsset, PetListItem, PetSessionStatus, PetSource, PetStatus } from '../types'
 import { invokeBridgedTauri } from 'dsh-tauri/client'
 import {
+  CMD_GET_BUILTIN_PET_ASSETS,
   CMD_GET_PET_ASSET,
   CMD_GET_PET_STATUS,
   CMD_HIDE_PET,
@@ -9,6 +10,7 @@ import {
   CMD_SET_ACTIVE_PET,
   CMD_SET_PET_ACTIVITY,
   CMD_SET_PET_ENABLED,
+  CMD_SET_PET_SESSIONS,
   CMD_SET_PET_SIZE,
   CMD_SHOW_PET,
 } from '../constants'
@@ -61,4 +63,14 @@ export function importPet(name: string, data: string): Promise<PetListItem> {
 /** Push the current session-derived animation and optional speech bubble. */
 export function setPetActivity(activity: PetActivity, bubble?: string): Promise<PetStatus> {
   return invokeBridgedTauri<PetStatus>(CMD_SET_PET_ACTIVITY, { activity, bubble })
+}
+
+/** Push the complete session snapshot; the pet window derives one visual state and per-session Toasts. */
+export function setPetSessions(sessions: PetSessionStatus[]): Promise<PetStatus> {
+  return invokeBridgedTauri<PetStatus>(CMD_SET_PET_SESSIONS, { sessions })
+}
+
+/** Load built-in media through the Rust runtime resource boundary. */
+export function fetchBuiltinPetAssets(): Promise<{ assets: Record<string, string> }> {
+  return invokeBridgedTauri<{ assets: Record<string, string> }>(CMD_GET_BUILTIN_PET_ASSETS)
 }

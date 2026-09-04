@@ -13,11 +13,18 @@ import {
 export { PET_CLIENT_NS as NS } from '../constants'
 
 const DICT_ZH: Record<LocaleKey, string> = {
+  activityApproval: '需审批',
   activityFailed: '失败',
   activityIdle: '空闲',
+  activityLimit: '已达上限',
+  activityPreparing: '准备中',
+  activityResult: '整理中',
   activityReview: '待审阅',
   activityRunning: '运行中',
+  activityStopped: '已停止',
+  activityThinking: '思考中',
   activityWaiting: '等待中',
+  activityWorking: '执行中',
   codex: 'Codex',
   collapsePet: '收起宠物',
   create: '创建',
@@ -27,6 +34,8 @@ const DICT_ZH: Record<LocaleKey, string> = {
   importFailed: '导入宠物失败',
   listFailed: '读取宠物列表失败',
   name: 'Pets',
+  pendingPlanReview: '待审阅方案',
+  pendingQuestion: '待回答',
   petDescWhale: BUILTIN_PET_DESC_ZH,
   petNameWhale: BUILTIN_PET_NAME,
   select: '选择',
@@ -38,15 +47,23 @@ const DICT_ZH: Record<LocaleKey, string> = {
   tabCodexDesc: '从 Codex 或压缩包中导入 Codex 宠物（支持 .zip 文件）',
   tabInstalledDesc: '宠物会管理对话串，并突出显示需要关注的事项',
   toggleFailed: '切换桌宠窗口失败',
+  toolPrefix: '工具',
   wakePet: '唤醒宠物',
 }
 
 const DICT_EN: Record<LocaleKey, string> = {
+  activityApproval: 'Needs approval',
   activityFailed: 'Failed',
   activityIdle: 'Idle',
+  activityLimit: 'Limit reached',
+  activityPreparing: 'Preparing',
+  activityResult: 'Summarizing',
   activityReview: 'Review',
   activityRunning: 'Running',
+  activityStopped: 'Stopped',
+  activityThinking: 'Thinking',
   activityWaiting: 'Waiting',
+  activityWorking: 'Working',
   codex: 'Codex',
   collapsePet: 'Collapse pet',
   create: 'Create',
@@ -56,6 +73,8 @@ const DICT_EN: Record<LocaleKey, string> = {
   importFailed: 'Failed to import pet',
   listFailed: 'Failed to load pet list',
   name: 'Pets',
+  pendingPlanReview: 'Plan review',
+  pendingQuestion: 'Waiting for answer',
   petDescWhale: BUILTIN_PET_DESC_EN,
   petNameWhale: BUILTIN_PET_NAME,
   select: 'Choose',
@@ -67,6 +86,7 @@ const DICT_EN: Record<LocaleKey, string> = {
   tabCodexDesc: 'Import Codex pets from Codex or archives (.zip files supported)',
   tabInstalledDesc: 'Pets manage your conversation threads and highlight items that need attention',
   toggleFailed: 'Failed to toggle the pet window',
+  toolPrefix: 'Tool',
   wakePet: 'Wake pet',
 }
 

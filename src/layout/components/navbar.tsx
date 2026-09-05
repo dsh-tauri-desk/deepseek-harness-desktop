@@ -1,7 +1,5 @@
 import type { RefObject } from 'react'
 import {
-  ArrowLeft,
-  ArrowRight,
   LayoutSideContent,
   LayoutSideContentLeft,
   Minus,
@@ -30,13 +28,11 @@ import { useMacOSAppMenu } from './use-macos-app-menu'
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
  *
- *   [侧边栏(展开/收起)] [后退] [前进] [  空白拖拽区  ] [最小化][最大化][后台化(X)]
+ *   [侧边栏(展开/收起)] [  空白拖拽区  ] [最小化][最大化][后台化(X)]
  *
- * - 侧边栏/后退/前进：经 postMessage 操控 iframe 内的 dsh 应用
- *   （`dsh://sidebar:toggle` / `dsh://page:prev` / `dsh://page:next`，
- *   由 dsh-tauri 插件或桌面端注入的导航桥脚本 NAV_SHIM_JS 执行）；
- *   折叠图标与按钮禁用态由 iframe 回报的
- *   `dsh://sidebar:collapsed` / `dsh://page:firsted` / `dsh://page:lasted` 同步。
+ * - 侧边栏：经 postMessage 操控 iframe 内的 dsh 应用
+ *   （`dsh://sidebar:toggle`，由 dsh-tauri 插件或桌面端注入的导航桥脚本
+ *   NAV_SHIM_JS 执行）；折叠图标由 iframe 回报的 `dsh://sidebar:collapsed` 同步。
  *   左侧控件只在「dsh-tauri 插件已启用（已安装）」且存在 iframe 时渲染：
  *   原生桥缺席时控件没有可靠接收方，避免出现点了没反应的死按钮。
  * - 空白拖拽区：Tauri 原生 `data-tauri-drag-region`（顶层文档直接生效），
@@ -121,7 +117,7 @@ export function Navbar({ iframeRef }: NavbarProps) {
   const { t } = useTranslation()
   const isFullscreen = useMacOSFullscreen()
   const { plugins } = useDshPlugins()
-  const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
+  const { sidebarCollapsed, sendNav } = useIframeTauri(iframeRef)
   const { updateInfo } = useStore(store.desktopUpdater)
 
   const openConfigDialog = useOverlay(ConfigDialog)
@@ -241,29 +237,6 @@ export function Navbar({ iframeRef }: NavbarProps) {
             else={<LayoutSideContent />}
           />
         </Button>
-
-        <Button
-          className="rounded-lg size-7"
-          isIconOnly
-          size="sm"
-          variant="ghost"
-          aria-label={t('nav.back')}
-          isDisabled={!canGoBack}
-          onPress={() => { sendNav('page:prev') }}
-        >
-          <ArrowLeft />
-        </Button>
-        <Button
-          className="rounded-lg size-7"
-          isIconOnly
-          size="sm"
-          variant="ghost"
-          aria-label={t('nav.forward')}
-          isDisabled={!canGoForward}
-          onPress={() => { sendNav('page:next') }}
-        >
-          <ArrowRight />
-        </Button>
       </If>
       <If cond={!IS_MACOS}>
         <div className="ml-1">
@@ -280,7 +253,7 @@ export function Navbar({ iframeRef }: NavbarProps) {
               className="rounded-lg h-6 text-xs px-1.5"
               size="sm"
               variant="ghost"
-              aria-label={t('app.expand_sidebar')}
+              aria-label={t('app.help')}
             >
               {t('app.help')}
             </Button>

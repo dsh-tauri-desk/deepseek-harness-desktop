@@ -12,8 +12,8 @@
   "app": {
     "macOSPrivateApi": true,
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost dsh-pet://localhost http://dsh-pet.localhost; img-src 'self' asset: http://asset.localhost data: dsh-pet://localhost http://dsh-pet.localhost; media-src 'self' data: dsh-pet://localhost http://dsh-pet.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; frame-src http://127.0.0.1:*",
-      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421 dsh-pet://localhost http://dsh-pet.localhost; img-src 'self' asset: http://asset.localhost data: dsh-pet://localhost http://dsh-pet.localhost; media-src 'self' data: dsh-pet://localhost http://dsh-pet.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; frame-src http://127.0.0.1:*"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost dsh-pet://localhost http://dsh-pet.localhost; img-src 'self' asset: http://asset.localhost data: dsh-pet://localhost http://dsh-pet.localhost https://raw.githubusercontent.com; media-src 'self' data: dsh-pet://localhost http://dsh-pet.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; frame-src http://127.0.0.1:*",
+      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421 dsh-pet://localhost http://dsh-pet.localhost; img-src 'self' asset: http://asset.localhost data: dsh-pet://localhost http://dsh-pet.localhost https://raw.githubusercontent.com; media-src 'self' data: dsh-pet://localhost http://dsh-pet.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; frame-src http://127.0.0.1:*"
     }
   },
   "bundle": {

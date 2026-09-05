@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
-import type { ToastUpdateEvent } from '@/utils/toast'
+import type { ToastClearEvent, ToastCloseEvent, ToastUpdateEvent } from '@/utils/toast'
 import { useEventBus } from '@hairy/react-lib'
 import { Spinner, Toast } from '@heroui/react'
 import { useState } from 'react'
 import { If } from 'react-if-lite'
-import { activeQueues, placements } from '@/utils/toast'
+import { activeQueues, placements, TOAST_CLEAR_EVENT, TOAST_CLOSE_EVENT } from '@/utils/toast'
 
 interface ToastProviderProps {
   children?: ReactNode
@@ -26,6 +26,23 @@ export function ToastProvider(props: ToastProviderProps) {
       next.set(event.key, { ...(current.get(event.key) ?? {}), ...event.options })
       return next
     })
+  })
+
+  // toast.close / 超时自动关闭 / toast.clear 后从 updates 摘除 key，
+  // 避免 key 残留到 provider 卸载（旧 toast 重开 / 无界内存增长）。
+  useEventBus<ToastCloseEvent>(TOAST_CLOSE_EVENT).on((event) => {
+    if (event === undefined || typeof event.key !== 'string')
+      return
+    setUpdates((current) => {
+      if (!current.has(event.key))
+        return current
+      const next = new Map(current)
+      next.delete(event.key)
+      return next
+    })
+  })
+  useEventBus<ToastClearEvent>(TOAST_CLEAR_EVENT).on(() => {
+    setUpdates(new Map())
   })
 
   return (

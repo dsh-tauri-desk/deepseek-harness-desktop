@@ -55,12 +55,18 @@ export interface PetConfig {
   eventsRefreshSec?: Record<string, number>
 }
 
-/** 从字符串池等概率抽一个；exclude 排除某个名字（避免连续重复）。 */
-export function pick<T>(pool: readonly T[], exclude?: T): T {
+/**
+ * 从字符串池等概率抽一个；exclude 排除某个名字（避免连续重复）。
+ * 池为空时返回 undefined（Rust 侧 `validate_preset_pool_entries` 明确允许空池，
+ * 由调用方决定回落策略），签名如实反映这一点。
+ */
+export function pick<T>(pool: readonly T[], exclude?: T): T | undefined {
   const entries = exclude === undefined ? pool : pool.filter(item => item !== exclude)
   // 排除后池空（单元素池 + 排除自己）：退回原池抽——宁可重复，也不要返回 undefined
   const source = entries.length > 0 ? entries : pool
-  return source[Math.floor(Math.random() * source.length)] ?? source[0]
+  if (source.length === 0)
+    return undefined
+  return source[Math.floor(Math.random() * source.length)]
 }
 
 /**
@@ -107,7 +113,7 @@ export function pickCategoryAction(
   idlePool: readonly string[],
   facing: 'left' | 'right',
   current: string,
-): { id: string, name: string } {
+): { id: string, name: string | undefined } {
   const category = pickWeightedCategory(categories, facing)
   if (category === null)
     return { id: 'FALLBACK', name: pick(idlePool, current) }
@@ -174,5 +180,7 @@ export function resolvePresetName(
   if (pool === null || pool.length === 0)
     return null
   const name = pick(pool)
+  if (name === undefined)
+    return null
   return assets[name] !== undefined ? name : null
 }

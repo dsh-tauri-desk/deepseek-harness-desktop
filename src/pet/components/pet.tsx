@@ -348,23 +348,36 @@ export function Pet(props: PetProps) {
   // 点击回应：clickCount 变化（useDrag 判定「500ms 内两次按下且未拖拽 = 双击」后递增）
   // → 播放一次点击回应动画。adHoc 优先级在会话 override 之上：双击回应可打断会话状态，
   // 播完回落原动画（handleEnded）。动画名来自预设 config.jsonc 的 clicks 池（协议，
-  // 池条目 = 动画名 = webm 文件名主名）；配置缺失/池条目不可播放时回落 waving。
+  // 池条目 = 动画名 = webm 文件名主名）；配置缺失/池条目不可播放时不设 adHoc——
+  // 宁可这次点击无回应，也不能把 activity 卡在永远无法播放的 adHoc 名字上
+  // （adHoc 只能靠视频 ended 事件清除，播不出来就卡死待机链）。
   useEffect(() => {
     if (props.clickCount === undefined || props.clickCount === prevClickRef.current)
       return undefined
     prevClickRef.current = props.clickCount
     const entry = pick(clicksPool)
-    const status = isPreset ? (entry ?? 'waving') : (toAdHocStatus(entry) ?? 'waving')
-    // 点击回应：以 props 变化驱动一次性动画状态，属于事件联动而非渲染副作用。
+    if (isPreset) {
+      // 预设：池条目必须是 assets 里真实存在的动画名才播；否则跳过本次回应。
+      if (entry !== undefined && assets[entry] !== undefined) {
+        // 点击回应：以 props 变化驱动一次性动画状态，属于事件联动而非渲染副作用。
+        // eslint-disable-next-line react/set-state-in-effect
+        setAdHoc({ seq: ++adHocSeqRef.current, status: entry })
+      }
+      return undefined
+    }
+    // 自定义宠物：池条目归一化失败时回落 waving 精灵动画（原行为）。
+    const status = toAdHocStatus(entry) ?? 'waving'
     // eslint-disable-next-line react/set-state-in-effect
     setAdHoc({ seq: ++adHocSeqRef.current, status })
-  }, [clicksPool, isPreset, props.clickCount])
+  }, [assets, clicksPool, isPreset, props.clickCount])
 
   // 待机链（dsh-pet 权重掷骰链）：预设宠物长时间持续待机时，以低频
   // （IDLE_TURN_DELAY_MIN~MAX 随机间隔）按 config.jsonc 的 animationWeights 掷骰，
   // 命中 turn/action 才插播一次一次性动画，平时保持循环待机。move 命中时因 DSH
   // 不自动漫游而保持待机（协议字段保留，行为对齐「移除自动移动」规格）。
-  // 池条目即动画名：turn/action 命中的条目直接作为 adHoc.status 交给视频切换层。
+  // 池条目即动画名：turn/action 命中的条目直接作为 adHoc.status 交给视频切换层；
+  // 条目在 assets 里不存在时跳过本次掷骰（宁可继续待机，也不把 activity 卡在
+  // 无法播放的 adHoc 名字上——adHoc 只靠视频 ended 清除，播不出来待机链就停摆）。
   useEffect(() => {
     if (isPreset === false || reducedMotion || activity !== 'idle')
       return undefined
@@ -375,7 +388,7 @@ export function Pet(props: PetProps) {
         const kind = rollKind(Math.random(), weights)
         if (kind === 'turn' && turnPool.length > 0) {
           const status = pick(turnPool)
-          if (status !== undefined && status !== 'idle') {
+          if (status !== undefined && status !== 'idle' && assets[status] !== undefined) {
             setAdHoc({ seq: ++adHocSeqRef.current, status })
             return
           }
@@ -383,7 +396,8 @@ export function Pet(props: PetProps) {
         if (kind === 'action' && categories.length > 0) {
           const current = adHocRef.current?.status ?? 'idle'
           const action = pickCategoryAction(categories, idlePool, 'left', current)
-          if (action.name !== undefined && action.name !== 'idle' && action.name !== current) {
+          if (action.name !== undefined && action.name !== 'idle' && action.name !== current
+            && assets[action.name] !== undefined) {
             setAdHoc({ seq: ++adHocSeqRef.current, status: action.name })
             return
           }
@@ -394,7 +408,7 @@ export function Pet(props: PetProps) {
     }
     scheduleNextRoll()
     return () => window.clearTimeout(timer)
-  }, [activity, categories, idlePool, isPreset, reducedMotion, turnPool, weights])
+  }, [activity, assets, categories, idlePool, isPreset, reducedMotion, turnPool, weights])
 
   useEffect(() => {
     const sprite = spriteRef.current

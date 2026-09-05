@@ -141,6 +141,11 @@ export function useDrag(dragRef: RefObject<HTMLElement | null>): UseDragResult {
       setDirection(undefined)
       if (isDoubleClick)
         setClickCount(count => count + 1)
+      // 按下即武装两级停歇计时：Windows 原生拖拽（PostMessageW 模态循环）会吞掉
+      // pointerup/pointercancel，若用户按住不移动（零位移按压），onMoved 永不触发、
+      // armTimers 永远不会被调用——没有这里的兜底，拖拽会话会残留到下一次按下，
+      // 期间任何程序化窗口移动（如设置页 setSize）都会把 Moved 事件当成拖拽输入。
+      armTimers()
       void appWindow.startDragging().catch(() => {})
     }
 

@@ -135,6 +135,14 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
   const downloadTimersRef = useRef<Record<string, ReturnType<typeof setInterval>>>({})
   const [size, setSize] = useState(status?.pet_size ?? PET_DEFAULT_SIZE)
   const committedSizeRef = useRef<number | null>(null)
+  /**
+   * 尺寸提交串行链：range 拖动连续 onChange 时按顺序逐个提交，防止多个 setPetSize
+   * 请求乱序完成、旧值覆盖最终值；链任务执行时只取「最新的 pending 值」，
+   * 拖动期间快速滑动只提交最终值。
+   */
+  const sizeCommitChainRef = useRef<Promise<void>>(Promise.resolve())
+  /** 链上任务实际提交的值（拖动期间每次 onChange 覆盖为最新）。 */
+  const pendingSizeRef = useRef<number | null>(null)
   const enabled = Boolean(status?.enabled)
   const visible = Boolean(status?.visible)
   const active = status?.active_pet ?? BUILTIN_PET_ID
@@ -314,17 +322,26 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     }
   }
 
-  async function commitSize(value: number): Promise<void> {
+  function commitSize(value: number): void {
     setError(null)
-    try {
-      const nextStatus = await setPetSize(value)
-      committedSizeRef.current = value
-      setPetStatus(nextStatus)
-    }
-    catch (sizeError) {
-      console.error('[dsh-tauri-pet] set size failed:', sizeError)
-      setError(text('setSizeFailed'))
-    }
+    // 记录最新值并把提交任务追加到串行链尾：任何时刻链上只有一个在途请求，
+    // 完成顺序与发起顺序一致，最终值必然最后落盘。
+    pendingSizeRef.current = value
+    sizeCommitChainRef.current = sizeCommitChainRef.current.then(async () => {
+      const latest = pendingSizeRef.current
+      if (latest === null)
+        return
+      pendingSizeRef.current = null
+      try {
+        const nextStatus = await setPetSize(latest)
+        committedSizeRef.current = latest
+        setPetStatus(nextStatus)
+      }
+      catch (sizeError) {
+        console.error('[dsh-tauri-pet] set size failed:', sizeError)
+        setError(text('setSizeFailed'))
+      }
+    })
   }
 
   async function createPet(): Promise<void> {

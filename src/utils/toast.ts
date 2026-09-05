@@ -13,6 +13,19 @@ export interface ToastUpdateEvent {
   options: ToastUpdateOptions
 }
 
+/** toast 关闭事件（toast.close / 超时自动关闭）。 */
+export interface ToastCloseEvent {
+  key: string
+}
+
+/** toast 全部清除事件（toast.clear）。 */
+export interface ToastClearEvent {
+  key?: undefined
+}
+
+export const TOAST_CLOSE_EVENT = 'toast.close'
+export const TOAST_CLEAR_EVENT = 'toast.clear'
+
 export type Placement = NonNullable<ToastVariants['placement']>
 export const placements = [
   'top start',
@@ -54,6 +67,9 @@ export const toast = Object.assign(
       onClose: () => {
         toastContents.delete(key)
         placementsKeys.delete(key)
+        // 超时/显式关闭都可能发生：通知 provider 清理 updates，避免 key 残留
+        // 到 provider 卸载（旧 toast 重开 / 内存泄漏）。
+        emitter.emit(TOAST_CLOSE_EVENT, { key } satisfies ToastCloseEvent)
         onClose?.()
       },
     })
@@ -75,12 +91,14 @@ export const toast = Object.assign(
         activeQueues[placement].close(key)
       else
         toastContents.delete(key)
+      emitter.emit(TOAST_CLOSE_EVENT, { key } satisfies ToastCloseEvent)
     },
 
     clear(): void {
       toastContents.clear()
       placementsKeys.clear()
       placements.forEach(p => activeQueues[p].clear())
+      emitter.emit(TOAST_CLEAR_EVENT, {} satisfies ToastClearEvent)
     },
   },
 )

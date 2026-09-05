@@ -89,6 +89,11 @@ describe('pick', () => {
     expect(pick(['a'], 'a')).toBe('a')
     vi.restoreAllMocks()
   })
+
+  it('returns undefined for an empty pool (honest typing, no silent fallback)', () => {
+    expect(pick([])).toBeUndefined()
+    expect(pick([], 'a')).toBeUndefined()
+  })
 })
 
 describe('poolEntryToStatus', () => {

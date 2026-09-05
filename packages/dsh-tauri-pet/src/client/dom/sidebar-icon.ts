@@ -24,6 +24,9 @@ const PET_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="curr
 /** 未选择宠物提示展示时长（ms）。 */
 const NO_PET_HINT_MS = 2600
 
+/** 未决的未选择提示计时器（单按钮场景，重复点击先取消再重排）。 */
+let hintTimer: ReturnType<typeof setTimeout> | undefined
+
 /** 桌宠是否已选择（启用即视为已选择；未启用=未选择，点击只提示）。 */
 function petSelected(): boolean {
   return Boolean(getPetUiSnapshot().status?.enabled)
@@ -52,12 +55,17 @@ async function togglePetEnabled(): Promise<void> {
 
 /** 点击未选择宠物时短暂展示「请在设置页选择你的宠物」提示。 */
 function flashNoPetHint(button: HTMLButtonElement): void {
-  const previous = button.getAttribute('data-tip') ?? ''
+  // 取消上一个未决提示：提示窗口内再次点击只重启计时，不叠加多个 timer；
+  // 恢复时写死基础 label（text('name')），而不是读回此刻的 data-tip——否则
+  // 第二次点击后恢复的是提示文本本身，tooltip 会永久卡在「未选择宠物…」。
+  if (hintTimer !== undefined)
+    window.clearTimeout(hintTimer)
   button.setAttribute('data-tip', text('noPetSelected'))
   button.classList.add('dshpet-iconHint')
-  window.setTimeout(() => {
+  hintTimer = window.setTimeout(() => {
+    hintTimer = undefined
     button.classList.remove('dshpet-iconHint')
-    button.setAttribute('data-tip', previous)
+    button.setAttribute('data-tip', text('name'))
   }, NO_PET_HINT_MS)
 }
 

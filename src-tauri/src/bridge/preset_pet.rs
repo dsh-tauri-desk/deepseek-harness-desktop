@@ -212,7 +212,9 @@ fn tarball_urls(spec: &PresetPetSpec) -> Result<Vec<String>, String> {
     Ok(vec![primary.clone(), config::mirror_download_url(&primary)])
 }
 
-/// 解压产物必须含可解析的 `config.jsonc`（JSONC 协议，剥注释后为合法 JSON）。
+/// 解压产物必须含可解析的 `config.jsonc`（JSONC 协议，剥注释后为合法 JSON），
+/// 且形状必须满足完整协议校验——与 `get_preset_pet_config` 共用同一校验，否则
+/// 形状残缺的 preset 会「安装成功、每次读取都报错」。
 fn validate_preset_config(root: &Path) -> Result<(), String> {
     let path = root.join("config.jsonc");
     if !path.is_file() {
@@ -224,12 +226,7 @@ fn validate_preset_config(root: &Path) -> Result<(), String> {
     let json = strip_jsonc(text);
     let value: serde_json::Value = serde_json::from_str(&json)
         .map_err(|error| format!("PET_PRESET_CONFIG_INVALID: config.jsonc is not valid JSON: {error}"))?;
-    if !value.get("animations").map(serde_json::Value::is_object).unwrap_or(false) {
-        return Err(
-            "PET_PRESET_CONFIG_INVALID: config.jsonc must contain an animations object".to_string(),
-        );
-    }
-    Ok(())
+    validate_preset_pet_config(&value)
 }
 
 /// 限量读取文件（与 `bridge::pet` 同一实现，避免跨模块可见性耦合）。
@@ -497,6 +494,9 @@ async fn download_tarball(
     let client = reqwest::Client::builder()
         .user_agent(PET_PRESET_USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(20))
+        // 响应体读取空闲超时（chunked 流式下载）：只限制「一段时间读不到新字节」，
+        // 不影响整包时长；否则连接半挂（服务器不再发包但不关连接）会无限等待。
+        .read_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|error| format!("PET_PRESET_DOWNLOAD_FAILED: failed to build client: {error}"))?;
 
@@ -765,7 +765,21 @@ fn percent_encode_segment(value: &str) -> String {
     out
 }
 
+/// 单个十六进制数字 → 值；非十六进制返回 None。
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// 百分号解码为 UTF-8 字符串；没有 % 的路径原样返回（兼容 WebView 已解码的请求）。
+///
+/// 逐字节读取两个 hex digit：不能对 &str 做 `&value[i..i+3]` 字节偏移切片——
+/// % 后跟一个 ASCII 字节 + 多字节 UTF-8 字符时，偏移会落在字符中间导致 panic；
+/// 解码后的宠物资产名含多字节字符（中文动画名）。
 fn percent_decode_segment(value: &str) -> Result<String, String> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -775,10 +789,11 @@ fn percent_decode_segment(value: &str) -> Result<String, String> {
             if index + 2 >= bytes.len() {
                 return Err("PET_PRESET_ASSET_PATH_INVALID: truncated percent-encoding".to_string());
             }
-            let hex = &value[index + 1..index + 3];
-            let byte = u8::from_str_radix(hex, 16)
-                .map_err(|_| "PET_PRESET_ASSET_PATH_INVALID: bad percent-encoding".to_string())?;
-            out.push(byte);
+            let hi = hex_digit(bytes[index + 1])
+                .ok_or_else(|| "PET_PRESET_ASSET_PATH_INVALID: bad percent-encoding".to_string())?;
+            let lo = hex_digit(bytes[index + 2])
+                .ok_or_else(|| "PET_PRESET_ASSET_PATH_INVALID: bad percent-encoding".to_string())?;
+            out.push((hi << 4) | lo);
             index += 3;
         } else {
             out.push(bytes[index]);
@@ -1428,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn config_validation_requires_animations_object() {
+    fn config_validation_rejects_truncated_shape_and_accepts_full_protocol() {
         let directory = TestDirectory::new("config");
         fs::create_dir_all(directory.0.join("staging")).unwrap();
         fs::write(
@@ -1436,7 +1451,11 @@ mod tests {
             "// 注释\n{\n  \"animations\": { \"idle\": [\"idle\"] }\n}\n",
         )
         .unwrap();
-        assert!(validate_preset_config(&directory.0.join("staging")).is_ok());
+        // 形状残缺（只有 animations 对象）：安装期完整校验必须拒绝——否则 preset
+        // 「安装成功、每次 get_preset_pet_config 都报错」，与实际读取行为不一致。
+        assert!(validate_preset_config(&directory.0.join("staging"))
+            .unwrap_err()
+            .starts_with("PET_PRESET_CONFIG_INVALID:"));
 
         let missing = directory.0.join("staging-missing");
         fs::create_dir_all(&missing).unwrap();
@@ -1444,6 +1463,27 @@ mod tests {
         assert!(validate_preset_config(&missing)
             .unwrap_err()
             .starts_with("PET_PRESET_CONFIG_INVALID:"));
+
+        // 完整协议形状：安装校验通过（与 get_preset_pet_config 同一校验）。
+        let full = directory.0.join("staging-full");
+        fs::create_dir_all(&full).unwrap();
+        fs::write(
+            full.join("config.jsonc"),
+            r#"{
+                "pets": [{ "id": "pet" }],
+                "animations": {
+                    "idle": ["idle"],
+                    "turn": ["turn"],
+                    "drag": ["drag"],
+                    "clicks": ["click"],
+                    "moves": { "default": {}, "actions": [{ "name": "move" }] },
+                    "categories": [{ "id": "cat", "weight": 1, "actions": ["a"] }]
+                },
+                "animationWeights": { "idle": 10, "turn": 5, "move": 5 }
+            }"#,
+        )
+        .unwrap();
+        assert!(validate_preset_config(&full).is_ok());
     }
 
     #[test]

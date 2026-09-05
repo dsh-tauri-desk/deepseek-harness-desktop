@@ -54,10 +54,13 @@ pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseSt
     }
     // 监听线程失败时复位标记，允许前端重试（如钩子安装被系统拒绝）。
     let started_on_error = state.started.clone();
+    // 监听线程失败信号：置位后节流线程退出，避免「钩子没装上、轮询线程却常驻泄漏」。
+    let stop = Arc::new(AtomicBool::new(false));
     let latest: Arc<Mutex<Option<MouseCursorPos>>> = Arc::default();
 
     // 监听线程：rdev::listen 为阻塞式，回调只写最新坐标，不做任何 IO。
     let store = latest.clone();
+    let listen_stop = stop.clone();
     thread::spawn(move || {
         let callback = move |event: rdev::Event| {
             if let rdev::EventType::MouseMove { x, y } = event.event_type {
@@ -66,15 +69,18 @@ pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseSt
         };
         if let Err(error) = rdev::listen(callback) {
             log::error!("[pet-mouse] rdev listen failed: {error:?}");
+            listen_stop.store(true, Ordering::SeqCst);
             started_on_error.store(false, Ordering::SeqCst);
         }
     });
 
     // 节流线程：16ms 轮询最新坐标，变化才 emit（鼠标静止零事件）。
+    // listen 失败时 stop 置位，本线程退出——不再空转轮询到进程结束。
     let emitter = window.clone();
+    let throttle_stop = stop.clone();
     thread::spawn(move || {
         let mut last_sent: Option<MouseCursorPos> = None;
-        loop {
+        while !throttle_stop.load(Ordering::SeqCst) {
             let current = latest.lock().expect("pet mouse store poisoned").take();
             if let Some(pos) = current {
                 if last_sent != Some(pos) {

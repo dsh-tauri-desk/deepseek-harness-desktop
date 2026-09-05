@@ -710,6 +710,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 match window.label() {
                     label if label == crate::desktop::pet::PET_WINDOW_LABEL => {
                         crate::desktop::pet::save_pet_window_geometry(window);
+                        // pet 窗口缩放不参与全屏菜单同步与主窗口 Accessory 过渡；
+                        // 直接返回，避免 fall-through 消耗挂起的 Accessory 切换。
+                        return;
                     }
                     _ => crate::config::save_geometry(window),
                 }

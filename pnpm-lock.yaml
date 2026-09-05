@@ -204,7 +204,7 @@ catalogs:
       specifier: ^19.2.4
       version: 19.2.4
     '@types/semver':
-      specifier: ^7.8.0
+      specifier: catalog:types
       version: 7.8.0
   ui:
     css-render:

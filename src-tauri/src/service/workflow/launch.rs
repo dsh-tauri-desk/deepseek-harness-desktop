@@ -547,6 +547,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
+    // 启动新一轮 dsh 会话：bump generation、清空旧 URL。旧 stdout 线程的迟到
+    // 写因 generation 不匹配被 [`super::url_slot::try_set`] 丢弃。
+    let generation = super::url_slot::bump_generation();
     let spawn_result: SpawnResult = {
         #[cfg(windows)]
         {
@@ -774,7 +777,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             );
             // 记录 PID+端口供下次启动清扫崩溃残留的孤儿实例（见 sweep_orphan_harness）
             persist_harness_pid(&app_handle, pid, setting.port);
-            spawn_output_readers(stdout, stderr, log_path);
+            spawn_output_readers(stdout, stderr, log_path, &app_handle, generation);
             Ok(())
         }
         Err(e) => {

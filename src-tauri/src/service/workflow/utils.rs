@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
+use tauri::AppHandle;
 
 const DSH_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DSH_MAX_BACKUPS: usize = 3;
@@ -157,29 +158,36 @@ pub fn is_port_in_use(port: u16) -> bool {
     TcpListener::bind(addr).is_err()
 }
 
-/// 在独立线程中读取子进程的输出，同时写入日志文件
+/// 在独立线程中读取子进程的输出，同时写入日志文件。
+///
+/// stdout 还会解析 `dsh web: <URL>?token=...` 这一行（写入 [`super::url_slot`] 并
+/// 通过 Tauri 事件 [`super::url_extract::URL_EVENT`] 推前端），让桌面 WebView
+/// iframe 拿到 alpha 浏览器会话鉴权所需的 token URL；stderr 不解析（避免插件
+/// 子进程输出误判）。
 ///
 /// # 参数
-/// - `stdout`: 子进程的标准输出
-/// - `stderr`: 子进程的标准错误输出
-/// - `log_path`: 前端日志面板读取的日志文件
-pub fn spawn_output_readers<R1, R2>(stdout: Option<R1>, stderr: Option<R2>, log_path: PathBuf)
-where
+/// - `generation`: 本次启动的 generation 代号（[`super::url_slot::bump_generation`]
+///   的返回值）。旧进程的迟到写会被 [`super::url_slot::try_set`] 丢弃。
+pub fn spawn_output_readers<R1, R2>(
+    stdout: Option<R1>,
+    stderr: Option<R2>,
+    log_path: PathBuf,
+    app_handle: &AppHandle,
+    generation: u64,
+) where
     R1: Read + Send + 'static,
     R2: Read + Send + 'static,
 {
-    // 在独立线程中读取 stdout
     if let Some(stdout) = stdout {
         let log_path = log_path.clone();
+        let app_handle = app_handle.clone();
         thread::spawn(move || {
-            drain_subprocess_output(BufReader::new(stdout), log_path, log::Level::Info);
+            drain_subprocess_output(BufReader::new(stdout), log_path, log::Level::Info, Some(&app_handle), generation);
         });
     }
-
-    // 在独立线程中读取 stderr
     if let Some(stderr) = stderr {
         thread::spawn(move || {
-            drain_subprocess_output(BufReader::new(stderr), log_path, log::Level::Warn);
+            drain_subprocess_output(BufReader::new(stderr), log_path, log::Level::Warn, None, generation);
         });
     }
 }
@@ -196,16 +204,23 @@ fn drain_subprocess_output<R: Read + Send + 'static>(
     mut reader: BufReader<R>,
     log_path: PathBuf,
     level: log::Level,
+    app_handle: Option<&AppHandle>,
+    generation: u64,
 ) {
+    let parse_url = app_handle.is_some() && matches!(level, log::Level::Info);
     loop {
         let mut bytes = Vec::new();
         match reader.read_until(b'\n', &mut bytes) {
             Ok(0) => break, // EOF
             Ok(_) => {
-                // 去除行尾 \n / \r\n（与旧 lines() 行为一致）
                 let bytes = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
                 let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
                 let line = String::from_utf8_lossy(bytes);
+                if parse_url {
+                    if let Some(url) = super::url_extract::extract(&line) {
+                        super::url_extract::emit_url_changed(app_handle.unwrap(), &url, generation);
+                    }
+                }
                 match level {
                     log::Level::Warn => log::warn!(target: "dsh", "{}", line),
                     _ => log::info!(target: "dsh", "{}", line),
@@ -332,6 +347,8 @@ mod tests {
             std::io::BufReader::new(std::io::Cursor::new(data)),
             log.clone(),
             log::Level::Warn,
+            None,
+            0,
         );
 
         let content = fs::read_to_string(&log).unwrap();
@@ -368,6 +385,8 @@ mod tests {
             std::io::BufReader::new(std::io::Cursor::new(b"a\r\nb\n".to_vec())),
             log.clone(),
             log::Level::Info,
+            None,
+            0,
         );
 
         let content = fs::read_to_string(&log).unwrap();

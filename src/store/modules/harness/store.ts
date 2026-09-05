@@ -69,6 +69,9 @@ let bootToken = 0
 let readinessCommitToken: number | null = null
 /** 首次自动启动去重（React StrictMode 会重复挂载 effect） */
 let bootStarted = false
+/** 最近一次应用的 harness-url generation：来自事件或 get_runtime_info；
+ * 之后的延迟事件/响应若 generation <= 此值则丢弃，避免旧端口 fallback 覆盖新 token URL。 */
+let harnessUrlId = 0
 let pluginActivitySequence = 0
 let pluginActivityReason = ''
 const restartFlight = new SingleFlight<void>()
@@ -84,6 +87,19 @@ function generateTimestampedUrl(baseUrl: string): string {
   const timestamp = Date.now()
   const separator = baseUrl.includes('?') ? '&' : '?'
   return `${baseUrl}${separator}t=${timestamp}`
+}
+
+/** 应用后端 runtime_info 返回的 serviceUrl：仅当 generation 比本地记录新才覆盖。
+ * 防 race：launch_and_wait 流程里同步调用 get_runtime_info 期间，事件监听已可能
+ * 收到 updateHarnessUrl（同一 launch）；两条路径同时写 serviceUrl 必须以 generation
+ * 仲裁，晚到者丢弃。 */
+function applyRuntimeInfo(this: { serviceUrl: string, iframeSrc: string, iframeKey: number }, info: { service_url: string, generation: number }) {
+  if (typeof info.generation === 'number' && info.generation <= harnessUrlId)
+    return
+  if (typeof info.generation === 'number')
+    harnessUrlId = info.generation
+  this.serviceUrl = info.service_url
+  this.iframeSrc = generateTimestampedUrl(info.service_url)
 }
 
 /** 通过 Rust 代理探测服务健康状态（超时 8s，网络抖动时重试） */
@@ -280,8 +296,42 @@ export const harness = defineStore({
         this.listenPluginRecovery(),
         this.listenInternalPhase(),
         this.listenProcessExit(),
+        this.listenHarnessUrl(),
       ])
       await this.boot()
+    },
+
+    /**
+     * 订阅 dsh stdout 解析出的「带 token 的本地访问地址」事件。
+     *
+     * 后端 `spawn_output_readers` 解析 `dsh web: http://127.0.0.1:PORT/?token=XXX`
+     * 这一行后，通过 `harness-url-detected` 推给前端。立刻用含 token 的 URL
+     * 替换之前的 fallback URL（端口推导、不含 token），避免 alpha 浏览器会话
+     * 鉴权失败导致 iframe 永远停在 "Loading plugins…"。重启、核心切换等所有
+     * 走 `HarnessLifecycle::launch` 的路径都会重新推送一次。
+     *
+     * generation  字段：双保险。后端 `try_set` 已经按 generation 拦过一次（写不进
+     * 槽位的就不会 emit），这里再防一次「emit 已入队、用户随后 restart 触发
+     * bump_generation、事件才送达」的 race——旧事件的 generation 小于已应用值，
+     * 直接丢弃，避免端口 fallback 覆盖新 token URL。
+     */
+    async listenHarnessUrl() {
+      try {
+        await listen<{ url: string, generation: number }>('harness-url-detected', (event) => {
+          const { url, generation } = event.payload ?? {}
+          if (!url)
+            return
+          if (typeof generation === 'number' && generation <= harnessUrlId)
+            return
+          if (typeof generation === 'number')
+            harnessUrlId = generation
+          this.serviceUrl = url
+          this.iframeSrc = generateTimestampedUrl(url)
+        })
+      }
+      catch (err) {
+        console.error('[Harness] failed to listen harness-url-detected:', err)
+      }
     },
 
     /** 订阅当前持有的 Harness 根进程退出事件，及时撤下失效 iframe。 */
@@ -528,12 +578,11 @@ export const harness = defineStore({
         throw startupError(phase, reason, 'exited')
       }
 
-      const readyInfo = await invoke<{ service_url: string }>('get_runtime_info')
+      const readyInfo = await invoke<{ service_url: string, generation: number }>('get_runtime_info')
       if (token !== bootToken)
         return false
 
-      this.serviceUrl = readyInfo.service_url
-      this.iframeSrc = generateTimestampedUrl(readyInfo.service_url)
+      applyRuntimeInfo.call(this, readyInfo)
       this.serviceHealthy = true
       this.serviceRunning = true
       this.status = 'ready'
@@ -584,9 +633,8 @@ export const harness = defineStore({
         this.startupPhase = 'process-boot'
         this.startupReason = i18next.t('status.loading_process')
         // 后端遇到端口占用时会自动递增并持久化端口，启动后重新读取真实地址。
-        const runtimeInfo = await invoke<{ service_url: string }>('get_runtime_info')
-        this.serviceUrl = runtimeInfo.service_url
-        this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
+        const runtimeInfo = await invoke<{ service_url: string, generation: number }>('get_runtime_info')
+        applyRuntimeInfo.call(this, runtimeInfo)
 
         const result = await pollHarnessReadiness(
           STARTUP_ABSOLUTE_TIMEOUT,
@@ -665,9 +713,8 @@ export const harness = defineStore({
         catch (err) {
           console.error('[Harness] failed to listen install-progress:', err)
         }
-        const runtimeInfo = await invoke<{ service_url: string }>('get_runtime_info')
-        this.serviceUrl = runtimeInfo.service_url
-        this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
+        const runtimeInfo = await invoke<{ service_url: string, generation: number }>('get_runtime_info')
+        applyRuntimeInfo.call(this, runtimeInfo)
 
         // 已安装过则跳过安装界面，避免每次启动都闪现"正在安装依赖..."
         const config = await invoke<{

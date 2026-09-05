@@ -12,6 +12,8 @@
 //! - [`status`] / [`utils`] / [`win_inspector`] / [`win_spawn`]：既有子模块
 
 pub mod status;
+pub mod url_extract;
+pub mod url_slot;
 pub mod utils;
 pub(crate) mod win_inspector;
 #[cfg(windows)]

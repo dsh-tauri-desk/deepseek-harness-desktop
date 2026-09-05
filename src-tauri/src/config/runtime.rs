@@ -528,6 +528,10 @@ pub struct RuntimeInfo {
     pub app_version: String,
     pub dsh_version: Option<String>,
     pub node_version: String,
+    /// dsh 当前 session 的 generation 代号（来自 [`crate::service::workflow::url_slot`]）。
+    /// 前端用其丢弃 race 下的迟到 service_url（避免旧端口 fallback 覆盖新 token URL）：
+    /// emit 已入 IPC 队列、用户随后 restart 触发 bump_generation、事件才送达的场景。
+    pub generation: u64,
     pub service_url: String,
     pub data_dir: String,
     pub log_path: String,
@@ -536,11 +540,13 @@ pub struct RuntimeInfo {
 }
 
 pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
+    let (current_url, generation) = crate::service::workflow::url_slot::snapshot();
     RuntimeInfo {
         app_version: app.package_info().version.to_string(),
         dsh_version: get_dsh_version(app),
         node_version: get_active_node_version(),
-        service_url: get_dsh_service_url(port),
+        generation,
+        service_url: current_url.unwrap_or_else(|| get_dsh_service_url(port)),
         // 用户数据所在目录 = $DSH_HOME（release 为官方 ~/.dsh，debug 为独立
         // ~/.dsh.dev，见 get_dsh_data_path），不再是 AppData
         data_dir: get_dsh_data_path(app).to_string_lossy().into_owned(),

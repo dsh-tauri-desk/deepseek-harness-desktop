@@ -1,7 +1,5 @@
 import type { RefObject } from 'react'
 import {
-  CircleQuestion,
-  Gear,
   LayoutSideContent,
   LayoutSideContentLeft,
   Minus,
@@ -241,26 +239,23 @@ export function Navbar({ iframeRef }: NavbarProps) {
         </Button>
       </If>
       <If cond={!IS_MACOS}>
-        <div className="ml-1 flex items-center gap-0.5">
+        <div className="ml-1">
           <Button
-            className="rounded-lg size-7"
-            isIconOnly
+            className="rounded-lg h-6 text-xs px-1.5"
             size="sm"
             variant="ghost"
-            aria-label={t('app.config')}
             onPress={handleOpenConfig}
           >
-            <Gear />
+            {t('app.config')}
           </Button>
           <Dropdown>
             <Button
-              className="rounded-lg size-7"
-              isIconOnly
+              className="rounded-lg h-6 text-xs px-1.5"
               size="sm"
               variant="ghost"
               aria-label={t('app.help')}
             >
-              <CircleQuestion />
+              {t('app.help')}
             </Button>
             <Dropdown.Popover className="rounded-md w-5!">
               <Dropdown.Menu>

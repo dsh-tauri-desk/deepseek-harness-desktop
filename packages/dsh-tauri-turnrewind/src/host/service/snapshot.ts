@@ -557,8 +557,15 @@ export async function diffTurnChanges(store: SnapshotStore, beforeCommit: string
  * 运行中实时统计：刷新私有 index 后与 before 快照比较当前工作区。
  *
  * 必须先 `add --all` 再 diff：`git diff <commit>` 只认提交与 index 里出现过的路径，
- * 本轮**新建**的文件在 index 里还不存在，不刷新就会漏掉它们。排除清单同样要带上，
- * 否则实时读数会把「不纳入快照的文件」算进来、与最终结算对不上。
+ * 本轮**新建**的文件在 index 里还不存在，不刷新就会漏掉它们。
+ *
+ * 排除清单在两条命令里的用法**不一样**，别合并：
+ *   - `git add` 用剔除被忽略项的 {@link dropIgnoredExclusions} 结果（指向被忽略目录的
+ *     exclude pathspec 会让 git add 直接失败）；
+ *   - `git diff` 必须带**完整**排除清单：`git add` 不会更新被排除路径的已有 index 条目
+ *     （该路径此前被正常捕获过、之后才进入排除清单，例如嵌套仓库/超限文件被学到），
+ *     没有 pathspec 时 `git diff <commit>` 照样按 index 条目把它的改动算进来，
+ *     实时读数就会比最终结算多出这些文件。
  */
 export async function liveDiff(store: SnapshotStore, beforeCommit: string, options: CaptureOptions = {}): Promise<{ ok: true, stats: { fileCount: number, insertions: number, deletions: number } } | { ok: false, reason: string }> {
   const excluded = options.exclude ?? []
@@ -568,7 +575,11 @@ export async function liveDiff(store: SnapshotStore, beforeCommit: string, optio
   const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs(activeExclude, new Set())])
   if (!added.ok)
     return { ok: false, reason: added.error }
-  const numstat = await gitInSnapshot(store, ['diff', '--numstat', '-z', '--no-renames', beforeCommit])
+  // 没有排除项时保持原命令形态（`-- . :(exclude)…` 只在真的需要时才加）。
+  const diffArgs = ['diff', '--numstat', '-z', '--no-renames', beforeCommit]
+  if (excluded.length > 0)
+    diffArgs.push('--', '.', ...excludePathspecs(excluded, new Set()))
+  const numstat = await gitInSnapshot(store, diffArgs)
   if (!numstat.ok)
     return { ok: false, reason: numstat.error }
   let fileCount = 0

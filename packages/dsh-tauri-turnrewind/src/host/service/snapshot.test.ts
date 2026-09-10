@@ -398,6 +398,32 @@ describe('被 .gitignore 忽略的排除路径', () => {
     if (live.ok)
       expect(live.stats).toEqual({ fileCount: 1, insertions: 1, deletions: 0 })
   })
+
+  it('已经被捕获过、之后才进入排除清单的路径不会混进运行中实时读数', async () => {
+    // 回归背景：`git add` 不会更新被排除路径的既有 index 条目，而 `git diff <commit>`
+    // 不带 pathspec 时照样按 index 条目把它的改动算进来——实时读数于是比最终结算多出
+    // 这些文件（与「排除清单要带上」的注释意图不符）。CodeRabbit 复核指出，已在实测复现。
+    const { dshHome, worktree } = await fixture()
+    const store = snapshotStoreFor(dshHome, worktree)
+    await mkdir(join(worktree, 'vendor'), { recursive: true })
+    await writeFile(join(worktree, 'vendor', 'file.txt'), 'before\n', 'utf8')
+
+    // 第一轮：vendor/ 还没被排除 → 正常进快照（也就进了私有 index）。
+    const before = await captureSnapshot(store, turnRef('s15', 1, 'before'), 'before')
+    expect(before.ok).toBe(true)
+    if (!before.ok)
+      return
+
+    // 之后它才进入排除清单（学到的嵌套仓库 / 超限文件同理会这样），并发生改动。
+    await writeFile(join(worktree, 'vendor', 'file.txt'), 'after\n', 'utf8')
+    const listed = await gitInSnapshot(store, ['ls-files', '--', 'vendor/file.txt'])
+    expect(listed.ok && listed.out.includes('vendor/file.txt')).toBe(true)
+
+    const live = await liveDiff(store, before.commit, { exclude: ['vendor'] })
+    expect(live.ok).toBe(true)
+    if (live.ok)
+      expect(live.stats).toEqual({ fileCount: 0, insertions: 0, deletions: 0 })
+  })
 })
 
 describe('快照仓代数', () => {

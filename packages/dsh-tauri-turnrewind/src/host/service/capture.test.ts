@@ -1,9 +1,11 @@
+import type { WorkspaceQueue } from './queue'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
+import { TURNREWIND_REASON_SNAPSHOT_FAILED } from '../../shared/constants'
 import { createTurnCapture } from './capture'
 import { readLedger } from './ledger'
 import { createWorkspaceQueue } from './queue'
@@ -27,14 +29,29 @@ async function fixture(): Promise<{ dshHome: string, worktree: string }> {
 /** 本次用例建过的捕获编排器（收尾要卸载，否则实时轮询会一直持有临时目录）。 */
 const captures: Array<ReturnType<typeof createTurnCapture>> = []
 
-function captureFor(dshHome: string, captured: number[] = []) {
+function captureFor(dshHome: string, captured: number[] = [], queue: WorkspaceQueue = createWorkspaceQueue()) {
   const capture = createTurnCapture({
     dshHome,
-    queue: createWorkspaceQueue(),
+    queue,
     onCaptured: (_sessionId, _turn, fileCount) => captured.push(fileCount),
   })
   captures.push(capture)
   return capture
+}
+
+/** 可注入失败的队列包装（真实队列放行，`failing` 期间一律拒绝）：复现 git/IO 抛错。 */
+function faultyQueue(): { queue: WorkspaceQueue, setFailing: (value: boolean) => void } {
+  const real = createWorkspaceQueue()
+  let failing = false
+  return {
+    queue: {
+      run: (key, task) => (failing ? Promise.reject(new Error('injected failure')) : real.run(key, task)),
+      size: () => real.size(),
+    },
+    setFailing: (value: boolean) => {
+      failing = value
+    },
+  }
 }
 
 afterEach(async () => {
@@ -137,5 +154,44 @@ describe('turn 结算编排', () => {
     await capture.settleTurn('s4', 9)
     await capture.settleIdle('s4')
     expect((await readLedger(dshHome, 's4')).turns).toEqual([])
+  })
+
+  it('before 快照抛异常（而非收敛成结果对象）时也留一笔账，客户端不会永久缺这一轮', async () => {
+    const { dshHome, worktree } = await fixture()
+    const { queue, setFailing } = faultyQueue()
+    const capture = captureFor(dshHome, [], queue)
+
+    // 复现 git/IO 抛错：runBeginTurn 里的 queue.run 直接拒绝，before 快照连结果对象都没有。
+    setFailing(true)
+    await capture.beginTurn('s7', 1, worktree)
+    setFailing(false)
+    // 结算没有条目可结算，但不能因此把这一轮从账本里抹掉（客户端靠账本行停止重试）。
+    await capture.settleIdle('s7')
+
+    const ledger = await readLedger(dshHome, 's7')
+    expect(ledger.turns.map(turn => turn.turn)).toEqual([1])
+    expect(ledger.turns[0]?.unavailable).toBe(TURNREWIND_REASON_SNAPSHOT_FAILED)
+    expect(ledger.turns[0]?.beforeRef).toBe('')
+  })
+
+  it('结算中途抛错时保留条目，下一次 idle 兜底把这一轮补上（而不是永远没有记录）', async () => {
+    const { dshHome, worktree } = await fixture()
+    const { queue, setFailing } = faultyQueue()
+    const capture = captureFor(dshHome, [], queue)
+
+    await capture.beginTurn('s8', 1, worktree)
+    await writeFile(join(worktree, 'a.txt'), 'one\ntwo\nthree\n', 'utf8')
+
+    // after 快照这一步抛错：账本还没有这一轮。
+    setFailing(true)
+    await expect(capture.settleTurn('s8', 1)).rejects.toThrow('injected failure')
+    expect((await readLedger(dshHome, 's8')).turns).toEqual([])
+
+    // 条目留在活动表里 → 下一次 idle 兜底重试成功（真实运行时任何一次 idle 都会重新扫）。
+    setFailing(false)
+    await capture.settleIdle('s8')
+    const ledger = await readLedger(dshHome, 's8')
+    expect(ledger.turns.map(turn => turn.turn)).toEqual([1])
+    expect(ledger.turns[0]?.files.map(file => file.path)).toEqual(['a.txt'])
   })
 })

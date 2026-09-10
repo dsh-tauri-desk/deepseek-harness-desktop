@@ -11,6 +11,7 @@ import {
   TURNREWIND_REASON_EXPIRED,
   TURNREWIND_REASON_GIT_REQUIRED,
   TURNREWIND_REASON_GIT_UNAVAILABLE,
+  TURNREWIND_REASON_SNAPSHOT_FAILED,
   TURNREWIND_REASON_TURN_ACTIVE,
   TURNREWIND_REASON_UNSAFE_PATH,
 } from '../../shared/constants'
@@ -26,6 +27,7 @@ const REASON_KEYS: Record<string, LocaleKey> = {
   [TURNREWIND_REASON_GIT_UNAVAILABLE]: 'gitUnavailableReason',
   [TURNREWIND_REASON_EXPIRED]: 'expiredReason',
   [TURNREWIND_REASON_TURN_ACTIVE]: 'turnActiveReason',
+  [TURNREWIND_REASON_SNAPSHOT_FAILED]: 'snapshotFailedReason',
   [TURNREWIND_REASON_UNSAFE_PATH]: 'unsafePathReason',
 }
 
@@ -54,6 +56,31 @@ export function formatTotals(totals: { insertions: number, deletions: number }):
   return `+${totals.insertions} -${totals.deletions}`
 }
 
+/**
+ * 账本里是否已经有这一轮的记录（**任何**记录，包括「文件数为 0」与「不可用」）。
+ *
+ * 卡片的重试窗口只该盯住「账本还没有这一轮」，而不是「卡片暂时不可见」：
+ * 前者是 after 快照还在后台结算（要等），后者可能是「这一轮确实没有改动」（等也没用，
+ * 而且会把重试预算白白烧掉）。
+ */
+export function hasTurnRecord(summary: SessionSummary | null, turn: number | undefined): boolean {
+  if (summary === null || turn === undefined)
+    return false
+  return summary.turns.some(item => item.turn === turn)
+}
+
+/**
+ * 第 `attempt` 次重试（0 起）的等待时间：700ms 起指数退避、封顶 5s。
+ * @param attempt - 已失败的重试次数。
+ * @param baseMs - 首次等待。
+ * @param maxMs - 单次等待上限。
+ * @returns 毫秒。
+ */
+export function summaryRetryDelayMs(attempt: number, baseMs: number, maxMs: number): number {
+  const safe = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0
+  return Math.min(baseMs * 2 ** safe, maxMs)
+}
+
 /** 文件名（单文件卡片的标题用它）。 */
 export function basename(path: string): string {
   const segments = path.split('/')
@@ -80,8 +107,21 @@ export function resolveCardState(summary: SessionSummary | null, turn: number | 
   const record = summary.turns.find(item => item.turn === turn)
   if (record === undefined)
     return { kind: 'hidden' }
-  if (record.unavailable !== null && record.unavailable !== undefined)
+  if (record.unavailable !== null && record.unavailable !== undefined) {
+    /*
+      「快照过程失败」是**通用内部失败**：没有文件明细、没有可操作指引。若这一轮连
+      基线都没建立（hasBaseline === false），它从来没有过可撤销的承诺——用户中断、
+      捕获子进程被回收、工作区 git 暂时报错都会落在这里，此时弹「撤销不可用」纯属惊扰
+      （用户反馈：明明什么都没改，却看到一张写着内部错误码的告警卡片）。
+      宿主侧仍然写日志，账本行也保留，诊断信息不丢；这里只是不打扰用户。
+
+      其余原因一律照常呈现：超限类原因说明「这一轮超出撤销范围」，过期类说明
+      「快照已被回收」——都是用户能理解、也可能需要采取行动的信息。
+    */
+    if (record.unavailable === TURNREWIND_REASON_SNAPSHOT_FAILED && record.hasBaseline === false)
+      return { kind: 'hidden' }
     return { kind: 'failed', reason: record.unavailable }
+  }
   if (record.files.length === 0)
     return { kind: 'hidden' }
   if (record.undoneAt !== null && record.undoneAt !== undefined)

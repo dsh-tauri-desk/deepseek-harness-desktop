@@ -300,6 +300,39 @@ function excludePathspecs(paths: readonly string[], directories: ReadonlySet<str
   return specs
 }
 
+/**
+ * 摘掉「已被 git 忽略」的排除路径。
+ *
+ * `git add --all -- . :(exclude)<ignored>` 会**直接失败**（
+ * `The following paths are ignored by one of your .gitignore files`，exit 1），
+ * 而这条错误与「能不能加入」无关——被忽略的路径本来就不会进快照，根本不需要排除。
+ * 一旦某个工作区把嵌套仓库放在被忽略的目录里（本仓库的 `source/` 就是：`.gitignore`
+ * 忽略了整个 `source/`，里面既有被跟踪的 submodule，也有一堆参考克隆），
+ * 每个 turn 的捕获都会因此失败，整个工作区的撤销能力被拖死，卡片只留下
+ * 一句 `TURNREWIND_SNAPSHOT_FAILED`。
+ *
+ * 判定必须交给 git 自己（`check-ignore`）而不是自制正则：它和 `git add` 读的是
+ * 同一份 index 与忽略规则，因此「被排除」与「会被跳过」永远一致。
+ * `check-ignore` 用**退出码**表达否定答案（exit 1 = 一条都没命中，stdout 为空），
+ * 所以失败分支的 stdout 也要读（见 git.ts / GitResult）。
+ *
+ * 判定失败（git 不可用等）时原样保留全部路径：宁可退回改动前的行为，也不要把
+ * 真正需要排除的路径漏掉（漏掉才会让超大文件/嵌套仓库进快照）。
+ *
+ * @param store - 私有快照仓（提供 git-dir / work-tree 与 index 口径）。
+ * @param paths - 候选排除路径（相对工作区根）。
+ * @returns 需要写成 pathspec 的路径。
+ */
+async function dropIgnoredExclusions(store: SnapshotStore, paths: readonly string[]): Promise<string[]> {
+  if (paths.length === 0)
+    return []
+  const listed = await gitInSnapshot(store, ['check-ignore', '-z', '--stdin'], { input: `${paths.join('\0')}\0` })
+  if (listed.out.length === 0)
+    return [...paths]
+  const ignored = new Set(splitNul(listed.out))
+  return paths.filter(path => !ignored.has(path))
+}
+
 /** 从 git add 的失败信息里解析出「没有提交的嵌套仓库」路径（可能不存在）。 */
 function parseNestedRepoPath(error: string): string | null {
   const match = /'([^']+)' does not have a commit checked out/.exec(error)
@@ -383,11 +416,14 @@ export async function captureSnapshot(store: SnapshotStore, ref: string, message
   let nestedAttempts = 0
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
+    // 每轮重新过滤：循环里还会学到新的排除项（嵌套仓库/超限文件），而**被忽略的路径
+    // 一旦出现在 exclude pathspec 里就会让 git add 直接失败**（见 dropIgnoredExclusions）。
+    const activeExclude = await dropIgnoredExclusions(store, [...excluded])
     // 已被排除的路径必须从 index 里移除：否则上一轮捕获留下的 blob 仍在树里，
     // 体积统计与「已排除」的记录会对不上。
-    if (excluded.size > 0)
-      await gitInSnapshot(store, ['rm', '--cached', '-r', '--quiet', '--ignore-unmatch', '--', ...excluded])
-    const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs([...excluded], nestedDirs)])
+    if (activeExclude.length > 0)
+      await gitInSnapshot(store, ['rm', '--cached', '-r', '--quiet', '--ignore-unmatch', '--', ...activeExclude])
+    const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs(activeExclude, nestedDirs)])
     if (!added.ok) {
       const nested = parseNestedRepoPath(added.error)
       if (nested !== null && !excluded.has(nested) && nestedAttempts < MAX_NESTED_ATTEMPTS) {
@@ -521,15 +557,29 @@ export async function diffTurnChanges(store: SnapshotStore, beforeCommit: string
  * 运行中实时统计：刷新私有 index 后与 before 快照比较当前工作区。
  *
  * 必须先 `add --all` 再 diff：`git diff <commit>` 只认提交与 index 里出现过的路径，
- * 本轮**新建**的文件在 index 里还不存在，不刷新就会漏掉它们。排除清单同样要带上，
- * 否则实时读数会把「不纳入快照的文件」算进来、与最终结算对不上。
+ * 本轮**新建**的文件在 index 里还不存在，不刷新就会漏掉它们。
+ *
+ * 排除清单在两条命令里的用法**不一样**，别合并：
+ *   - `git add` 用剔除被忽略项的 {@link dropIgnoredExclusions} 结果（指向被忽略目录的
+ *     exclude pathspec 会让 git add 直接失败）；
+ *   - `git diff` 必须带**完整**排除清单：`git add` 不会更新被排除路径的已有 index 条目
+ *     （该路径此前被正常捕获过、之后才进入排除清单，例如嵌套仓库/超限文件被学到），
+ *     没有 pathspec 时 `git diff <commit>` 照样按 index 条目把它的改动算进来，
+ *     实时读数就会比最终结算多出这些文件。
  */
 export async function liveDiff(store: SnapshotStore, beforeCommit: string, options: CaptureOptions = {}): Promise<{ ok: true, stats: { fileCount: number, insertions: number, deletions: number } } | { ok: false, reason: string }> {
   const excluded = options.exclude ?? []
-  const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs(excluded, new Set())])
+  // 与 captureSnapshot 同一条纪律：被忽略的路径不能出现在 exclude pathspec 里，
+  // 否则 `git add` 直接失败、实时读数永远为空（运行中提示条也就永远不出现）。
+  const activeExclude = await dropIgnoredExclusions(store, excluded)
+  const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs(activeExclude, new Set())])
   if (!added.ok)
     return { ok: false, reason: added.error }
-  const numstat = await gitInSnapshot(store, ['diff', '--numstat', '-z', '--no-renames', beforeCommit])
+  // 没有排除项时保持原命令形态（`-- . :(exclude)…` 只在真的需要时才加）。
+  const diffArgs = ['diff', '--numstat', '-z', '--no-renames', beforeCommit]
+  if (excluded.length > 0)
+    diffArgs.push('--', '.', ...excludePathspecs(excluded, new Set()))
+  const numstat = await gitInSnapshot(store, diffArgs)
   if (!numstat.ok)
     return { ok: false, reason: numstat.error }
   let fileCount = 0

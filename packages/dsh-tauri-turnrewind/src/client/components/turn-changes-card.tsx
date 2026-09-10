@@ -29,12 +29,13 @@ import {
   TURNREWIND_COUNTS_STYLE_ID,
   TURNREWIND_SUMMARY_MAX_RETRIES,
   TURNREWIND_SUMMARY_RETRY_DELAY_MS,
+  TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS,
   TURNREWIND_VISIBLE_FILE_ROWS,
 } from '../constants'
 import { text, useLocale } from '../locales'
 import { ensureSummary, requestUndo, retrySummaryForTurn, useTurnrewindSession } from '../store'
 import countsStyle from '../styles/counts.cssr'
-import { cardTitle, fileListWindow, formatCounts, formatTotals, reasonKey, resolveCardState } from '../utils/format'
+import { cardTitle, fileListWindow, formatCounts, formatTotals, hasTurnRecord, reasonKey, resolveCardState, summaryRetryDelayMs } from '../utils/format'
 import { fileOpenHandler } from '../utils/open-file'
 import { ChangeCounts } from './change-counts'
 import { GitRequiredDialog } from './git-required-dialog'
@@ -59,21 +60,27 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
 
   const card = resolveCardState(state.summary, turn)
   const attempts = turn === undefined ? 0 : (state.attempts[turn] ?? 0)
-  // after 快照在 turn/end 之后后台结算：本轮已结束但账本暂无记录时做有限重试。
+  // after 快照在 turn/end 之后**后台结算**（还要排在同一条队列的实时读数之后），大仓库上
+  // 可能十几秒才落账。这里等的判据是「账本还没有这一轮」，而不是「卡片不可见」——
+  // 该轮确实没有改动时账本会写一条空记录，那种情况不该继续重试。
   const waiting = card.kind === 'hidden'
     && state.status === 'ready'
     && state.summary !== null
     && state.summary.isGit
     && sessionId !== undefined
     && turn !== undefined
+    && !hasTurnRecord(state.summary, turn)
     && attempts < TURNREWIND_SUMMARY_MAX_RETRIES
 
   useEffect(() => {
     if (!waiting || sessionId === undefined || turn === undefined)
       return
-    const timer = setTimeout(() => {
-      void retrySummaryForTurn(sessionId, turn)
-    }, TURNREWIND_SUMMARY_RETRY_DELAY_MS)
+    const timer = setTimeout(
+      () => {
+        void retrySummaryForTurn(sessionId, turn)
+      },
+      summaryRetryDelayMs(attempts, TURNREWIND_SUMMARY_RETRY_DELAY_MS, TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS),
+    )
     return () => clearTimeout(timer)
   }, [waiting, sessionId, turn, attempts])
 

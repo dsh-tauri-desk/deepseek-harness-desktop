@@ -100,6 +100,22 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
   const logger = options.logger
   const onCaptured = options.onCaptured
   const active = new Map<string, ActiveTurn>()
+  /**
+   * 正在执行的 before 快照（key → 会话/turn + 落地 promise）。
+   *
+   * before 快照挂在 `agent/pre-step` 的**执行屏障**上，大仓库要跑几秒到几十秒（首次还要
+   * 初始化私有仓）。用户在这个窗口里手动停止时，`turn/end` 与 `agent/status → idle`
+   * 都可能在 `active` 里还没有条目的时候就到达——那一刻 `settleTurn` / `settleIdle`
+   * 直接返回，这一轮就**再也不会被结算**，直到很久以后某个 idle 才被顺手收掉
+   * （实测有 30 分钟后才落账的），卡片自然一直不出现。
+   * 因此结算必须先等这份 promise 落地（见 {@link settleTurn} / {@link settleIdle}）。
+   */
+  const beginning = new Map<string, { sessionId: string, turn: number, task: Promise<void> }>()
+  /**
+   * 正在结算的 turn。`settleTurn` 现在要先 await before 快照，中间多了一个让出点，
+   * 必须自己保证幂等：`turn/end` 与 `agent/status → idle` 常常几乎同时到达。
+   */
+  const settling = new Set<string>()
   let disposed = false
 
   const warn = (message: string): void => {
@@ -123,12 +139,52 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
     }
   }
 
+  /**
+   * `agent/pre-step` 屏障入口：登记在飞的 before 快照，并等它落地。
+   * 真实工作见 {@link runBeginTurn}（拆出来是为了让结算侧能 await 同一份 promise）。
+   */
   async function beginTurn(sessionId: string, turn: number, cwd: unknown): Promise<void> {
     if (disposed)
       return
     const key = activeKey(sessionId, turn)
-    if (active.has(key))
+    if (active.has(key) || beginning.has(key))
       return
+    // 落地 promise 永不 reject：结算侧要 await 它，一次失败的快照不能把结算也带走。
+    const task = runBeginTurn(sessionId, turn, cwd).then(
+      () => undefined,
+      async (error: unknown) => {
+        warn(`dsh-tauri-turnrewind: before snapshot for session ${sessionId} turn ${turn} failed: ${String(error)}`)
+        // 意外异常（git/IO 抛错，而不是 captureSnapshot 收敛过的结果对象）同样要留一笔账：
+        // 与 skippedEntry 一致，客户端才知道「这一轮存在过」。没有基线 → 卡片保持沉默。
+        await recordUnavailable(dshHome, sessionId, turn, REASON_SNAPSHOT_FAILED).catch(() => undefined)
+      },
+    )
+    beginning.set(key, { sessionId, turn, task })
+    try {
+      await task
+    }
+    finally {
+      if (beginning.get(key)?.task === task)
+        beginning.delete(key)
+    }
+  }
+
+  /**
+   * before 快照的真实工作：探测工作区资格 → 容量治理 → 捕获 before → 登记活动条目并起实时轮询。
+   * 拆成独立函数是为了让 {@link beginTurn} 能把它登记成「在飞 promise」供结算侧 await。
+   * @param sessionId - 会话 id。
+   * @param turn - turn 号。
+   * @param cwd - 会话 cwd（用于解析 worktree 根）。
+   */
+  async function runBeginTurn(sessionId: string, turn: number, cwd: unknown): Promise<void> {
+    const key = activeKey(sessionId, turn)
+    // 快照跑完时插件可能已经卸载：不再登记条目，否则会留下永不清理的轮询定时器。
+    const register = (entry: ActiveTurn): boolean => {
+      if (disposed)
+        return false
+      active.set(key, entry)
+      return true
+    }
     const probe = await probeWorkspace(cwd)
     if (!probe.ok) {
       // 非 Git / 系统目录 / git 缺失：不建快照。资格结论写进账本供客户端呈现。
@@ -139,7 +195,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
         isGit: probe.reason === REASON_UNSAFE_WORKSPACE,
         unavailableReason: probe.reason,
       }).catch(() => undefined)
-      active.set(key, skippedEntry(sessionId, turn, null, probe.reason))
+      register(skippedEntry(sessionId, turn, null, probe.reason))
       return
     }
     const store = snapshotStoreFor(dshHome, probe.root, probe.commonDir)
@@ -161,7 +217,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
         isGit: true,
         unavailableReason: null,
       }).catch(() => undefined)
-      active.set(key, skippedEntry(sessionId, turn, { store, workspaceRoot: probe.root }, result.reason))
+      register(skippedEntry(sessionId, turn, { store, workspaceRoot: probe.root }, result.reason))
       return
     }
     await recordWorkspaceState(dshHome, sessionId, {
@@ -187,8 +243,8 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
       nestedDirs: result.skippedNestedRepos,
       generation: store.generation ?? null,
     }
-    active.set(key, entry)
-    startLivePolling(entry)
+    if (register(entry))
+      startLivePolling(entry)
   }
 
   /**
@@ -246,59 +302,110 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
     return { active: false, turn: null, fileCount: 0, insertions: 0, deletions: 0 }
   }
 
+  /**
+   * 结算一轮：等 before 快照落地 → 捕 after → 差异 → 写账本。
+   *
+   * 幂等：`turn/end` 与 `agent/status → idle` 常常几乎同时到达，而本函数现在还要 await
+   * 在飞的 before 快照（多了一个让出点），因此按 key 用 {@link settling} 串行。
+   * 只有走到**终态**（无 store / 无基线 / 账本已写）才把条目移出 `active`：中途抛错
+   * （git/IO 异常）时留着它，下一次 `turn/end` 或 idle 还能重试，而不是让这一轮永远没有记录。
+   * @param sessionId - 会话 id。
+   * @param turn - turn 号。
+   */
   async function settleTurn(sessionId: string, turn: number): Promise<void> {
     const key = activeKey(sessionId, turn)
-    const entry = active.get(key)
-    if (entry === undefined)
+    if (settling.has(key))
       return
-    active.delete(key)
-    // 结算即结束运行中提示：先停轮询，再捕 after 快照（读数是过程态，不该跨 turn 残留）。
-    stopLivePolling(entry)
-    if (entry.workspaceRoot === null || entry.store === null)
+    if (!active.has(key) && !beginning.has(key))
       return
-    if (entry.beforeCommit === null) {
-      await recordUnavailable(dshHome, sessionId, entry.turn, entry.skippedReason ?? REASON_SNAPSHOT_FAILED)
-      return
+    settling.add(key)
+    // 终态标记：只有它才能让条目离开 `active`（见 finally）。
+    let terminal = false
+    try {
+      // 用户手动停止可能落在 before 快照还飞着的时候（屏障上要跑几秒到几十秒）：
+      // 先等它落地，否则这一轮会被整个漏掉 —— 账本里没有行，turn 尾部的卡片也就
+      // 永远不会出现（用户实际遇到的现象）。
+      await beginning.get(key)?.task
+      const entry = active.get(key)
+      if (entry === undefined)
+        return
+      // 结算即结束运行中提示：先停轮询，再捕 after 快照（读数是过程态，不该跨 turn 残留）。
+      stopLivePolling(entry)
+      if (entry.workspaceRoot === null || entry.store === null) {
+        terminal = true
+        return
+      }
+      if (entry.beforeCommit === null) {
+        // 连基线都没建立：这一轮从来没有过可撤销的承诺，账本行不带 ref（客户端据此沉默）。
+        await recordUnavailable(dshHome, sessionId, entry.turn, entry.skippedReason ?? REASON_SNAPSHOT_FAILED)
+        terminal = true
+        return
+      }
+      const store = entry.store
+      const workspaceRoot = entry.workspaceRoot
+      const beforeCommit = entry.beforeCommit
+      await queue.run(workspaceRoot, async () => {
+        const after = await captureSnapshot(store, turnRef(sessionId, turn, 'after'), `turn ${turn} after`, {
+          exclude: entry.exclusions,
+          nestedDirs: entry.nestedDirs,
+        })
+        if (!after.ok) {
+          // 基线在、after 失败：这是「承诺过的撤销落空了」，账本行保留 before ref，
+          // 客户端据此仍然给出告警（与上面「从没建立基线」的沉默区分开）。
+          await recordUnavailable(dshHome, sessionId, turn, after.reason, turnRef(sessionId, turn, 'before'))
+          terminal = true
+          return
+        }
+        const diff = await diffTurnChanges(store, beforeCommit, after.commit)
+        if (!diff.ok) {
+          await recordUnavailable(dshHome, sessionId, turn, REASON_SNAPSHOT_FAILED, turnRef(sessionId, turn, 'before'))
+          terminal = true
+          return
+        }
+        const record = buildRecord(turn, sessionId, diff.changes, {
+          generation: entry.generation,
+          skippedOversized: after.skippedOversized,
+          skippedNestedRepos: after.skippedNestedRepos,
+        })
+        const mutation = await recordTurn(dshHome, sessionId, record)
+        // 账本已经落定 → 立即进入终态：后面几步（删 refs / prune / 回调）即使抛错也不能重试，
+        // 否则会重复捕 after、重复触发 onCaptured，还可能把之后才发生的改动算进这一轮。
+        terminal = true
+        // 保留窗口淘汰 / 硬上限丢弃：删掉对应 refs，再回收不可达对象（含实时读数留下的
+        // 中间版本 blob）。prune 只在真的淘汰了东西时跑，避免每个 turn 都走一遍对象库。
+        if (mutation.refsToDelete.length > 0) {
+          await deleteRefs(store, mutation.refsToDelete)
+          await pruneLooseObjects(store)
+        }
+        onCaptured?.(sessionId, turn, record.files.length)
+      })
     }
-    const store = entry.store
-    const workspaceRoot = entry.workspaceRoot
-    const beforeCommit = entry.beforeCommit
-    await queue.run(workspaceRoot, async () => {
-      const after = await captureSnapshot(store, turnRef(sessionId, turn, 'after'), `turn ${turn} after`, {
-        exclude: entry.exclusions,
-        nestedDirs: entry.nestedDirs,
-      })
-      if (!after.ok) {
-        await recordUnavailable(dshHome, sessionId, turn, after.reason)
-        return
-      }
-      const diff = await diffTurnChanges(store, beforeCommit, after.commit)
-      if (!diff.ok) {
-        await recordUnavailable(dshHome, sessionId, turn, REASON_SNAPSHOT_FAILED)
-        return
-      }
-      const record = buildRecord(turn, sessionId, diff.changes, {
-        generation: entry.generation,
-        skippedOversized: after.skippedOversized,
-        skippedNestedRepos: after.skippedNestedRepos,
-      })
-      const mutation = await recordTurn(dshHome, sessionId, record)
-      // 保留窗口淘汰 / 硬上限丢弃：删掉对应 refs，再回收不可达对象（含实时读数留下的
-      // 中间版本 blob）。prune 只在真的淘汰了东西时跑，避免每个 turn 都走一遍对象库。
-      if (mutation.refsToDelete.length > 0) {
-        await deleteRefs(store, mutation.refsToDelete)
-        await pruneLooseObjects(store)
-      }
-      onCaptured?.(sessionId, turn, record.files.length)
-    })
+    finally {
+      settling.delete(key)
+      if (terminal)
+        active.delete(key)
+    }
   }
 
+  /**
+   * 会话空闲兜底：结算「idle 那一刻已经存在」的 turn。
+   * @param sessionId - 会话 id。
+   */
   async function settleIdle(sessionId: string): Promise<void> {
-    for (const entry of [...active.values()]) {
-      if (entry.sessionId !== sessionId)
-        continue
+    // 候选集必须**同步取定**（idle 处理函数在 emit 里同步进入本函数）：这次兜底只该结算
+    // 「idle 那一刻已经存在」的 turn。若等完在飞的快照再去看 active，就可能把 idle 之后
+    // 新开始、其实还在跑的 turn 误结算掉（它的 after 会在 before 刚结束时被拍下来，
+    // 那一轮的卡片就再也收不到真实改动了）。
+    const inflight = [...beginning.values()].filter(item => item.sessionId === sessionId)
+    const candidates = [...active.values()].filter(entry => entry.sessionId === sessionId)
+    // idle 同样可能早于该会话的 before 快照落地（手动中断最常见的时序）：先等它们。
+    if (inflight.length > 0)
+      await Promise.all(inflight.map(item => item.task))
+    for (const entry of candidates)
       await settleTurn(sessionId, entry.turn)
-    }
+    // 在飞的那些当时还没有 active 条目，落地后按 turn 号结算（settleTurn 内部幂等）。
+    for (const item of inflight)
+      await settleTurn(sessionId, item.turn)
   }
 
   return {
@@ -346,11 +453,18 @@ function buildRecord(
   }
 }
 
-/** 记录一个不可撤销的 turn（快照失败/超限），保留原因供卡片呈现。 */
-async function recordUnavailable(dshHome: string, sessionId: string, turn: number, reason: string): Promise<void> {
+/**
+ * 记录一个不可撤销的 turn（快照失败/超限），保留原因供卡片呈现。
+ *
+ * `beforeRef` 只在**基线确实建立过**时传入：客户端用它把两种结局分开——
+ * 「这一轮从没建立过快照」不弹告警（本来就没有可撤销的东西），
+ * 「基线在、after 结算失败」必须如实告警（承诺过的撤销落空了）。
+ * 同时它也让保留窗口淘汰时能把这根孤儿 ref 一起回收。
+ */
+async function recordUnavailable(dshHome: string, sessionId: string, turn: number, reason: string, beforeRef = ''): Promise<void> {
   await recordTurn(dshHome, sessionId, {
     turn,
-    beforeRef: '',
+    beforeRef,
     afterRef: '',
     files: [],
     insertions: 0,

@@ -29,9 +29,20 @@ export const TURNREWIND_TURN_TAIL_ID = `${TURNREWIND_PLUGIN_NAME}-turn-changes`
  */
 export const TURNREWIND_INPUT_DOCK_SLOT = 'conversation.input.dock'
 
-/** 运行中提示条注册 id 与顺序（排在工作树状态条之后）。 */
+/**
+ * 运行中提示条注册 id 与顺序。
+ *
+ * dock 是 list 型槽，按 `order` 升序自上而下渲染。已核实的其他条目：
+ * 官方 `todo`（0，`data-testid="todo-panel"`）、`goal`（10）、`queue`（20），
+ * 工作树插件的会话横幅 `.dshp-worktree`（-10）。
+ *
+ * 提示条必须排在**这些条目之上**（用户反馈：原先 order 20 让它掉到最下面，
+ * 被任务清单和工作树横幅压在输入框上方最远处，看起来很奇怪）：它是当前这一轮
+ * 正在发生的改动读数，属于「对话的最新一行」，理应紧贴对话内容、先于任务清单。
+ * 负值同时留出空间——其余插件再往大 order 上加也不会把它挤下去。
+ */
 export const TURNREWIND_RUNNING_CHIP_ID = `${TURNREWIND_PLUGIN_NAME}-running-changes`
-export const TURNREWIND_RUNNING_CHIP_ORDER = 20
+export const TURNREWIND_RUNNING_CHIP_ORDER = -30
 
 /** 运行中提示条的客户端轮询间隔；宿主端另有 1.5s 的 git 刷新节奏。 */
 export const TURNREWIND_LIVE_POLL_INTERVAL_MS = 1200
@@ -60,11 +71,18 @@ export const TURNREWIND_SIDEBAR_RIGHT_SERVICE = 'sidebarRight'
 export const TURNREWIND_VISIBLE_FILE_ROWS = 3
 
 /**
- * 「该轮已结束但账本还没有记录」时的重试参数：after 快照在 turn/end 之后
- * 后台结算，卡片可能早于账本落地渲染。约 700ms × 6 ≈ 4.2s 足够覆盖本地 git 操作。
+ * 「该轮已结束但账本还没有记录」时的重试参数（指数退避：700ms → 1.4s → 2.8s → 5s 封顶，
+ * 12 次累计约 50s）。
+ *
+ * after 快照在 turn/end 之后**后台结算**：先是队列里可能在飞的实时读数（每 1.5s 一次
+ * `git add --all` + diff），再是 after 自身的 `git add --all`。实测大仓库上首次 add 要
+ * 6–20s，因此原先「700ms × 6 ≈ 4.2s」的窗口会让**手动停止**（用户最想看到这一轮改了什么）
+ * 以及首次快照的 turn 永远等不到卡片。退避到 5s 既覆盖慢仓库，又不会在常见情况下
+ * 持续打请求——一旦账本出现该轮的记录（哪怕文件数为 0）就立刻停止重试。
  */
 export const TURNREWIND_SUMMARY_RETRY_DELAY_MS = 700
-export const TURNREWIND_SUMMARY_MAX_RETRIES = 6
+export const TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS = 5000
+export const TURNREWIND_SUMMARY_MAX_RETRIES = 12
 
 /** 卡片 CSS class 前缀（bem block）。 */
 export const TURNREWIND_BLOCK = 'turnrewind'

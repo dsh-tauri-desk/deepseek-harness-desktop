@@ -38,6 +38,11 @@ DSH 桌面端的 **turn 级工作区撤销**：每一轮对话结束时，在对
 └────────────────────────────────────────────────────────────────────┘
 ```
 
+该槽是 list 型，官方任务清单（`todo`，order `0`，`data-testid="todo-panel"`）、
+goal（`10`）、queue（`20`）与工作树插件的会话横幅（`-10`）都在同一个槽里。
+本插件用 order **`-30`** 让提示条排在这些条目**之上**：运行中的实时读数是当前动作的
+直接反馈，应紧贴对话内容，而不是被任务清单压到输入框上方最远处。
+
 | 元素 | 行为 |
 |---|---|
 | `撤销 ↶` | **真功能**：撤销该轮的文件改动；**撤销成功后按钮消失**，只留「已撤销」徽标 |
@@ -56,6 +61,13 @@ DSH 桌面端的 **turn 级工作区撤销**：每一轮对话结束时，在对
 - 文件清单最多三行，其余折叠；本轮删除（D）的文件整行弱化。
 - **已撤销的 turn**：只剩「已撤销」徽标与文件名/清单行，不再有撤销按钮与审核。
 - 该轮没有任何文件变化 → 不出现卡片。
+- **卡片可能比 turn 结束晚几秒出现**：after 快照在 turn 结束后**后台结算**（还要排在同一条
+  工作区队列里的实时读数之后），大仓库上首次捕获要十几秒。客户端会一直等到账本里出现这一轮的
+  记录（700ms 起指数退避、5s 封顶，最长约 50s）——**手动停止**的 turn 同样会补上卡片。
+- 捕获过程失败且这一轮**从未建立过快照**（用户中断、捕获子进程被回收、git 暂时报错）→
+  同样不出现卡片：账本行与宿主日志照常保留（诊断不丢），但界面上不弹「撤销不可用」——
+  这一轮从来没有过可撤销的承诺，弹告警只会让人以为出了问题。
+  「基线已建立、after 结算失败」是另一回事（承诺过的撤销落空了），仍会如实告警。
 - 撤销成功后同一 turn 不能重复撤销。
 - 撤销前若发现文件在 turn 结束后又被改动过 → **拒绝执行并列出冲突文件**，不覆盖任何文件。
 - 该轮仍在运行中（after 快照未结算）→ 拒绝撤销并说明原因。
@@ -85,6 +97,11 @@ $DSH_HOME/dsh-tauri-turnrewind/
 - **捕获**：`git add --all` → `write-tree` → `commit-tree` → `update-ref`（全部落在私有仓）。
   before 在 `agent/pre-step`（step 1）的 **await 屏障**里完成，必然早于任何文件改动；
   after 在 `turn/end` 之后**后台结算**（`agent/status → idle` 兜底中断的 turn）。
+- **结算不会被 before 快照的窗口吃掉**：用户可能在 before 快照还没结束时就手动停止（屏障上要跑
+  几秒到几十秒，首次还要初始化私有仓），那一刻 `turn/end` 与 idle 都已到达、而活动表里还没有
+  条目——结算因此**先等在飞的 before 快照落地**再捕 after，并且对同一个 turn 幂等（两个事件几乎
+  同时到达也只结算一次）。不这么做时被中断的 turn 会一直不落账（实测有 30 分钟后才被顺手收掉的），
+  卡片也就一直不出现。
 - **差异**：`git diff --numstat` 取行数，两侧路径集合推导新增（A）/修改（M）/删除（D）。
 - **撤销**：M/D 由 `git checkout <before> -- <path>` 还原，A 删除文件并清理变空的父目录。
 - **冲突预检**：`git diff <afterCommit> -- <paths>`（与快照写入共用同一套换行/属性归一化，
@@ -93,6 +110,12 @@ $DSH_HOME/dsh-tauri-turnrewind/
 - **忽略规则**：完全委托源仓库（`.gitignore` / global excludes），并镜像源仓库的
   `core.autocrlf` / `core.eol` / `core.symlinks` 与 `.git/info/exclude`，
   保证「比较」与「恢复」跟用户仓库语义一致。
+  **被忽略的路径不进 exclude pathspec**：`git add --all -- . :(exclude)<ignored>` 会以
+  `The following paths are ignored by one of your .gitignore files` 直接失败（exit 1），
+  而这条错误与「加不进去」无关——被忽略的路径本来就不会进快照。因此捕获与实时读数在拼
+  pathspec 之前先过一遍 `git check-ignore`（与 `git add` 读同一份 index/规则，绝不自制正则），
+  把被忽略的排除项摘掉。工作区把嵌套仓库放在被忽略的目录里时（例如本仓库的 `source/`），
+  不这么做会让**每一轮**捕获都失败。
 - **并发**：捕获、结算、容量治理、撤销全部走**同一工作区级 FIFO 队列**——私有仓的 index
   与 refs 是共享可变状态，并发就会撞 `index.lock` 或读到半更新的 index。
 - **容量治理**（每个工作区每进程一次，在首次捕获的串行区内）：
@@ -130,7 +153,7 @@ $DSH_HOME/dsh-tauri-turnrewind/
 ```text
 GET  /api/turnrewind/summary?sessionId=<id>
   → 200 { sessionId, isGit, workspaceRoot, unavailableReason,
-          turns: [{ turn, fileCount, insertions, deletions, undoneAt, unavailable,
+          turns: [{ turn, fileCount, insertions, deletions, undoneAt, unavailable, hasBaseline,
                     truncated, files: [{ path, status, insertions, deletions, binary }],
                     skippedOversized: [path], skippedNestedRepos: [path] }] }
 
@@ -194,11 +217,15 @@ pnpm build            # 根构建：prebuild 部署插件到 src-tauri/resources
 测试覆盖：工作区资格与路径守卫、快照增删改与二进制、**用户仓库零污染**、
 CRLF/属性往返对称（恢复后与 before 快照树逐字节等价）、冲突预检（含「用户重建已删除文件」）、
 撤销全路径（含代数不符 / refs 消失 → 过期终态、轮次仍在跑 → 拒绝）、
-运行中实时读数（含本轮新建文件，且与最终 after 差异文件数一致）、
-捕获限额（超限排除重试、嵌套仓库自动跳过与报错兜底）、容量治理
-（prune 只清不可达对象、超限整仓重建 + 代数轮换、排除清单复检、不碰用户仓库）、
+运行中实时读数（含本轮新建文件，且与最终 after 差异文件数一致；**已被排除的路径即使还在
+私有 index 里也不计入**）、
+**捕获与结算的时序**（正常一轮落账；`turn/end` / idle 落在 before 快照还在飞时这一轮仍被结算；
+两个事件同时到达只结算一次；idle 之后新开始的一轮不被兜底误结算；没有 before 快照的 turn 不会被凭空记一笔；
+before 快照抛异常时仍留审计行；结算中途抛错时保留条目、下一次 idle 兜底补上）、
+被 `.gitignore` 忽略的排除路径不会让捕获整体失败、捕获限额（超限排除重试、嵌套仓库自动跳过与报错兜底）、
+容量治理（prune 只清不可达对象、超限整仓重建 + 代数轮换、排除清单复检、不碰用户仓库）、
 工作区队列（FIFO 不重叠 / 跨工作区不阻塞 / 队尾出队）、
-账本原子写与保留淘汰、卡片状态机与计数/文件名/原因码纯函数、
+账本原子写与保留淘汰、卡片状态机与计数/文件名/原因码/重试退避纯函数、
 **打开文件的内核能力判据**（无 `sidebarRight` 时绝不调用 `openFile`；同步抛错 / rejected
 promise 都静默；disposer 清理）、
 卡片与提示条的 css-render 形态（hover 换行、配色、几何、提示行分级、按钮基座且无新增 hover）。

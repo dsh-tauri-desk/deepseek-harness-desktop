@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   TURNREWIND_REASON_EXPIRED,
   TURNREWIND_REASON_GIT_UNAVAILABLE,
+  TURNREWIND_REASON_SNAPSHOT_FAILED,
   TURNREWIND_REASON_TURN_ACTIVE,
   TURNREWIND_REASON_UNSAFE_PATH,
 } from '../../shared/constants'
@@ -13,8 +14,10 @@ import {
   fileListWindow,
   formatCounts,
   formatTotals,
+  hasTurnRecord,
   reasonKey,
   resolveCardState,
+  summaryRetryDelayMs,
 } from './format'
 
 function turnSummary(patch: Partial<TurnSummary> = {}): TurnSummary {
@@ -93,6 +96,60 @@ describe('resolveCardState', () => {
     expect(resolveCardState(summary({ turns: [expired] }), 1))
       .toEqual({ kind: 'failed', reason: TURNREWIND_REASON_EXPIRED })
   })
+
+  it('连基线都没建立的通用快照失败不占位（用户中断 / 捕获被回收时不该弹告警）', () => {
+    // 用户实际报告：什么都没改却看到「撤销不可用 TURNREWIND_SNAPSHOT_FAILED」。
+    const noBaseline = turnSummary({
+      unavailable: TURNREWIND_REASON_SNAPSHOT_FAILED,
+      files: [],
+      fileCount: 0,
+      hasBaseline: false,
+    })
+    expect(resolveCardState(summary({ turns: [noBaseline] }), 1)).toEqual({ kind: 'hidden' })
+
+    // 基线在、after 结算失败：承诺过的撤销落空了，必须如实告警。
+    const withBaseline = turnSummary({
+      unavailable: TURNREWIND_REASON_SNAPSHOT_FAILED,
+      files: [],
+      fileCount: 0,
+      hasBaseline: true,
+    })
+    expect(resolveCardState(summary({ turns: [withBaseline] }), 1))
+      .toEqual({ kind: 'failed', reason: TURNREWIND_REASON_SNAPSHOT_FAILED })
+
+    // 旧宿主不带该字段：保守照常呈现（宁可多显示，也不要静默漏报）。
+    const legacy = turnSummary({ unavailable: TURNREWIND_REASON_SNAPSHOT_FAILED, files: [], fileCount: 0 })
+    expect(resolveCardState(summary({ turns: [legacy] }), 1).kind).toBe('failed')
+  })
+
+  it('超限类失败即使没有基线也照常呈现（说的是「超出撤销范围」，不是内部故障）', () => {
+    const tooManyFiles = turnSummary({ unavailable: 'TURNREWIND_TOO_MANY_FILES', files: [], fileCount: 0, hasBaseline: false })
+    expect(resolveCardState(summary({ turns: [tooManyFiles] }), 1))
+      .toEqual({ kind: 'failed', reason: 'TURNREWIND_TOO_MANY_FILES' })
+  })
+})
+
+describe('hasTurnRecord / summaryRetryDelayMs', () => {
+  it('只看账本有没有这一轮的记录，不看卡片是否可见', () => {
+    expect(hasTurnRecord(null, 1)).toBe(false)
+    expect(hasTurnRecord(summary(), undefined)).toBe(false)
+    expect(hasTurnRecord(summary(), 1)).toBe(true)
+    expect(hasTurnRecord(summary(), 7)).toBe(false)
+    // 空记录（该轮确实没有改动）也算「已落账」：重试窗口据此停止，不再白等。
+    expect(hasTurnRecord(summary({ turns: [turnSummary({ files: [], fileCount: 0 })] }), 1)).toBe(true)
+  })
+
+  it('重试等待时间 700ms 起指数退避、5s 封顶', () => {
+    expect(summaryRetryDelayMs(0, 700, 5000)).toBe(700)
+    expect(summaryRetryDelayMs(1, 700, 5000)).toBe(1400)
+    expect(summaryRetryDelayMs(2, 700, 5000)).toBe(2800)
+    expect(summaryRetryDelayMs(3, 700, 5000)).toBe(5000)
+    expect(summaryRetryDelayMs(11, 700, 5000)).toBe(5000)
+    // 异常入参（负数/非整数/NaN）不能算出荒唐的等待时间。
+    expect(summaryRetryDelayMs(-1, 700, 5000)).toBe(700)
+    expect(summaryRetryDelayMs(Number.NaN, 700, 5000)).toBe(700)
+    expect(summaryRetryDelayMs(1.9, 700, 5000)).toBe(1400)
+  })
 })
 
 describe('reasonKey', () => {
@@ -100,6 +157,7 @@ describe('reasonKey', () => {
     expect(reasonKey(TURNREWIND_REASON_EXPIRED)).toBe('expiredReason')
     expect(reasonKey(TURNREWIND_REASON_GIT_UNAVAILABLE)).toBe('gitUnavailableReason')
     expect(reasonKey(TURNREWIND_REASON_TURN_ACTIVE)).toBe('turnActiveReason')
+    expect(reasonKey(TURNREWIND_REASON_SNAPSHOT_FAILED)).toBe('snapshotFailedReason')
     expect(reasonKey(TURNREWIND_REASON_UNSAFE_PATH)).toBe('unsafePathReason')
   })
 

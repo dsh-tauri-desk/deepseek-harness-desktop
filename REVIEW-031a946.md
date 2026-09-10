@@ -262,5 +262,6 @@
 | 3 | `worktree storage/index.ts:96` | `loadBindingSync` 非法 id 仍落入 legacy 回退键查找 | ✅ 修复：校验放 try 外，非法 id 直接 null；补 legacy fixture 测试 |
 | 4 | `REVIEW-031a946.md` | 文档含开发机绝对路径、`~/.cargo`；#1 应明确为纵深防御 | ✅ 已改：路径改仓库相对；`~/.cargo` 改通用描述；#1 措辞补充说明 |
 | 5 | `archive.rs`/`retention.rs` | 解压/删除面对 symlink 祖先的纵深加固；`accepts_in_root_relative_symlink_on_restore` 需加 `cfg(unix)` | ◐ 部分：已加 `#[cfg(unix)]` 限 unix 测试；`symlink 祖先`为纵深建议，现有词法+canonicalize 防护已覆盖实际 exploit 面，维持现状（记录原因） |
+| 6（二轮） | `snapshot.rs:201` `create` | TOCTOU：resolve 校验与 count/append 遍历之间未持锁，`node_modules/<id>` 可被并发 restore 替换为根外 symlink | ✅ 修复：`create` 持 `acquire_operation_lock`（与 `restore`/`enable`/`disable` 同一把锁），覆盖 resolve→count→append 全程；替换方 `restore` 本已持锁，闭合窗口 |
 
 验证：`cargo test --lib` **502/502**（含新增回归测试）、worktree `vitest` **68/68**、scheduler 25/25、typecheck/lint 全绿。

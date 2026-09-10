@@ -387,7 +387,13 @@ fn resolve_spec(app_handle: &AppHandle, id: &str) -> String {
 /// 创建单个插件的快照（手动 / 覆盖式：已存在则整体替换）。
 ///
 /// 快照对核心/官方包同样允许（只读操作），范围限制只作用于还原。
+///
+/// 从解析真实目标到遍历归档全程持有插件操作锁：解析（`resolve_real_target`）
+/// 与 `count_tree`/`append_package_tree` 遍历之间若被并发的 enable/disable/
+/// restore 替换 `node_modules/<id>` 目录（同名 symlink 指向根外），遍历会
+/// 误读根外内容打进归档（TOCTOU）。持锁后与这些目录替换操作互斥。
 pub fn create(app_handle: &AppHandle, id: &str) -> Result<SnapshotInfo, String> {
+    let _guard = tauri::async_runtime::block_on(acquire_operation_lock());
     let node_modules = profile_dir(app_handle).join("node_modules");
     let real = resolve_real_target(&node_modules, id)?;
 

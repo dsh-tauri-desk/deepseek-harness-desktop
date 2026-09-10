@@ -24,16 +24,39 @@ async function fixture(): Promise<{ dshHome: string, worktree: string }> {
   return { dshHome, worktree }
 }
 
+/** 本次用例建过的捕获编排器（收尾要卸载，否则实时轮询会一直持有临时目录）。 */
+const captures: Array<ReturnType<typeof createTurnCapture>> = []
+
 function captureFor(dshHome: string, captured: number[] = []) {
-  return createTurnCapture({
+  const capture = createTurnCapture({
     dshHome,
     queue: createWorkspaceQueue(),
     onCaptured: (_sessionId, _turn, fileCount) => captured.push(fileCount),
   })
+  captures.push(capture)
+  return capture
 }
 
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })))
+  // 卸载捕获编排器：实时轮询的定时器与在飞的 git 子进程都会握着工作区，
+  // Windows 上直接 rmdir 会 EBUSY。先停表、再给子进程一点退出时间。
+  for (const capture of captures.splice(0))
+    capture.dispose()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  for (const path of temporaryDirectories.splice(0)) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(path, { recursive: true, force: true })
+        break
+      }
+      catch (error) {
+        // 在飞的 git 子进程把工作区当 cwd：有界重试后如实抛出，不静默留垃圾。
+        if (attempt >= 4)
+          throw error
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+    }
+  }
 })
 
 describe('turn 结算编排', () => {
@@ -92,6 +115,20 @@ describe('turn 结算编排', () => {
     // 重复结算会重复捕 after、重复触发 onCaptured 钩子，账本行也会被后写的那次覆盖。
     expect(captured).toEqual([0])
     expect((await readLedger(dshHome, 's3')).turns).toHaveLength(1)
+  })
+
+  it('idle 兜底只结算「idle 那一刻已在跑」的 turn，不碰随后新开始的一轮', async () => {
+    const { dshHome, worktree } = await fixture()
+    const capture = captureFor(dshHome)
+
+    const first = capture.beginTurn('s6', 1, worktree)
+    const idle = capture.settleIdle('s6')
+    // idle 之后（用户重新发消息）立刻开始的新一轮：这次兜底不能把它一起结算掉，
+    // 否则它的 after 会在 before 刚结束时被拍下来，那一轮的真实改动就永远拿不到了。
+    const second = capture.beginTurn('s6', 2, worktree)
+    await Promise.all([first, second, idle])
+
+    expect((await readLedger(dshHome, 's6')).turns.map(turn => turn.turn)).toEqual([1])
   })
 
   it('根本没有 before 快照的 turn 不会被凭空记一笔', async () => {

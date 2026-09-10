@@ -101,7 +101,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
   const onCaptured = options.onCaptured
   const active = new Map<string, ActiveTurn>()
   /**
-   * 正在执行的 before 快照（key → 落地 promise + 会话归属）。
+   * 正在执行的 before 快照（key → 会话/turn + 落地 promise）。
    *
    * before 快照挂在 `agent/pre-step` 的**执行屏障**上，大仓库要跑几秒到几十秒（首次还要
    * 初始化私有仓）。用户在这个窗口里手动停止时，`turn/end` 与 `agent/status → idle`
@@ -110,7 +110,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
    * （实测有 30 分钟后才落账的），卡片自然一直不出现。
    * 因此结算必须先等这份 promise 落地（见 {@link settleTurn} / {@link settleIdle}）。
    */
-  const beginning = new Map<string, { sessionId: string, task: Promise<void> }>()
+  const beginning = new Map<string, { sessionId: string, turn: number, task: Promise<void> }>()
   /**
    * 正在结算的 turn。`settleTurn` 现在要先 await before 快照，中间多了一个让出点，
    * 必须自己保证幂等：`turn/end` 与 `agent/status → idle` 常常几乎同时到达。
@@ -156,7 +156,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
         warn(`dsh-tauri-turnrewind: before snapshot for session ${sessionId} turn ${turn} failed: ${String(error)}`)
       },
     )
-    beginning.set(key, { sessionId, task })
+    beginning.set(key, { sessionId, turn, task })
     try {
       await task
     }
@@ -359,18 +359,20 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
   }
 
   async function settleIdle(sessionId: string): Promise<void> {
-    // idle 同样可能早于该会话的 before 快照落地（手动中断最常见的时序）：先等它们，
-    // 否则下面扫 active 时看不到这一轮，它就再也不会被结算。
-    const inflight = [...beginning.values()]
-      .filter(item => item.sessionId === sessionId)
-      .map(item => item.task)
+    // 候选集必须**同步取定**（idle 处理函数在 emit 里同步进入本函数）：这次兜底只该结算
+    // 「idle 那一刻已经存在」的 turn。若等完在飞的快照再去看 active，就可能把 idle 之后
+    // 新开始、其实还在跑的 turn 误结算掉（它的 after 会在 before 刚结束时被拍下来，
+    // 那一轮的卡片就再也收不到真实改动了）。
+    const inflight = [...beginning.values()].filter(item => item.sessionId === sessionId)
+    const candidates = [...active.values()].filter(entry => entry.sessionId === sessionId)
+    // idle 同样可能早于该会话的 before 快照落地（手动中断最常见的时序）：先等它们。
     if (inflight.length > 0)
-      await Promise.all(inflight)
-    for (const entry of [...active.values()]) {
-      if (entry.sessionId !== sessionId)
-        continue
+      await Promise.all(inflight.map(item => item.task))
+    for (const entry of candidates)
       await settleTurn(sessionId, entry.turn)
-    }
+    // 在飞的那些当时还没有 active 条目，落地后按 turn 号结算（settleTurn 内部幂等）。
+    for (const item of inflight)
+      await settleTurn(sessionId, item.turn)
   }
 
   return {

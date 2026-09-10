@@ -81,19 +81,24 @@ describe('toolActivityGroup', () => {
 })
 
 describe('taskCopy', () => {
-  it('strips trailing punctuation and keeps 正在/继续-prefixed tasks as-is plus 呢', () => {
-    expect(taskCopy('正在写测试。')).toBe('正在写测试呢')
-    expect(taskCopy('继续修改文档')).toBe('继续修改文档呢')
+  it('strips trailing punctuation and keeps 正在/继续-prefixed tasks as-is', () => {
+    expect(taskCopy('正在写测试。')).toBe('正在写测试')
+    expect(taskCopy('继续修改文档')).toBe('继续修改文档')
   })
 
-  it('prefixes action-verb tasks with 正在 (dsh-dafeiyu 句式：正在 + 原文 + 呢)', () => {
-    expect(taskCopy('修改 bug')).toBe('正在修改 bug呢')
-    expect(taskCopy('搜索相关代码')).toBe('正在搜索相关代码呢')
-    expect(taskCopy('整理文档')).toBe('正在整理文档呢')
+  it('prefixes action-verb tasks with 正在 (dsh-dafeiyu 句式：正在 + 原文)', () => {
+    expect(taskCopy('修改 bug')).toBe('正在修改 bug')
+    expect(taskCopy('搜索相关代码')).toBe('正在搜索相关代码')
+    expect(taskCopy('整理文档')).toBe('正在整理文档')
   })
 
-  it('wraps other tasks in 正在处理「…」呢', () => {
-    expect(taskCopy('把动画接到气泡')).toBe('正在处理「把动画接到气泡」呢')
+  it('wraps other tasks in 正在处理「…」', () => {
+    expect(taskCopy('把动画接到气泡')).toBe('正在处理「把动画接到气泡」')
+  })
+
+  it('never appends the dsh-dafeiyu sentence-final particle 呢', () => {
+    for (const task of ['正在写测试', '继续修改文档', '修改 bug', '把动画接到气泡'])
+      expect(taskCopy(task)).not.toContain('呢')
   })
 
   it('returns undefined for empty/whitespace tasks', () => {

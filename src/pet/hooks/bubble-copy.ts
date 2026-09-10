@@ -90,18 +90,19 @@ export function activityCopy(activity: string, seed?: string | number): string {
 }
 
 /**
- * 任务文本 → 气泡文案（对齐 dsh-dafeiyu taskCopy 的句式：
- * 「正在/继续」开头 → 原文+呢；动作动词开头 → 正在+原文+呢；否则 正在处理「原文」呢）。
+ * 任务文本 → 气泡文案（对齐 dsh-dafeiyu taskCopy 的句式，但**不带句末语气词**：
+ * 「正在/继续」开头 → 原文；动作动词开头 → 正在+原文；否则 正在处理「原文」）。
+ * 上游 dsh-dafeiyu 每句都以「呢」收尾，本仓库按用户反馈去掉该语气词。
  */
 export function taskCopy(task: string | undefined): string | undefined {
   const value = String(task ?? '').trim().replace(/[。！？.!?]+$/u, '')
   if (!value)
     return undefined
   if (/^(?:正在|继续)/u.test(value))
-    return `${value}呢`
+    return value
   if (/^(?:准备|检查|验证|修改|修复|测试|构建|整理|分析|梳理|查找|搜索|读取|实现)/u.test(value))
-    return `正在${value}呢`
-  return `正在处理「${value}」呢`
+    return `正在${value}`
+  return `正在处理「${value}」`
 }
 
 /** 工具名 → 活动分类（对齐 dsh-dafeiyu toolActivity 正则 + DSH 实际工具名 pwsh；供 working 档无 liveActivity 时选文案）。 */

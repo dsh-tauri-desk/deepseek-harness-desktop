@@ -585,7 +585,7 @@ function toastContent(session: BubbleSession, status: PetStatus) {
       : statusCopy(status, seed)
   const description = getFirstString(
     session.lastAgentError ? (IS_ZH ? `失败：${String(session.lastAgentError)}` : `Failed: ${String(session.lastAgentError)}`) : undefined,
-    taskCopy(session.task as string | undefined), // todo 任务文案：正在处理「xxx」呢
+    taskCopy(session.task as string | undefined), // todo 任务文案：正在处理「xxx」
     getLiveActivity(), // 工具/思考活动详情（保留既有实用信息）
     fallbackCopy, // 档位状态文案（dsh-dafeiyu statusCopy）
     session.description,

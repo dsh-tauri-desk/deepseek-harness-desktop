@@ -45,7 +45,8 @@
     0.1.2-rc.1 与 0.1.5-rc.1 一致（旧核心同样是 `dispatch.emit("agent/status", { status })`）。
   - `src/pet/hooks/bubble-copy.ts`：`sessionTitle()` 从 `use-bubble.ts` 迁入（纯函数可单测），
     标题缺失时回落 `UNTITLED_SESSION_TITLE`（「新会话」/「New session」），**不再回落
-    `session.id`**（此前把 `session-xxxx-xxxx…` 漏成气泡标题）。
+    `session.id`**（此前把 `session-xxxx-xxxx…` 漏成气泡标题）；`taskCopy()` 按用户反馈去掉
+    dsh-dafeiyu 的句末语气词「呢」（`正在处理「…」` 不再以「呢」收尾，三个分支统一）。
   - 测试：reducer.test.ts 新增 4 条（漏发 turn/end 时清空并转发、终态/等待态不被改写、
     未知会话与重复通知不转发、create 仅凭 summary `running=true` 也能回落）；
     bubble-copy.test.ts 新增 3 条（标题优先级、缺失标题回落且不含 `session-`、前缀保留）。
@@ -133,6 +134,9 @@
 - dsh-dafeiyu：气泡文案/优先级逻辑已采纳（见 PR #414）；其 TASK 消息（todo/write →
   `taskCopy(task)` + 已完成 a/b 步）与 multi-session `#select()` 为多会话渲染方案，
   本仓库会话 Toast 一对一定位，未采纳。
+- dsh-dafeiyu `taskCopy` 的句末语气词「呢」：**有意去掉**（用户反馈「正在处理 […] 后面的
+  『呢』要去掉」）。句式结构（正在+原文 / 正在处理「原文」）仍与上游一致，只是不再带语气词；
+  若后续再次同步上游文案，勿把「呢」带回来。
 
 ## 后续同步流程
 

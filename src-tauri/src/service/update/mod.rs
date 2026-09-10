@@ -13,22 +13,27 @@
 //!   推给用户；装了 rc 的用户仍会按 semver 收到之后的正式版通知。
 //! - 安装包下载到 AppData/updates 目录；已存在则视为「已下载」，不再重复拉取。
 //! - 打开安装器（exe/msi/dmg 等）交给系统默认处理器（ShellExecute/LaunchServices）。
+//! - 下载完成的安装包登记为「待安装」（见 [`pending`]）：用户没立刻安装时，
+//!   关闭应用的那一刻自动打开安装器，避免用户错过升级。
 //!
 //! 模块划分（参考 `service/cli/`、`service/download/`）：
 //! - [`version`]：版本比较与当前平台安装包资产选择
 //! - [`meta`]：GitHub Release 元数据拉取（最新 tag / 资产 / SHA-256 摘要）
 //! - [`install`]：安装包下载、完整性校验与打开安装器
+//! - [`pending`]：「待安装」标记与退出时自动打开安装器
 //! - [`about`]：About 对话框信息
 
 mod about;
 mod install;
 mod meta;
+mod pending;
 mod version;
 
 pub use about::{about, DesktopAboutInfo};
 // DesktopDownloadProgress 为对外公开的事件载荷类型（当前链路未直接引用，属有意保留）。
 #[allow(unused_imports)]
 pub use install::{check, download, open_installer, DesktopDownloadProgress, DesktopUpdateInfo};
+pub use pending::launch_pending_installer;
 
 /// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）
 const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";

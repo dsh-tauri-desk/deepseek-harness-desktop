@@ -175,12 +175,17 @@ export function Navbar({ iframeRef }: NavbarProps) {
     void openAboutDialog().catch(() => {})
   }
 
+  /** 「更新可用」chip：与帮助菜单「检查更新」打开同一个更新对话框 */
+  function handleOpenUpdateDialog() {
+    void openUpdateDialog().catch(() => {})
+  }
+
   /** 「检查更新」：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
   async function handleCheckUpdate() {
     try {
       const info = await store.desktopUpdater.check()
       if (info)
-        void openUpdateDialog().catch(() => {})
+        handleOpenUpdateDialog()
       else
         toast(t('update.up_to_date'), {})
     }
@@ -292,6 +297,20 @@ export function Navbar({ iframeRef }: NavbarProps) {
             </Dropdown.Popover>
           </Dropdown>
         </div>
+      </If>
+      {/* 「更新可用」chip：紧跟「帮助」右侧。检测到新版本即出现（安装包此时已在静默下载），
+          点击进入更新对话框查看进度 / 打开已下载的安装包。macOS 的「帮助」在原生菜单栏，
+          这里同样显示该 chip，保证三平台都有可见的更新入口。 */}
+      <If cond={updateInfo != null}>
+        <Chip
+          size="sm"
+          variant="primary"
+          color="accent"
+          className="ml-1 cursor-pointer text-xs"
+          onClick={handleOpenUpdateDialog}
+        >
+          {t('update.chip_available')}
+        </Chip>
       </If>
       <If cond={import.meta.env.DEV}>
         <Chip size="sm" variant="primary" color="warning" className="text-xs text-background ml-1">

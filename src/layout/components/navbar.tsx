@@ -303,9 +303,8 @@ export function Navbar({ iframeRef }: NavbarProps) {
           这里同样显示该 chip，保证三平台都有可见的更新入口。 */}
       <If cond={updateInfo != null}>
         <Chip
+          color="success"
           size="sm"
-          variant="primary"
-          color="accent"
           className="ml-1 cursor-pointer text-xs"
           onClick={handleOpenUpdateDialog}
         >

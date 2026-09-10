@@ -28,6 +28,20 @@ Chat 宠物安装在 `${DSH_HOME:-$HOME/.dsh}/pets`，Codex 宠物安装在
 `providerName: dsh-tauri-pet` 与 `includeDefaultRoots: false`，避免覆盖其他
 skill provider 或默认根目录。
 
+## 会话展示态来源（host half）
+
+宿主编排侧（`src/index.ts` + `src/host/reducer.ts`）订阅宿主事件，把「会话增量」投影成
+桌宠展示态后经 SSE（`/api/dsh-pet/session-stream`）下发给 Rust 侧再 `emit_to` 桌宠窗口：
+
+- `session/event`：回合生命周期的权威来源（turn/start → thinking、tool/call → working、
+  approval/asked → waiting、turn/end 按 reason 落定 success/error/waiting 或回空闲…）。
+- `agent/status`：`status === 'idle'` 时作为**回合收尾兜底**。核心在异常收尾时可能不追加
+  `turn/end`（用户中止、被父级中断、崩溃修复补写的 `interrupted` 只进日志、不再发
+  `session/event`），只认 `turn/end` 会让桌宠永远停在「思考中」气泡 + 循环动画。
+  兜底只在会话仍处于回合内（`running || turnActive || stepActive`）时生效，`turn/end`
+  已落定的终态档（success/error）与 blocked 等待态不被改写。
+- `session/disposed`：会话消失 → 移除对应气泡与展示态。
+
 ## Bridge commands
 
 | command | 说明 |

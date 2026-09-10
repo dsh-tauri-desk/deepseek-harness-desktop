@@ -281,4 +281,66 @@ describe('petSessionReducer (host)', () => {
     reducer.apply(peer(), ev('todo/write', { todos: [{ id: 't1', status: 'in_progress', content: '整理文档' }] }, 4))
     expect(pushes.length).toBe(before + 1)
   })
+
+  // ---------------------------------------------------------------------------
+  // agent/status idle 兜底：核心漏发 turn/end 的中断必须回落空闲，否则 toast + 循环动画一直持续。
+  // 真实现场见 session-2a2abd15（用户中止一个刚起流的会话）：日志只有 assistant/attempt +
+  // step/end，turn/end 直到 2.5 分钟后会话重载才由崩溃修复以 interrupted 补写。
+  // ---------------------------------------------------------------------------
+  it('idle 兜底：回合内漏发 turn/end 时清空 workStatus/running/工具等待并把展示态转发下去', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    reducer.apply(peer(), ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'pwsh', arguments: '{}' }, 2))
+    expect(pushes.at(-1)!.payload).toMatchObject({ running: true, workStatus: 'working' })
+    const before = pushes.length
+    reducer.idle('a')
+    expect(pushes.length).toBe(before + 1)
+    const last = pushes.at(-1)!
+    expect(last.action).toBe('update')
+    expect(last.payload).toMatchObject({ id: 'a', running: false })
+    expect(last.payload.workStatus).toBeUndefined()
+    expect(last.payload.status).toBeUndefined()
+    expect(last.payload.liveActivity).toBeUndefined()
+  })
+
+  it('idle 兜底：turn/end 已落定的终态档与等待态不被改写（气泡/一次性动画不被掐断）', () => {
+    for (const reason of [{ kind: 'completed' }, { kind: 'error', error: { message: 'boom' } }, { kind: 'blocked' }]) {
+      const { reducer, pushes } = collect()
+      reducer.create(peer())
+      reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+      reducer.apply(peer(), ev('turn/end', { turn: 1, reason }, 2))
+      const settled = pushes.at(-1)!.payload
+      const count = pushes.length
+      reducer.idle('a')
+      expect(pushes.length).toBe(count)
+      expect(pushes.at(-1)!.payload).toBe(settled)
+    }
+  })
+
+  it('idle 兜底：无累计态、已空闲或重复通知都不转发', () => {
+    const { reducer, pushes } = collect()
+    // 未见过这个会话：不凭空建态、不转发。
+    reducer.idle('unknown')
+    expect(pushes).toHaveLength(0)
+
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    const before = pushes.length
+    reducer.idle('a')
+    expect(pushes.length).toBe(before + 1)
+    // 已回空闲：重复 idle 不再转发。
+    reducer.idle('a')
+    expect(pushes.length).toBe(before + 1)
+  })
+
+  it('idle 兜底：新建会话仅凭 summary running=true（无事件）也能回落空闲', () => {
+    const { reducer, pushes } = collect()
+    // 桌面端订阅流之前会话已在跑：create 直接带 running=true，此后没有新事件。
+    reducer.create(peer({ running: true }))
+    expect(pushes.at(-1)!.payload).toMatchObject({ running: true, status: 'running' })
+    reducer.idle('a')
+    expect(pushes.at(-1)!.payload).toMatchObject({ running: false })
+    expect(pushes.at(-1)!.payload.status).toBeUndefined()
+  })
 })

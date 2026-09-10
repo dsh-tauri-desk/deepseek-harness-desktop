@@ -7,8 +7,9 @@
  *
  * 角色划分：
  *   - host/reducer.ts  纯函数「增量事件 → 桌宠展示态」reducer（单测覆盖）；
- *   - index.ts（本文件） 宿主装配：订阅 session/event + session/disposed，把
- *                        变化经 reducer 投影后广播到 SSE 客户端；
+ *   - index.ts（本文件） 宿主装配：订阅 session/event + session/disposed + agent/status，
+ *                        把变化经 reducer 投影后广播到 SSE 客户端（agent/status → idle
+ *                        是「核心漏发 turn/end」的中断兜底，见 reducer.idle）；
  *   - Rust 消费端       新后台任务 reqwest GET 本 SSE 流 → emit_to
  *                        (pet_window::PET_WINDOW_LABEL, "session:*").
  *
@@ -188,15 +189,34 @@ export function apply(ctx: HostContext): void {
     reducer.remove(peer.id)
   }
 
+  /**
+   * agent 空闲兜底（`agent/status → idle`）：把「回合已收尾」这个事实传给 reducer，
+   * 让核心漏发 `turn/end` 的中断（用户中止、被父级中断、异常收尾）也能回落空闲。
+   * 载荷形状来自核心的 agent-scoped 事件（`agentEvents` 把 agent 融进 payload）：
+   * `{ status, agent }`，会话 id 在 `agent.session.id`；与 turnrewind 宿主侧同一读取面。
+   */
+  function handleAgentStatus(payload: unknown): void {
+    const event = payload as { status?: unknown, agent?: { session?: { id?: unknown } } } | undefined
+    if (event?.status !== 'idle')
+      return
+    const id = event.agent?.session?.id
+    if (typeof id !== 'string' || id.length === 0)
+      return
+    reducer.idle(id)
+  }
+
   /** 首个消费者接入：挂载会话事件监听（幂等）。 */
   function attachSessionEvents(): void {
     if (disposeSessionEvents !== undefined)
       return
     const disposeEvent = ctx.on('session/event', handleSessionEvent) as () => void
     const disposeDisposed = ctx.on('session/disposed', handleSessionDisposed) as () => void
+    // idle 兜底与 session/event 同生命周期：没有消费者时同样不订阅（热路径彻底退出）。
+    const disposeStatus = ctx.on('agent/status', handleAgentStatus) as () => void
     disposeSessionEvents = () => {
       disposeEvent()
       disposeDisposed()
+      disposeStatus()
     }
   }
 

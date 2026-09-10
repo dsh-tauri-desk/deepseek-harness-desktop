@@ -71,11 +71,18 @@ export const TURNREWIND_SIDEBAR_RIGHT_SERVICE = 'sidebarRight'
 export const TURNREWIND_VISIBLE_FILE_ROWS = 3
 
 /**
- * 「该轮已结束但账本还没有记录」时的重试参数：after 快照在 turn/end 之后
- * 后台结算，卡片可能早于账本落地渲染。约 700ms × 6 ≈ 4.2s 足够覆盖本地 git 操作。
+ * 「该轮已结束但账本还没有记录」时的重试参数（指数退避：700ms → 1.4s → 2.8s → 5s 封顶，
+ * 12 次累计约 50s）。
+ *
+ * after 快照在 turn/end 之后**后台结算**：先是队列里可能在飞的实时读数（每 1.5s 一次
+ * `git add --all` + diff），再是 after 自身的 `git add --all`。实测大仓库上首次 add 要
+ * 6–20s，因此原先「700ms × 6 ≈ 4.2s」的窗口会让**手动停止**（用户最想看到这一轮改了什么）
+ * 以及首次快照的 turn 永远等不到卡片。退避到 5s 既覆盖慢仓库，又不会在常见情况下
+ * 持续打请求——一旦账本出现该轮的记录（哪怕文件数为 0）就立刻停止重试。
  */
 export const TURNREWIND_SUMMARY_RETRY_DELAY_MS = 700
-export const TURNREWIND_SUMMARY_MAX_RETRIES = 6
+export const TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS = 5000
+export const TURNREWIND_SUMMARY_MAX_RETRIES = 12
 
 /** 卡片 CSS class 前缀（bem block）。 */
 export const TURNREWIND_BLOCK = 'turnrewind'

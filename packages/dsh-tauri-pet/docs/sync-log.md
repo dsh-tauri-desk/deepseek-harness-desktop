@@ -20,6 +20,36 @@
 
 ## 同步记录
 
+### 2026 —— 修复「会话被用户中止后 toast 与动画一直持续」（分支 `fix/pet-abort-hang`）
+
+不是上游同步，而是宿主收尾信号缺失导致的桌宠挂死，记录在此以便后续核对收尾语义。
+
+- **现象**：用户中止一个刚起流的会话后，桌宠气泡（标题 + 档位文案）与循环工作动画
+  （thinking/working 档）一直持续，直到会话被销毁或重开桌宠。
+- **根因（有抓包与日志证据）**：桌宠展示态只认 `turn/end`，但核心 0.1.5-rc.1 在异常收尾时
+  可能**永远不追加** `turn/end`。真实现场 `session-2a2abd15`（用户中止，等待 5 秒的会话）：
+  - 宿主 `session/event` 只到 `assistant/attempt{stream:[]}` + `step/end`；SSE 抓包（订阅
+    `/api/dsh-pet/session-stream`）在最后一条 `workStatus=thinking` 之后**再无该会话的任何帧**；
+  - 会话日志里 `turn/end` 直到 2.5 分钟后该会话被重新加载时才出现，且是崩溃修复补写的
+    `{kind:'interrupted'}`；崩溃修复属于构造 seed，**不会再发 `session/event`**，桌宠永远等不到。
+  - 结论：`turn/end` 不能作为「回合收尾」的唯一信号，与 turnrewind 宿主侧早就存在的
+    `agent/status → idle` 兜底（`packages/dsh-tauri-turnrewind/src/host/apply.ts`）同源。
+- **修复**：
+  - `src/host/reducer.ts`：抽出 `settleIdle(state)`（turn/end 中断分支与 idle 兜底共用同一份
+    收尾语义），新增 `idle(id)` —— 只在会话仍处于「回合内」（`running || turnActive || stepActive`）
+    时才落定回空闲并去重转发；`turn/end` 已写好的终态档（success/error）与 blocked 等待态
+    必须保留，否则刚弹出的失败/完成气泡与一次性动画会被立刻掐断。
+  - `src/index.ts`：`attachSessionEvents` 增加 `ctx.on('agent/status', ...)`，`status==='idle'`
+    时用 `agent.session.id` 调 `reducer.idle`；与 `session/event` / `session/disposed` 同生命周期
+    （无消费者不订阅）。载荷形状 `{status, agent}` 来自核心 `agentEvents` 的 fused payload，
+    0.1.2-rc.1 与 0.1.5-rc.1 一致（旧核心同样是 `dispatch.emit("agent/status", { status })`）。
+  - `src/pet/hooks/bubble-copy.ts`：`sessionTitle()` 从 `use-bubble.ts` 迁入（纯函数可单测），
+    标题缺失时回落 `UNTITLED_SESSION_TITLE`（「新会话」/「New session」），**不再回落
+    `session.id`**（此前把 `session-xxxx-xxxx…` 漏成气泡标题）。
+  - 测试：reducer.test.ts 新增 4 条（漏发 turn/end 时清空并转发、终态/等待态不被改写、
+    未知会话与重复通知不转发、create 仅凭 summary `running=true` 也能回落）；
+    bubble-copy.test.ts 新增 3 条（标题优先级、缺失标题回落且不含 `session-`、前缀保留）。
+
 ### 2025 —— PR #414（已合并 main，分支 `dsh/pet-work-status`）
 
 预设 ref 升级 + 工作状态 6 档 + 动画/气泡接线：

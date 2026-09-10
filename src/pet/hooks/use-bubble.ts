@@ -3,7 +3,7 @@ import type { PetStatus } from './use-pet'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
 import { toast } from '@/utils/toast'
-import { statusCopy, taskCopy, toolActivityGroup } from './bubble-copy'
+import { sessionTitle, statusCopy, taskCopy, toolActivityGroup } from './bubble-copy'
 
 export interface BubbleSession {
   [key: string]: unknown
@@ -44,13 +44,6 @@ const STATUS_COALESCE_MS = 100
 const IS_ZH = (typeof document !== 'undefined' ? document.documentElement.lang || navigator.language : 'zh-CN')
   .toLowerCase()
   .startsWith('zh')
-
-/** 常用文案常量 */
-const LABELS = {
-  subagent: IS_ZH ? '子代理' : 'Subagent',
-  waitApproval: IS_ZH ? '需授权' : 'Needs approval',
-  waitChoice: IS_ZH ? '需选择' : 'Needs your input',
-} as const
 
 /** 工具名 → toast 展示标签（沿用既有风格：英文工具名大写 / 中文动词）。 */
 const TOOL_LABELS: Record<string, string> = {
@@ -409,20 +402,6 @@ function rawSession(payload: unknown): BubbleSession | undefined {
   const session = (value.session && typeof value.session === 'object' ? value.session : value) as Record<string, unknown>
   const id = session.id ?? session.sessionId
   return typeof id === 'string' && id.length > 0 ? { ...session, id } : undefined
-}
-
-/** 会话标题处理 */
-function sessionTitle(session: BubbleSession): string {
-  const base = [session.title, session.displayTitle, session.name, session.id]
-    .find((v): v is string => typeof v === 'string' && Boolean(v.trim())) || '会话'
-
-  if (session.phase === 'approval')
-    return `${LABELS.waitApproval} · ${base}`
-  if (session.phase === 'user-question' || session.phase === 'blocked')
-    return `${LABELS.waitChoice} · ${base}`
-  if (session.origin === 'subagent')
-    return `${LABELS.subagent} · ${base}`
-  return base
 }
 
 /** 细分工作状态档位（host reducer workStatus 输出；动画名映射见 pet-config）。 */

@@ -184,6 +184,32 @@ function payloadEqual(a: PetSessionPayload, b: PetSessionPayload): boolean {
     && Object.is(a.liveActivity?.args, b.liveActivity?.args)
 }
 
+/**
+ * 把累计态落定为「回合已收尾、空闲」：清掉回合内的一切瞬时态（工具/推理/正文/等待/档位/错误）。
+ *
+ * `turn/end` 的中断分支与 `agent/status → idle` 兜底共用同一份语义，避免两条收尾路径漂移出
+ * 「一条清干净、另一条残留 thinking」这类只在真实中断时复现的差异。
+ * @param state - 待落定的会话累计态（就地修改）。
+ */
+function settleIdle(state: PetSessionState): void {
+  state.turnActive = false
+  state.stepActive = false
+  state.running = false
+  state.openTools.clear()
+  state.reasoningTail = ''
+  state.assistantText = ''
+  state.waitingKind = undefined
+  state.waitingApprovalId = undefined
+  state.waitingCallId = undefined
+  state.workStatus = undefined
+  state.lastAgentError = undefined
+}
+
+/** 会话是否仍处于「回合内」：只有这种状态才允许被 idle 兜底改写（终态档/等待态由 turn/end 落定）。 */
+function inTurn(state: PetSessionState): boolean {
+  return state.running || state.turnActive || state.stepActive
+}
+
 /** 从累计态 fold 出当前展示 payload（只投影桌宠关心的字段）。 */
 export function foldPetPayload(state: PetSessionState): PetSessionPayload {
   // 活动优先级：正在等结果的工具调用 > 累计的 reasoning 文本 > 无。
@@ -513,13 +539,10 @@ export function reduceSessionEvent(
           state.lastAgentError = errBody?.error?.message ?? kind
         }
         else {
-          // aborted 等：回合中断，清档回空闲（绝不残留上一档，防止「一直 working」挂死）。
+          // aborted/interrupted/未知：回合中断，静默回空闲（绝不残留上一档，防止「一直 working」挂死）。
           // 手动取消是用户主动中断而非失败：不得写入 lastAgentError，否则 use-bubble 下一帧
-          // 判 failed 弹「失败：aborted」toast（kind==='error' 已在上面分支处理，此处到不了；
-          // 旧代码 if (kind === 'error' || kind === 'aborted') 实际只会命中 aborted，
-          // 把取消误记成错误）。lastAgentError 一并清空，保证取消后彻底静默回落空闲。
-          state.workStatus = undefined
-          state.lastAgentError = undefined
+          // 判 failed 弹「失败：aborted」toast。与 agent/status idle 兜底共用 settleIdle。
+          settleIdle(state)
         }
       }
       break
@@ -602,6 +625,34 @@ export function createPetSessionReducer(
       if (previous && payloadEqual(previous, payload))
         return
       lastSent.set(peer.id, payload)
+      handle('update', payload)
+    },
+    /**
+     * agent 空闲兜底（宿主 `agent/status → idle`）。
+     *
+     * 【为什么必须有】`turn/end` 不是「回合收尾」的可靠信号：核心在异常收尾时可能**永远不追加**
+     * 它——真实现场（0.1.5-rc.1，用户中止一个刚起流的会话）里日志只有 `assistant/attempt` +
+     * `step/end`，`turn/end` 直到 2.5 分钟后会话被重新加载时才由崩溃修复以 `interrupted` 补写；
+     * 而崩溃修复属于构造 seed，不会再走 `session/event`。桌宠只认 `turn/end`，于是永远停在
+     * 「思考中」气泡 + 循环工作动画（用户报告：会话被中止后 toast 跟动画一直持续）。
+     * turnrewind 宿主侧对此早已有同样的 idle 兜底，这里补齐桌宠这一侧。
+     *
+     * 【为什么限定 inTurn】`agent/status → idle` 总是紧跟在 `turn/end` 之后（同一轮收尾：
+     * turn/end 在 `finally` 里先落定，driver 再切 idle）。只有当回合内标志仍然成立（说明
+     * `turn/end` 根本没到）才改写，避免把刚由 turn/end 写好的终态档（success 庆祝 / error 失败）
+     * 与 blocked 等待态立刻清掉、掐断刚弹出的气泡与一次性动画。
+     * @param id - 进入空闲的会话 id（无累计态或已非回合内时静默忽略）。
+     */
+    idle(id: string): void {
+      const state = states.get(id)
+      if (state === undefined || !inTurn(state))
+        return
+      settleIdle(state)
+      const payload = foldPetPayload(state)
+      const previous = lastSent.get(id)
+      if (previous && payloadEqual(previous, payload))
+        return
+      lastSent.set(id, payload)
       handle('update', payload)
     },
     /** 会话消失：push remove 并清态。 */

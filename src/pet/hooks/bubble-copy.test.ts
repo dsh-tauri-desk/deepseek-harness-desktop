@@ -5,7 +5,7 @@
  * 文案、taskCopy 句式（对齐 dsh-dafeiyu：正在/继续、动作动词、默认处理「…」）。
  */
 import { describe, expect, it } from 'vitest'
-import { activityCopy, seedNumber, statusCopy, taskCopy, toolActivityGroup } from './bubble-copy'
+import { activityCopy, seedNumber, sessionTitle, statusCopy, taskCopy, toolActivityGroup, UNTITLED_SESSION_TITLE } from './bubble-copy'
 
 describe('seedNumber', () => {
   it('numeric strings resolve to the absolute truncated integer', () => {
@@ -100,5 +100,31 @@ describe('taskCopy', () => {
     expect(taskCopy(undefined)).toBeUndefined()
     expect(taskCopy('   ')).toBeUndefined()
     expect(taskCopy('')).toBeUndefined()
+  })
+})
+
+describe('sessionTitle', () => {
+  it('prefers title/displayTitle/name as the base', () => {
+    expect(sessionTitle({ title: '修复宠物' })).toBe('修复宠物')
+    expect(sessionTitle({ displayTitle: '修复宠物' })).toBe('修复宠物')
+    expect(sessionTitle({ name: '修复宠物' })).toBe('修复宠物')
+  })
+
+  it('falls back to the untitled label instead of leaking the internal session id', () => {
+    const title = sessionTitle({ id: 'session-2a2abd15-b0d4-499c-aed1-dd1424003bb3' })
+    expect(title).toBe(UNTITLED_SESSION_TITLE)
+    expect(title).not.toContain('session-')
+    // 空白标题与缺失标题同档：都不得回落到 id。
+    expect(sessionTitle({ title: '   ', displayTitle: '' })).toBe(UNTITLED_SESSION_TITLE)
+  })
+
+  it('keeps the attention prefixes on top of the untitled fallback', () => {
+    for (const phase of ['approval', 'user-question', 'blocked']) {
+      const title = sessionTitle({ phase, title: '会话' })
+      expect(title).toContain('会话')
+      expect(title).toBe(sessionTitle({ phase, title: '会话' }))
+    }
+    expect(sessionTitle({ phase: 'approval' })).toContain(UNTITLED_SESSION_TITLE)
+    expect(sessionTitle({ origin: 'subagent' })).toContain(UNTITLED_SESSION_TITLE)
   })
 })

@@ -117,3 +117,47 @@ export function toolActivityGroup(tool: string | undefined): string {
     return 'commanding'
   return 'working'
 }
+
+/** 会话标题兜底文案：标题还没生成（或首条提示尚未出标题）时不要暴露内部 session id。 */
+export const UNTITLED_SESSION_TITLE = IS_ZH ? '新会话' : 'New session'
+
+/** 会话标题前缀（等待/子代理等需要用户注意的态）。 */
+const SESSION_LABELS = {
+  subagent: IS_ZH ? '子代理' : 'Subagent',
+  waitApproval: IS_ZH ? '需授权' : 'Needs approval',
+  waitChoice: IS_ZH ? '需选择' : 'Needs your input',
+} as const
+
+/**
+ * 标题展示只读这些字段：标题与身份来自宿主投影，phase/origin 决定前缀。
+ * 带索引签名是为了直接吃完整展示态（`use-bubble` 的会话对象），多余字段一律忽略。
+ */
+export interface SessionTitleSource {
+  [key: string]: unknown
+  title?: unknown
+  displayTitle?: unknown
+  name?: unknown
+  phase?: unknown
+  origin?: unknown
+}
+
+/**
+ * 会话标题（含等待/子代理前缀）。
+ *
+ * 标题缺失时回落到 {@link UNTITLED_SESSION_TITLE}（「新会话」），**绝不回落到 `session.id`**：
+ * 会话 id 是内部标识，标题还没生成时它会以 `session-xxxx-xxxx…` 形态漏进气泡标题。
+ */
+export function sessionTitle(session: SessionTitleSource): string {
+  const base = [session.title, session.displayTitle, session.name]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    ?.trim()
+    ?? UNTITLED_SESSION_TITLE
+
+  if (session.phase === 'approval')
+    return `${SESSION_LABELS.waitApproval} · ${base}`
+  if (session.phase === 'user-question' || session.phase === 'blocked')
+    return `${SESSION_LABELS.waitChoice} · ${base}`
+  if (session.origin === 'subagent')
+    return `${SESSION_LABELS.subagent} · ${base}`
+  return base
+}

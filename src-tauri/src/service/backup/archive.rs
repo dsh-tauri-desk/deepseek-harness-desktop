@@ -666,6 +666,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // 根内相对 symlink 依赖符号链接创建，在权限收紧的 Windows 上跳过
     fn accepts_in_root_relative_symlink_on_restore() {
         // 根内相对链接（含一次 `..` 回落）是备份流程会产生的合法数据，不得误拒。
         let dir = std::env::temp_dir().join(format!("dsh-backup-symlink-ok-{}", unique_suffix()));

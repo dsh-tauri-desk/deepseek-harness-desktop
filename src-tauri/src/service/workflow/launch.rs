@@ -160,27 +160,17 @@ fn web_supports_no_open_flag(
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    // 活动核心的入口：本地核心存在时优先本地（需求 3），否则预打包
-    let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     if !setting.installed {
         log::debug!("Harness not installed, skipping startup");
         return Ok(());
     }
-    if !node_binary_path.exists() || !dsh_binary_path.exists() {
-        // Windows RedirectionGuard(448)：安装器继承的强制执行上下文永不自行恢复，
-        // 先尝试通过 explorer 逃逸重拉（见 relaunch_via_shell_escape 注释），
-        // 成功则本进程退出；未命中（重拉未逃逸/非 448）才走常规缺失处理。
-        #[cfg(windows)]
-        if dsh_bin_open_error(&app_handle) == Some(448) {
-            relaunch_via_shell_escape(&app_handle);
-        }
+    if !node_binary_path.exists() {
+        // Node 路径不参与核心切换（固定预装），可安全在锁外做快速失败。
         let mut setting = config::get_store_dat_setting(&app_handle);
         setting.installed = false;
         config::set_store_dat_setting(&app_handle, setting);
-        // 状态变更需要 info 级落盘：这是「store 显示未安装」的源头之一
-        // （核心文件短暂缺失被复位），自更新后自动重开走进安装分支多由此触发。
-        log::info!("Runtime files missing (node/dsh), resetting installed flag");
+        log::info!("Node.js missing, resetting installed flag");
         return Ok(());
     }
 
@@ -280,8 +270,21 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     log::debug!("Checking Harness path: {:?}", dsh_binary_path);
     if !dsh_binary_path.exists() {
-        log::error!("Harness not installed");
-        return Err("HARNESS_NOT_FOUND: Harness not installed".to_string());
+        // 与 `start` 的缺失处理同语义，但必须在锁内执行：核心切换期间
+        // `dependencies/dsh` 会在两个 rename 之间暂时缺席（version.rs 把旧槽
+        // 换出、新槽换入的窗口），若在锁外检查到缺失就把 `installed=false`
+        // 落盘，切换完成不会恢复该标志，导致此后 `start()` 直接跳过启动
+        // （自更新后自动重开常常命中此路径）。故缺失状态只在这里、锁内更新，
+        // `start()` 不再做锁外 dsh 预检。
+        #[cfg(windows)]
+        if dsh_bin_open_error(&app_handle) == Some(448) {
+            relaunch_via_shell_escape(&app_handle);
+        }
+        let mut setting = config::get_store_dat_setting(&app_handle);
+        setting.installed = false;
+        config::set_store_dat_setting(&app_handle, setting);
+        log::info!("Harness binary missing at {}, resetting installed flag", dsh_binary_path.display());
+        return Ok(());
     }
 
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）

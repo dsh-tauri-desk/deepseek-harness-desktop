@@ -10,7 +10,7 @@
 
 ### 1. 远程来源 IPC 面被重新放回（安全回归，与历史加固冲突）
 
-- 文件：`/Users/weijiahao/Projects/deepseek-harness-desktop/src-tauri/capabilities/default.json:4-8`（`remote: urls ["http://127.0.0.1:*"]`），权限集 `:9-28`（`core:default`、`core:window:*`、事件 `listen/unlisten/emit`、`opener:default/allow-open-url/allow-reveal-item-in-dir`、`store:default`）。
+- 文件：`src-tauri/capabilities/default.json:4-8`（`remote: urls ["http://127.0.0.1:*"]`），权限集 `:9-28`（`core:default`、`core:window:*`、事件 `listen/unlisten/emit`、`opener:default/allow-open-url/allow-reveal-item-in-dir`、`store:default`）。
 - 引入：`6f1c9a8 fix: restore loopback Harness permissions (#194)`（与 `d20d903/70d446b/e2309f3` 一起把权限逐步加回）。
 - 基线对照：`8d917ab` 的 `default.json` **没有 `remote` 键**，其描述原文明确写着 *“The embedded remote Harness page does not receive native Tauri permissions and communicates with the shell through the restricted postMessage bridge”*。即本次提交把一个被刻意去掉的安全边界重新打开（`baae483 harden desktop security boundaries` 曾移除此能力）。
 - 触发条件：任何能在 `127.0.0.1:任意端口` 提供服务并把页面导航/main/局部导航进 WebView 的本地进程（其它本地 dev server、被诱导打开的 link、本地脚本打的端口），其页面即进入 `remote` 匹配范围；能力授予 `main`/`pet` 两个窗。
@@ -19,7 +19,7 @@
   - `store:default`：可读写应用持久化 store（settings.dat 中保存端口、active_core、窗口几何等）；
   - `core:event:allow-emit`：可向宿主注入事件；
   - `core:window:allow-set-position/set-size/...`：任意窗口操作。
-  - Tauri 2.9/2.11 侧的 ACL 语义（本地 `~/.cargo/…/tauri-2.11.5/src/ipc/authority.rs:439-468`、`src/webview/mod.rs:1770-1830`）：远程 origin 只有在 capability 里的 `remote` 匹配时才被授予对应命令权限；本项目把 `127.0.0.1:*` 整段放回并把权限扩充（新增 `emit`、`window set-position/set-size/set-ignore-cursor-events` 等），等于授予任何 loopback 端口页面上述能力。
+  - Tauri 2.9/2.11 侧的 ACL 语义（`tauri-2.11.5/src/ipc/authority.rs:439-468`、`src/webview/mod.rs:1770-1830`，本地 cargo registry）：远程 origin 只有在 capability 里的 `remote` 匹配时才被授予对应命令权限；本项目把 `127.0.0.1:*` 整段放回并把权限扩充（新增 `emit`、`window set-position/set-size/set-ignore-cursor-events` 等），等于授予任何 loopback 端口页面上述能力。
 - 影响级别：**P1（安全回归）**。即使当前 iframe 桥（`use-iframe-invoke` 白名单）限制了 shell↔iframe 的 postMessage 通道，远程 capability 走的是 WebView 自身的 Tauri IPC，**不经过该白名单**。
 
 ---
@@ -109,7 +109,7 @@
 
 ## 实证验证记录（本轮实际运行）
 
-- **`cargo test --lib service::backup` → 23/23 passed**。其中 `rejects_path_traversal_on_restore`（archive.rs:482-504）只构造 `../../...`（`ParentDir`）条目并断言拒绝——**未覆盖绝对路径 / Windows Prefix 条目**，因此 #2 的「绝对对路径」逃逸仍未被当前测试锁定（Rust `Path::join` 对绝对分量会整体替换 base，已在本地 `~/.cargo/…/tar-0.4.46` 确认 `header.path_bytes` 保留前导 `/`，不做剥离）。
+- **`cargo test --lib service::backup` → 23/23 passed**。其中 `rejects_path_traversal_on_restore`（archive.rs:482-504）只构造 `../../...`（`ParentDir`）条目并断言拒绝——**未覆盖绝对路径 / Windows Prefix 条目**，因此 #2 的「绝对对路径」逃逸仍未被当前测试锁定（Rust `Path::join` 对绝对分量会整体替换 base，已在 cargo registry 的 `tar-0.4.46` 源码确认 `header.path_bytes` 保留前导 `/`，不做剥离）。
 - **`pnpm vitest` (scheduler) → 22/22 passed**（`executor.test.ts` 只覆盖 `unattendedToolGuardReason`/`loadSchedulerRuntimeModules`，**没有 `settlesWithin` 的 timeout 分支用例**，故 #5 死代码未被测试发现）。
 - **`pnpm vitest run worktree/storage/index.test.ts` → 6/6 passed**，全是正例，没有 `sessionId=../…` 穿越用例（#4）。
 - **css-render**：重跑 `pnpm --filter dsh-tauri build` / `dsh-tauri-pet build`，`dist/client.cjs` 内联 CssRender、无 `require('css-render')` → 此前标记 P1 的打包回归**实证不成立**（详见 §9）。
@@ -159,7 +159,7 @@
 - `src-tauri/capabilities/default.json`：删除 `"remote": {"urls": ["http://127.0.0.1:*"]}`；`description` 改为 “NO remote URLs granted; shell and pet windows only load bundled local assets, and the embedded Harness page communicates through the restricted postMessage bridge”。
 - `src-tauri/src/desktop/builder.rs`：把**锁定风险面**的 `remote_capability_allows_only_loopback_harness`（断言 remote=127.0.0.1:* 存在，恰好锁住了风险本身）替换为 `capability_grants_no_remote_urls`：断言 capabilities 文件不含 `"remote"`、`http://127.0.0.1:*`、`https://`。
 - 验证：`cargo test --lib desktop::builder::security_tests` → **2/2 passed**。
-- 说明：main/pet 窗口只 `WebviewUrl::App`（本地 tauri://），无导航到 127.0.0.1 的代码路径，原漏洞实为「当前不构成实际可达的越权」；本次按加固意图收缩，与 `baae483` 历史边界一致。
+- 说明：**#1 的 P1 评级针对修复前的配置状态**（`default.json` 中 `remote: 127.0.0.1:*` 通配 + 权限扩充，授予任何 loopback 端口页面能力）。当前 repo 实际主/pet 窗口均 `WebviewUrl::App`（本地 `tauri://`），无导航到 `127.0.0.1` 的代码路径，`remote` 通配不构成当前代码的可达越权；本次收缩（删除 remote、断言零 remote）属于**纵深防御**加固，与 `baae483` 历史安全边界一致，最终配置不授予任何远程 URL 的 Tauri capability，也没有可到达该面的特权 IPC 路径。
 
 ### #2 P1-2 archive.rs 绝对路径 / Prefix / symlink 逃逸 — ✅
 - `src-tauri/src/service/backup/archive.rs`：
@@ -248,3 +248,19 @@
 - **验证（合并后基线）**：`cargo test --lib` **501/501**（含 upstream 新增测试）、scheduler `vitest` 25/25 + typecheck 全绿、worktree `vitest` 67/67 + typecheck 全绿、`pnpm build:plugins` 全程通过（含 css-render 内联断言）。
 - **本地修复保留确认**：merge commit 中 `launch.rs` 锁内解析、`assertSafeSessionId`、`settlesWithin` 修复均完好。
 - 状态：已推送 `68e20a2..893d9d6` 到 fork origin/main；本地与 origin 同步，基线吸收 upstream 全部提交（本地仅领先 7 = 6 修复 + merge）。
+
+---
+
+## 附：CodeRabbit PR 评审反馈处理（PR-448）— ✅
+
+上游 PR（[dsh-tauri-desk → dsh-tauri-desk PR #448](https://github.com/dsh-tauri-desk/deepseek-harness-desktop/pull/448)）的 CodeRabbit 评审给出 5 条 actionable 评论，逐条验证并处理：
+
+| # | 范围 | 评审意见 | 处置 |
+|---|---|---|---|
+| 1 | `snapshot.rs:184` `resolve_real_target` | 包入口 symlink 解析后目标可能逃出 `node_modules` 根 | ✅ 修复：新增 `canonicalize(node_modules)` 根 + 词法前缀校验（拒绝根外目标）；补回归测试 `resolve_real_target_rejects_entry_symlink_escaping_root` |
+| 2 | `launch.rs:164-170` `start()` preflight | `start` 在锁外解析/检查 `dsh_binary_path`，核心切换空窗会误置 `installed=false` | ✅ 修复：缺失处理移入 `launch` 锁内（含 Windows 448 逃逸）；`start` 仅保留 node 快速失败 |
+| 3 | `worktree storage/index.ts:96` | `loadBindingSync` 非法 id 仍落入 legacy 回退键查找 | ✅ 修复：校验放 try 外，非法 id 直接 null；补 legacy fixture 测试 |
+| 4 | `REVIEW-031a946.md` | 文档含开发机绝对路径、`~/.cargo`；#1 应明确为纵深防御 | ✅ 已改：路径改仓库相对；`~/.cargo` 改通用描述；#1 措辞补充说明 |
+| 5 | `archive.rs`/`retention.rs` | 解压/删除面对 symlink 祖先的纵深加固；`accepts_in_root_relative_symlink_on_restore` 需加 `cfg(unix)` | ◐ 部分：已加 `#[cfg(unix)]` 限 unix 测试；`symlink 祖先`为纵深建议，现有词法+canonicalize 防护已覆盖实际 exploit 面，维持现状（记录原因） |
+
+验证：`cargo test --lib` **502/502**（含新增回归测试）、worktree `vitest` **68/68**、scheduler 25/25、typecheck/lint 全绿。

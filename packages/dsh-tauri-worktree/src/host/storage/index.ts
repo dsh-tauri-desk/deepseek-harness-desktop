@@ -94,8 +94,18 @@ function parseCheckoutContext(raw: string): CheckoutContext | null {
  * 文件缺失/损坏一律返回 null（绝不让只读渲染路径抛错）。
  */
 export function loadBindingSync(worktreesRoot: string, sessionId: string): Binding | null {
+  // 非法 sessionId 整体拒绝：不得进入任何读数路径，包括迁移前旧整表
+  // ledger.json 的键查找——与路由层 400 的语义保持一致。校验放在 try 之外，
+  // 绝不落入 legacy 回退（此前放 try 内会被 catch 吞掉后再走回退路径）。
+  let normalized: string
   try {
-    const raw = readFileSync(join(worktreesRoot, sessionFile(sessionId)), 'utf8')
+    normalized = assertSafeSessionId(sessionId)
+  }
+  catch {
+    return null
+  }
+  try {
+    const raw = readFileSync(join(worktreesRoot, sessionFile(normalized)), 'utf8')
     const binding = parseBinding(raw)
     if (binding)
       return binding
@@ -103,7 +113,7 @@ export function loadBindingSync(worktreesRoot: string, sessionId: string): Bindi
   catch {
     /* 会话文件缺失则回退旧整表 */
   }
-  return legacyLedgerEntrySync(worktreesRoot, sessionId)
+  return legacyLedgerEntrySync(worktreesRoot, normalized)
 }
 
 /** 从旧整表 `ledger.json` 取单键（迁移前的只读回退；不在此处落盘）。 */

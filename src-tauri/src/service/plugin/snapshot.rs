@@ -168,6 +168,11 @@ fn now_timestamp() -> String {
 /// 入口先做包名合法性校验（与还原流的 `is_actionable_plugin_ref` 范围对齐的
 /// 前置）：`id` 用于 `node_modules.join`，必须是合法 npm 包名，杜绝
 /// `../` / 绝对路径 / 多段分隔符等穿越形态在创建快照时进入路径。
+///
+/// 解析后以 `canonicalize(node_modules)` 为根做词法前缀校验：即便 `node_modules`
+/// 本身被换成指向它处的符号链接、或某个包入口是逃逸链接（pnpm 布局中 `.pnpm/...`
+/// 目标始终在 node_modules 根内），快照也只能读取根内目录。词法比较分量而非直接
+/// `starts_with`，避免 `node_modules2/...` 这类「同名携带前缀」被误放行。
 fn resolve_real_target(node_modules: &Path, id: &str) -> Result<PathBuf, String> {
     if !is_package_name(id) {
         return Err(format!(
@@ -187,6 +192,17 @@ fn resolve_real_target(node_modules: &Path, id: &str) -> Result<PathBuf, String>
         return Err(format!(
             "SNAPSHOT_NOT_DIR: {id} 的安装目标 {} 不是目录",
             real.display()
+        ));
+    }
+    let root = dunce::canonicalize(node_modules)
+        .map_err(|e| format!("SNAPSHOT_RESOLVE_ROOT: {e}"))?;
+    let root_parts: Vec<_> = root.components().collect();
+    let real_parts: Vec<_> = real.components().collect();
+    if root_parts.is_empty() || !real_parts.starts_with(&root_parts) {
+        return Err(format!(
+            "SNAPSHOT_ESCAPE: {id} 的解析目标 {} 位于 node_modules({}) 之外",
+            real.display(),
+            root.display()
         ));
     }
     Ok(real)
@@ -749,6 +765,22 @@ mod tests {
         assert!(resolve_real_target(&dir.join("node_modules"), "../x").is_err());
         assert!(resolve_real_target(&dir.join("node_modules"), "a/b").is_err());
         assert!(resolve_real_target(&dir.join("node_modules"), "/etc/passwd").is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_real_target_rejects_entry_symlink_escaping_root() {
+        // 包条目是符号链接且指向 node_modules 根之外的目录时，解析目标位于
+        // canonicalize(node_modules) 之外 → 拒绝（回归 CodeRabbit PR-448 发现）。
+        let dir = std::env::temp_dir().join(format!("dsh-snap-tgt-escape-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let node_modules = dir.join("node_modules");
+        let outside = dir.join("external");
+        fs::create_dir_all(&node_modules).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &node_modules.join("evil-pkg")).unwrap();
+        assert!(resolve_real_target(&node_modules, "evil-pkg").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

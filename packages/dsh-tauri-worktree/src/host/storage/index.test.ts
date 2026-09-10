@@ -159,4 +159,21 @@ describe('assertSafeSessionId（路径穿越防护）', () => {
         expect(name.includes('..')).toBe(false)
     }
   })
+
+  it('迁移前旧整表 ledger.json 存在时，非法 id 也不得经 legacy 回退被读取', async () => {
+    // CodeRabbit PR-448 建议：legacy 回退路径同样不做未经校验的键查找——
+    // 即使旧整表里有形似穿越的 key，非法 id 仍应整体返回 null。
+    const root = tempRoot()
+    mkdirSync(root, { recursive: true })
+    const legacy = { '../evil': makeBinding('session-1'), 'session-ok': makeBinding('session-1') }
+    writeFileSync(join(root, 'ledger.json'), JSON.stringify(legacy))
+    for (const id of ['../evil', '..', 'a/b'])
+      await expect(loadBindingSync(root, id)).toBeNull()
+    // 合法 id 走 migrate（旧表里的非法键会让迁移整体保留旧文件）→ legacy 回退
+    // 应读到合法键，而非被非法键污染返回 null。
+    const read = await loadBinding(root, 'session-ok')
+    expect(read).not.toBeNull()
+    expect(read?.sessionId).toBe('session-1')
+    expect(read?.branchName).toBe('dsh/x')
+  })
 })

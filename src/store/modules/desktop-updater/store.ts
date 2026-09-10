@@ -9,24 +9,25 @@ import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { toast } from '@/utils/toast'
 
-const DISMISS_KEY = 'desktop-update-dismissed-tag'
+/**
+ * 在途的静默下载任务：同一时刻只允许一个下载，用户点击「立即更新」时复用它
+ * 而不是重复发起（后端 `download` 幂等，但重复的进度事件会让进度条来回跳）。
+ */
+let downloadTask: Promise<void> | null = null
 
 /**
- * 桌面端自更新模块：检查新版本 → 弹出更新对话框 → 下载安装包 → 打开安装器。
+ * 桌面端自更新模块：检查新版本 → 静默下载安装包 → 打开安装器完成升级。
  *
  * 与 `updater` 模块（dsh 内核更新）区分：本模块针对桌面应用自身。
  * 轮询检查低频触发（见 components/desktop-updater），Rust 侧每次实时查询、
  * 不做缓存，由低频轮询避免 GitHub 未认证限流。
+ *
+ * 交互约定：
+ * - 检测到新版本即**静默下载**，不弹右下角 toast、不打断用户；进度只在
+ *   「检查更新」/「更新可用」chip 打开的对话框里展示；
+ * - 用户没在对话框里安装时，Rust 侧会在应用退出时自动打开已下载的安装器
+ *   （见 service::update::pending）。
  */
-function readDismissedTag(): string {
-  try {
-    return localStorage.getItem(DISMISS_KEY) ?? ''
-  }
-  catch {
-    return ''
-  }
-}
-
 export const desktopUpdater = defineStore({
   state: () => ({
     /** 发现的新版本信息（null 表示暂无） */
@@ -39,14 +40,12 @@ export const desktopUpdater = defineStore({
     downloadProgress: 0,
     /** 关于对话框信息 */
     about: null as DesktopAboutInfo | null,
-    /** 用户已关闭提示的版本 tag（持久化，同版本不再弹 toast） */
-    dismissedTag: readDismissedTag(),
   }),
   actions: {
     /**
-     * 检查是否有新版本。
+     * 检查是否有新版本；发现更新时顺带发起静默下载。
      * 轮询与「检查更新」共用；仅在 tag 变化时更新 updateInfo，
-     * 既避免重复弹 toast，也让菜单「存在新版本」指示实时反映。
+     * 让菜单/chip 的新版本指示实时反映。
      * 网络失败/限流时抛出错误（不吞掉），由调用方决定如何提示——
      * 绝不能把「检查失败」误报成「已是最新」。
      */
@@ -59,6 +58,9 @@ export const desktopUpdater = defineStore({
         if (info) {
           if (this.updateInfo?.tag !== info.tag)
             this.updateInfo = info
+          // 检测到更新即静默下载（不弹 toast、不打开安装器）；失败静默，
+          // 用户点击「立即更新」时会重试并给出可见的错误提示
+          void this.download()
         }
         else {
           this.updateInfo = null
@@ -70,18 +72,34 @@ export const desktopUpdater = defineStore({
       }
     },
 
-    /** 用户关闭 toast 提示：记住该版本，本次会话不再弹出 */
-    dismissToast() {
-      const tag = this.updateInfo?.tag
-      if (!tag)
-        return
-      this.dismissedTag = tag
-      try {
-        localStorage.setItem(DISMISS_KEY, tag)
-      }
-      catch {
-        /* 忽略持久化失败 */
-      }
+    /**
+     * 静默下载安装包：已下载 / 已在下载中 → 直接复用，不重复发起。
+     *
+     * 后台行为：不打开安装器、不弹错误 toast，失败只记录日志；
+     * 用户在对话框里主动点「立即更新」时的失败提示由 `downloadAndOpen` 负责。
+     */
+    download(): Promise<void> {
+      if (downloadTask)
+        return downloadTask
+      const info = this.updateInfo
+      if (!info || info.downloaded)
+        return Promise.resolve()
+
+      this.downloading = true
+      this.downloadProgress = 0
+      downloadTask = invoke<DesktopUpdateInfo>('download_desktop_update')
+        .then((updated) => {
+          this.updateInfo = updated
+        })
+        .catch((err) => {
+          console.error('[DesktopUpdater] download failed:', err)
+        })
+        .finally(() => {
+          downloadTask = null
+          this.downloading = false
+          this.downloadProgress = 0
+        })
+      return downloadTask
     },
 
     /** 加载关于信息（缓存到 store，仅首次拉取；打开关于对话框前调用） */
@@ -98,12 +116,10 @@ export const desktopUpdater = defineStore({
     },
 
     /**
-     * 下载并打开安装包：已下载则直接打开；
-     * 否则监听进度流式下载，完成后自动打开安装器。
+     * 「立即更新」：等待在途的静默下载（没有则发起），完成后打开安装器。
+     * 已下载则直接打开；下载失败时给出可见提示（对话框保持打开）。
      */
     async downloadAndOpen() {
-      if (this.downloading)
-        return
       const info = this.updateInfo
       if (!info)
         return
@@ -114,24 +130,17 @@ export const desktopUpdater = defineStore({
         return
       }
 
-      this.downloading = true
-      this.downloadProgress = 0
-      try {
-        const updated = await invoke<DesktopUpdateInfo>('download_desktop_update')
-        this.updateInfo = updated
-        if (updated.downloaded)
-          await this.openInstaller(updated.path)
+      await this.download()
+      const updated = this.updateInfo
+      if (updated?.downloaded) {
+        await this.openInstaller(updated.path)
       }
-      catch (err) {
-        console.error('[DesktopUpdater] download failed:', err)
+      else if (!this.downloading) {
+        // 下载确实失败（download 内部已 console 记录）→ 给出可见提示
         toast(i18next.t('update.desktop_download_failed'), {
           variant: 'danger',
           placement: 'bottom end',
         })
-      }
-      finally {
-        this.downloading = false
-        this.downloadProgress = 0
       }
     },
 

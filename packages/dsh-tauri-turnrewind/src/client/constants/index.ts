@@ -29,9 +29,20 @@ export const TURNREWIND_TURN_TAIL_ID = `${TURNREWIND_PLUGIN_NAME}-turn-changes`
  */
 export const TURNREWIND_INPUT_DOCK_SLOT = 'conversation.input.dock'
 
-/** 运行中提示条注册 id 与顺序（排在工作树状态条之后）。 */
+/**
+ * 运行中提示条注册 id 与顺序。
+ *
+ * dock 是 list 型槽，按 `order` 升序自上而下渲染。已核实的其他条目：
+ * 官方 `todo`（0，`data-testid="todo-panel"`）、`goal`（10）、`queue`（20），
+ * 工作树插件的会话横幅 `.dshp-worktree`（-10）。
+ *
+ * 提示条必须排在**这些条目之上**（用户反馈：原先 order 20 让它掉到最下面，
+ * 被任务清单和工作树横幅压在输入框上方最远处，看起来很奇怪）：它是当前这一轮
+ * 正在发生的改动读数，属于「对话的最新一行」，理应紧贴对话内容、先于任务清单。
+ * 负值同时留出空间——其余插件再往大 order 上加也不会把它挤下去。
+ */
 export const TURNREWIND_RUNNING_CHIP_ID = `${TURNREWIND_PLUGIN_NAME}-running-changes`
-export const TURNREWIND_RUNNING_CHIP_ORDER = 20
+export const TURNREWIND_RUNNING_CHIP_ORDER = -30
 
 /** 运行中提示条的客户端轮询间隔；宿主端另有 1.5s 的 git 刷新节奏。 */
 export const TURNREWIND_LIVE_POLL_INTERVAL_MS = 1200

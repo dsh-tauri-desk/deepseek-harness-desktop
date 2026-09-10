@@ -72,6 +72,8 @@ export function buildRoutes(ctx: HostContext, options: RouteDeps): any[] {
           deletions: turn.deletions,
           undoneAt: turn.undoneAt ?? null,
           unavailable: turn.unavailable ?? null,
+          // 失败/超限行的 refs 语义见 host/types：空 refs = 这一轮没建立过快照。
+          hasBaseline: turn.beforeRef.length > 0 || turn.afterRef.length > 0,
           truncated,
           files: truncated ? turn.files.slice(0, MAX_SUMMARY_FILES) : turn.files,
           // 「不在撤销范围内」的路径：让卡片能如实标注，而不是静默漏掉。

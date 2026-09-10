@@ -21,6 +21,12 @@ export interface GitRunOptions {
   env?: Record<string, string>
   /** 墙钟超时；缺省 5 分钟。 */
   timeoutMs?: number
+  /**
+   * 写进子进程 stdin 的内容（缺省立即关闭 stdin）。
+   * 只给 `check-ignore --stdin` 这类「路径从 stdin 读」的命令用：路径条数不受
+   * Windows argv 上限约束。
+   */
+  input?: string
 }
 
 /** git 输出缓冲上限：快照/差异输出可能很大，但仍需有界。 */
@@ -50,7 +56,8 @@ function execGit(cwd: string, args: string[], options: GitRunOptions): Promise<G
           // code 是「诊断」而非「结果」：ENOENT 表示 PATH 上没有 git，
           // 与「目录不是 Git 仓库」是两种完全不同的用户指引，必须分开上报。
           const code = (error as NodeJS.ErrnoException).code
-          resolve({ ok: false, error: message, ...(typeof code === 'string' ? { code } : {}) })
+          // stdout 在失败分支同样要回传：见 types 里 GitResult 的注释。
+          resolve({ ok: false, error: message, out: String(stdout ?? ''), ...(typeof code === 'string' ? { code } : {}) })
           return
         }
         resolve({ ok: true, out: String(stdout ?? '') })
@@ -60,8 +67,12 @@ function execGit(cwd: string, args: string[], options: GitRunOptions): Promise<G
     // 以 **未处理的 EPIPE** 冒泡（CI 稳定复现；Windows 管道语义不同未触发）。
     // 这里显式吞掉 stdin 的错误事件——真正的失败仍然由上面的回调统一上报。
     child.stdin?.on('error', () => {})
-    // 本插件的 git 命令都不读 stdin（参数全部走 argv），但仍显式结束，避免子进程挂在等 stdin 上。
-    child.stdin?.end()
+    // 需要喂 stdin 的命令（check-ignore --stdin）一次写完并关闭；其余命令不读 stdin，
+    // 参数全走 argv，保持原先的「空 end」形态（见上一条：Linux 上写空串也可能踩 EPIPE）。
+    if (options.input === undefined)
+      child.stdin?.end()
+    else
+      child.stdin?.end(options.input)
   })
 }
 

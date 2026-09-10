@@ -38,6 +38,11 @@ DSH 桌面端的 **turn 级工作区撤销**：每一轮对话结束时，在对
 └────────────────────────────────────────────────────────────────────┘
 ```
 
+该槽是 list 型，官方任务清单（`todo`，order `0`，`data-testid="todo-panel"`）、
+goal（`10`）、queue（`20`）与工作树插件的会话横幅（`-10`）都在同一个槽里。
+本插件用 order **`-30`** 让提示条排在这些条目**之上**：运行中的实时读数是当前动作的
+直接反馈，应紧贴对话内容，而不是被任务清单压到输入框上方最远处。
+
 | 元素 | 行为 |
 |---|---|
 | `撤销 ↶` | **真功能**：撤销该轮的文件改动；**撤销成功后按钮消失**，只留「已撤销」徽标 |
@@ -56,6 +61,10 @@ DSH 桌面端的 **turn 级工作区撤销**：每一轮对话结束时，在对
 - 文件清单最多三行，其余折叠；本轮删除（D）的文件整行弱化。
 - **已撤销的 turn**：只剩「已撤销」徽标与文件名/清单行，不再有撤销按钮与审核。
 - 该轮没有任何文件变化 → 不出现卡片。
+- 捕获过程失败且这一轮**从未建立过快照**（用户中断、捕获子进程被回收、git 暂时报错）→
+  同样不出现卡片：账本行与宿主日志照常保留（诊断不丢），但界面上不弹「撤销不可用」——
+  这一轮从来没有过可撤销的承诺，弹告警只会让人以为出了问题。
+  「基线已建立、after 结算失败」是另一回事（承诺过的撤销落空了），仍会如实告警。
 - 撤销成功后同一 turn 不能重复撤销。
 - 撤销前若发现文件在 turn 结束后又被改动过 → **拒绝执行并列出冲突文件**，不覆盖任何文件。
 - 该轮仍在运行中（after 快照未结算）→ 拒绝撤销并说明原因。
@@ -93,6 +102,12 @@ $DSH_HOME/dsh-tauri-turnrewind/
 - **忽略规则**：完全委托源仓库（`.gitignore` / global excludes），并镜像源仓库的
   `core.autocrlf` / `core.eol` / `core.symlinks` 与 `.git/info/exclude`，
   保证「比较」与「恢复」跟用户仓库语义一致。
+  **被忽略的路径不进 exclude pathspec**：`git add --all -- . :(exclude)<ignored>` 会以
+  `The following paths are ignored by one of your .gitignore files` 直接失败（exit 1），
+  而这条错误与「加不进去」无关——被忽略的路径本来就不会进快照。因此捕获与实时读数在拼
+  pathspec 之前先过一遍 `git check-ignore`（与 `git add` 读同一份 index/规则，绝不自制正则），
+  把被忽略的排除项摘掉。工作区把嵌套仓库放在被忽略的目录里时（例如本仓库的 `source/`），
+  不这么做会让**每一轮**捕获都失败。
 - **并发**：捕获、结算、容量治理、撤销全部走**同一工作区级 FIFO 队列**——私有仓的 index
   与 refs 是共享可变状态，并发就会撞 `index.lock` 或读到半更新的 index。
 - **容量治理**（每个工作区每进程一次，在首次捕获的串行区内）：
@@ -130,7 +145,7 @@ $DSH_HOME/dsh-tauri-turnrewind/
 ```text
 GET  /api/turnrewind/summary?sessionId=<id>
   → 200 { sessionId, isGit, workspaceRoot, unavailableReason,
-          turns: [{ turn, fileCount, insertions, deletions, undoneAt, unavailable,
+          turns: [{ turn, fileCount, insertions, deletions, undoneAt, unavailable, hasBaseline,
                     truncated, files: [{ path, status, insertions, deletions, binary }],
                     skippedOversized: [path], skippedNestedRepos: [path] }] }
 

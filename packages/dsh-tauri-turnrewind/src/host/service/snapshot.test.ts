@@ -16,6 +16,7 @@ import {
   readRefCommit,
   resolveInsideWorkspace,
   restoreTurnChanges,
+  scanNestedRepos,
   snapshotStoreFor,
   turnRef,
 } from './snapshot'
@@ -338,6 +339,64 @@ describe('捕获限额（超限文件 / 嵌套仓库）', () => {
       return
     expect(captured.skippedNestedRepos).toContain('nested')
     expect(captured.learnedExclusions).toContain('nested')
+  })
+})
+
+describe('被 .gitignore 忽略的排除路径', () => {
+  /**
+   * 复刻真实仓库的形态：整棵「参考源码」目录被忽略，未跟踪的克隆就放在里面
+   * （本仓库的 `source/` 正是如此——`.gitignore` 忽略整个 `source/`）。
+   */
+  async function ignoredNestedFixture(): Promise<{ dshHome: string, worktree: string, nestedDirs: string[] }> {
+    const { dshHome, worktree } = await fixture()
+    await writeFile(join(worktree, '.gitignore'), 'ignored.txt\nvendor/\n', 'utf8')
+    const nested = join(worktree, 'vendor', 'clone')
+    await mkdir(nested, { recursive: true })
+    await run('git', ['-c', 'init.defaultBranch=main', 'init', '--quiet', nested], { windowsHide: true })
+    await writeFile(join(nested, 'inner.txt'), 'inner\n', 'utf8')
+    return { dshHome, worktree, nestedDirs: scanNestedRepos(worktree) }
+  }
+
+  it('捕获不会因为 exclude pathspec 指向被忽略的目录而整体失败', async () => {
+    // 回归背景：`git add --all -- . :(exclude)vendor/clone` 会以
+    // “The following paths are ignored by one of your .gitignore files” 退出（exit 1）。
+    // 变更前这里返回 TURNREWIND_SNAPSHOT_FAILED，于是该工作区**每一轮**都被记成
+    // 「撤销不可用」并弹告警卡片——哪怕用户什么都没改（用户实际报告的现象）。
+    const { dshHome, worktree, nestedDirs } = await ignoredNestedFixture()
+    expect(nestedDirs).toEqual(['vendor/clone'])
+    const store = snapshotStoreFor(dshHome, worktree)
+
+    const before = await captureSnapshot(store, turnRef('s13', 1, 'before'), 'before', { nestedDirs })
+    expect(before.ok).toBe(true)
+    if (!before.ok)
+      return
+    // 被忽略的嵌套目录仍然如实上报：撤销确实不会碰它。
+    expect(before.skippedNestedRepos).toContain('vendor/clone')
+
+    // 排除清单从磁盘回来（后续 turn 的常路：`entry.exclusions`）时同样不能炸。
+    const after = await captureSnapshot(store, turnRef('s13', 1, 'after'), 'after', { nestedDirs, exclude: nestedDirs })
+    expect(after.ok).toBe(true)
+    if (!after.ok)
+      return
+    // 没有任何改动 → 差异为空，客户端因此不渲染任何卡片。
+    const diff = await diffTurnChanges(store, before.commit, after.commit)
+    expect(diff.ok).toBe(true)
+    if (diff.ok)
+      expect(diff.changes).toEqual([])
+  })
+
+  it('运行中实时读数同样不受影响（否则提示条永远不出现）', async () => {
+    const { dshHome, worktree, nestedDirs } = await ignoredNestedFixture()
+    const store = snapshotStoreFor(dshHome, worktree)
+    const before = await captureSnapshot(store, turnRef('s14', 1, 'before'), 'before', { nestedDirs })
+    expect(before.ok).toBe(true)
+    if (!before.ok)
+      return
+    await writeFile(join(worktree, 'a.txt'), 'one\ntwo\nthree\n', 'utf8')
+    const live = await liveDiff(store, before.commit, { exclude: nestedDirs })
+    expect(live.ok).toBe(true)
+    if (live.ok)
+      expect(live.stats).toEqual({ fileCount: 1, insertions: 1, deletions: 0 })
   })
 })
 

@@ -257,6 +257,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
     if (entry.workspaceRoot === null || entry.store === null)
       return
     if (entry.beforeCommit === null) {
+      // 连基线都没建立：这一轮从来没有过可撤销的承诺，账本行不带 ref（客户端据此沉默）。
       await recordUnavailable(dshHome, sessionId, entry.turn, entry.skippedReason ?? REASON_SNAPSHOT_FAILED)
       return
     }
@@ -269,12 +270,14 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
         nestedDirs: entry.nestedDirs,
       })
       if (!after.ok) {
-        await recordUnavailable(dshHome, sessionId, turn, after.reason)
+        // 基线在、after 失败：这是「承诺过的撤销落空了」，账本行保留 before ref，
+        // 客户端据此仍然给出告警（与上面「从没建立基线」的沉默区分开）。
+        await recordUnavailable(dshHome, sessionId, turn, after.reason, turnRef(sessionId, turn, 'before'))
         return
       }
       const diff = await diffTurnChanges(store, beforeCommit, after.commit)
       if (!diff.ok) {
-        await recordUnavailable(dshHome, sessionId, turn, REASON_SNAPSHOT_FAILED)
+        await recordUnavailable(dshHome, sessionId, turn, REASON_SNAPSHOT_FAILED, turnRef(sessionId, turn, 'before'))
         return
       }
       const record = buildRecord(turn, sessionId, diff.changes, {
@@ -346,11 +349,18 @@ function buildRecord(
   }
 }
 
-/** 记录一个不可撤销的 turn（快照失败/超限），保留原因供卡片呈现。 */
-async function recordUnavailable(dshHome: string, sessionId: string, turn: number, reason: string): Promise<void> {
+/**
+ * 记录一个不可撤销的 turn（快照失败/超限），保留原因供卡片呈现。
+ *
+ * `beforeRef` 只在**基线确实建立过**时传入：客户端用它把两种结局分开——
+ * 「这一轮从没建立过快照」不弹告警（本来就没有可撤销的东西），
+ * 「基线在、after 结算失败」必须如实告警（承诺过的撤销落空了）。
+ * 同时它也让保留窗口淘汰时能把这根孤儿 ref 一起回收。
+ */
+async function recordUnavailable(dshHome: string, sessionId: string, turn: number, reason: string, beforeRef = ''): Promise<void> {
   await recordTurn(dshHome, sessionId, {
     turn,
-    beforeRef: '',
+    beforeRef,
     afterRef: '',
     files: [],
     insertions: 0,

@@ -9,10 +9,16 @@ export type HostContext = any
 
 export type JsonBody = Record<string, unknown>
 
-/** 一次 git 子进程的结果；捕获/撤销路径从不抛异常，失败一律走该联合。 */
+/**
+ * 一次 git 子进程的结果；捕获/撤销路径从不抛异常，失败一律走该联合。
+ *
+ * 失败分支同样带 `out`：`git check-ignore` 这类命令**用退出码表达否定答案**
+ * （exit 1 = 没有路径被忽略），stdout 才是真正的结果，丢弃它会把「没有命中」
+ * 误判成「命令失败」。
+ */
 export type GitResult
   = | { ok: true, out: string }
-    | { ok: false, error: string, code?: string }
+    | { ok: false, error: string, out: string, code?: string }
 
 /** 单个工作区私有快照仓的定位信息。 */
 export interface SnapshotStore {
@@ -155,6 +161,14 @@ export interface SummaryPayload {
     deletions: number
     undoneAt: number | null
     unavailable: string | null
+    /**
+     * 该轮是否建立过 before/after 快照（refs 是否留下）。
+     *
+     * 与 `unavailable` 配合区分两种失败：连基线都没有 = 这一轮从没有过可撤销的东西
+     * （客户端对通用失败保持沉默）；基线在而 after 结算失败 = 承诺过的撤销落空了
+     * （客户端必须告警）。
+     */
+    hasBaseline: boolean
     truncated: boolean
     files: TurnFileChange[]
     /** 因超过单文件上限而未纳入快照的路径（不在撤销范围内）。 */

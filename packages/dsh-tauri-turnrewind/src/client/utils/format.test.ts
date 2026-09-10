@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   TURNREWIND_REASON_EXPIRED,
   TURNREWIND_REASON_GIT_UNAVAILABLE,
+  TURNREWIND_REASON_SNAPSHOT_FAILED,
   TURNREWIND_REASON_TURN_ACTIVE,
   TURNREWIND_REASON_UNSAFE_PATH,
 } from '../../shared/constants'
@@ -93,6 +94,37 @@ describe('resolveCardState', () => {
     expect(resolveCardState(summary({ turns: [expired] }), 1))
       .toEqual({ kind: 'failed', reason: TURNREWIND_REASON_EXPIRED })
   })
+
+  it('连基线都没建立的通用快照失败不占位（用户中断 / 捕获被回收时不该弹告警）', () => {
+    // 用户实际报告：什么都没改却看到「撤销不可用 TURNREWIND_SNAPSHOT_FAILED」。
+    const noBaseline = turnSummary({
+      unavailable: TURNREWIND_REASON_SNAPSHOT_FAILED,
+      files: [],
+      fileCount: 0,
+      hasBaseline: false,
+    })
+    expect(resolveCardState(summary({ turns: [noBaseline] }), 1)).toEqual({ kind: 'hidden' })
+
+    // 基线在、after 结算失败：承诺过的撤销落空了，必须如实告警。
+    const withBaseline = turnSummary({
+      unavailable: TURNREWIND_REASON_SNAPSHOT_FAILED,
+      files: [],
+      fileCount: 0,
+      hasBaseline: true,
+    })
+    expect(resolveCardState(summary({ turns: [withBaseline] }), 1))
+      .toEqual({ kind: 'failed', reason: TURNREWIND_REASON_SNAPSHOT_FAILED })
+
+    // 旧宿主不带该字段：保守照常呈现（宁可多显示，也不要静默漏报）。
+    const legacy = turnSummary({ unavailable: TURNREWIND_REASON_SNAPSHOT_FAILED, files: [], fileCount: 0 })
+    expect(resolveCardState(summary({ turns: [legacy] }), 1).kind).toBe('failed')
+  })
+
+  it('超限类失败即使没有基线也照常呈现（说的是「超出撤销范围」，不是内部故障）', () => {
+    const tooManyFiles = turnSummary({ unavailable: 'TURNREWIND_TOO_MANY_FILES', files: [], fileCount: 0, hasBaseline: false })
+    expect(resolveCardState(summary({ turns: [tooManyFiles] }), 1))
+      .toEqual({ kind: 'failed', reason: 'TURNREWIND_TOO_MANY_FILES' })
+  })
 })
 
 describe('reasonKey', () => {
@@ -100,6 +132,7 @@ describe('reasonKey', () => {
     expect(reasonKey(TURNREWIND_REASON_EXPIRED)).toBe('expiredReason')
     expect(reasonKey(TURNREWIND_REASON_GIT_UNAVAILABLE)).toBe('gitUnavailableReason')
     expect(reasonKey(TURNREWIND_REASON_TURN_ACTIVE)).toBe('turnActiveReason')
+    expect(reasonKey(TURNREWIND_REASON_SNAPSHOT_FAILED)).toBe('snapshotFailedReason')
     expect(reasonKey(TURNREWIND_REASON_UNSAFE_PATH)).toBe('unsafePathReason')
   })
 

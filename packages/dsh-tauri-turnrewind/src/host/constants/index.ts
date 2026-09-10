@@ -5,7 +5,7 @@
  * 避免「预览说超限、执行却照做」这类双份常量漂移。
  */
 
-import { TURNREWIND_PLUGIN_NAME, TURNREWIND_REASON_GIT_REQUIRED } from '../../shared/constants'
+import { TURNREWIND_PLUGIN_NAME, TURNREWIND_REASON_GIT_REQUIRED, TURNREWIND_REASON_SNAPSHOT_FAILED } from '../../shared/constants'
 
 export { TURNREWIND_API_PREFIX, TURNREWIND_PLUGIN_NAME } from '../../shared/constants'
 
@@ -94,7 +94,7 @@ export const REASON_SNAPSHOT_TOO_LARGE = 'TURNREWIND_SNAPSHOT_TOO_LARGE'
 export const REASON_TOO_MANY_OVERSIZED = 'TURNREWIND_TOO_MANY_OVERSIZED'
 
 /** 快照或统计过程失败（git 异常、仓库损坏等）。 */
-export const REASON_SNAPSHOT_FAILED = 'TURNREWIND_SNAPSHOT_FAILED'
+export const REASON_SNAPSHOT_FAILED = TURNREWIND_REASON_SNAPSHOT_FAILED
 
 /** 快照仓被隔离重建 / 手工删除，该 turn 的 refs 已不存在。 */
 export const REASON_EXPIRED = 'TURNREWIND_EXPIRED'

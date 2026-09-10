@@ -30,5 +30,14 @@ export const TURNREWIND_REASON_EXPIRED = 'TURNREWIND_EXPIRED'
 /** 该 turn 仍在运行中，after 快照尚未结算，此时不允许撤销。 */
 export const TURNREWIND_REASON_TURN_ACTIVE = 'TURNREWIND_TURN_ACTIVE'
 
+/**
+ * 快照或统计过程失败（git 异常、仓库损坏、捕获子进程被中断等）。
+ *
+ * 与「超限」类原因（文件数/字节数）的区别在于**不可操作**：它说的是「我们没能
+ * 把这一轮记下来」，而不是「这一轮超出撤销范围」。客户端据此对「连基线都没建立」
+ * 的记录保持沉默（见 client/utils/format.ts）。
+ */
+export const TURNREWIND_REASON_SNAPSHOT_FAILED = 'TURNREWIND_SNAPSHOT_FAILED'
+
 /** 撤销命中了不允许穿透的目标路径（父级符号链接/junction、非空目录占位）。 */
 export const TURNREWIND_REASON_UNSAFE_PATH = 'TURNREWIND_UNSAFE_PATH'

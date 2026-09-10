@@ -26,6 +26,11 @@ export interface TurnSummary {
   deletions: number
   undoneAt: number | null
   unavailable: string | null
+  /**
+   * 该轮是否建立过快照基线（旧内核/旧宿主不带该字段时视为 true，即保守地照常呈现）。
+   * 与 `unavailable` 配合：连基线都没有的通用失败不弹告警（见 utils/format.ts）。
+   */
+  hasBaseline?: boolean
   truncated: boolean
   files: TurnFileChange[]
   /**
@@ -147,6 +152,7 @@ export type LocaleKey
     | 'expiredReason'
     | 'gitUnavailableReason'
     | 'turnActiveReason'
+    | 'snapshotFailedReason'
     | 'unsafePathReason'
     | 'skippedOversized'
     | 'skippedNestedRepos'

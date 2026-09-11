@@ -4,7 +4,7 @@ import countsStyle from '../styles/counts.cssr'
 import chipStyle from './running-changes-chip.cssr'
 
 vi.mock('dsh-tauri-ui/client', async () => {
-  const mod = await import('../../../../dsh-tauri-ui/src/client/cssr.ts')
+  const mod = await import('../../../../dsh-tauri-ui/src/client/utils/cssr.ts')
   return { cssr: mod.cssr }
 })
 

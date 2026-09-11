@@ -4,7 +4,7 @@ import type { MenuSelectProps } from '../types'
 import { IconChevronDownOutline14 as ChevronDown, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useState } from 'react'
 import { MENU_SELECT_STYLE_ID } from '../constants'
-import { useMountStyle } from '../style'
+import { useMountStyle } from '../utils/style'
 import { Icon } from './icon'
 import menuSelectStyle from './menu-select.cssr'
 

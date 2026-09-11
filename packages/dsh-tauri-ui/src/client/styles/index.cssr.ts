@@ -1,5 +1,5 @@
 import { TURN_NAVIGATION_NARROW_SELECTOR } from '../constants'
-import { cssr } from '../cssr'
+import { cssr } from '../utils/cssr'
 
 const { c } = cssr
 

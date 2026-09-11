@@ -27,7 +27,7 @@ import {
 import { useSettingsOnboardingSteps } from '../hooks/sections'
 import { openSettings, useSettingsUi } from '../store'
 
-import { useMountStyle } from '../style'
+import { useMountStyle } from '../utils/style'
 import settingsTriggerStyle from './trigger.cssr'
 
 /**

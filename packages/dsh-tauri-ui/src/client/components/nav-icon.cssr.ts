@@ -1,4 +1,4 @@
-import { cssr } from '../cssr'
+import { cssr } from '../utils/cssr'
 
 const { bem: { b } } = cssr
 

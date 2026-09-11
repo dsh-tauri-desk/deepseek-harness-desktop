@@ -41,8 +41,8 @@ import { registerSettingsLocale } from './locales'
 import { registerSettingsSections } from './register/sections'
 import { registerSettingsSidebar } from './register/sidebar'
 import { registerSettingsTrigger } from './register/trigger'
-import { mountStyle } from './style'
 import turnNavigationStyle from './styles/index.cssr'
+import { mountStyle } from './utils/style'
 
 /** 插件显示名（诊断元数据）。 */
 export const name = SETTINGS_UI_PLUGIN
@@ -52,10 +52,10 @@ export const inject = ['slots', 'layout', 'locale']
 
 // The client entry is also the workspace-wide shared UI surface.
 export * from './components'
-export { cssr } from './cssr'
-export { mountStyle, useMountStyle } from './style'
 export { styles } from './theme'
 export type * from './types'
+export { cssr } from './utils/cssr'
+export { mountStyle, useMountStyle } from './utils/style'
 
 /**
  * 插件体：注册未来 chrome 的落点座位 + 设置侧边栏功能。

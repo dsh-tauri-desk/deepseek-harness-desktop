@@ -20,7 +20,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use zip::ZipArchive;
 use futures_util::StreamExt;
@@ -354,6 +354,48 @@ pub fn pet_stream_wanted(app: &AppHandle) -> bool {
     status.enabled && status.visible
 }
 
+/// 断线重连日志的重记间隔：状态持续不变时最多这么久重记一次。
+///
+/// 宿主未就绪（启动中，或插件操作期间被主动停止）时这条流会每 2s 失败一次，
+/// 逐次输出会在几秒内刷满日志、把真正的错误挤掉。
+const PET_STREAM_RELOG_INTERVAL: Duration = Duration::from_secs(60);
+
+/// 「会话流正常结束」在日志节流里的状态名（宿主重启时属正常，不需要告警）。
+const PET_STREAM_ENDED: &str = "stream ended";
+
+/// 重连日志节流器：只在「状态首次出现 / 状态变化 / 距上次输出已超过
+/// [`PET_STREAM_RELOG_INTERVAL`]」时允许输出，其余相同的重复失败降级为 debug。
+///
+/// 状态用失败原因字符串表示：宿主不可用期间原因通常是稳定的一条（如
+/// `HTTP 502 Bad Gateway`），于是整段不可用期被压成首行 + 每分钟一行；原因变化
+/// （换了一种坏法）则立即重新输出，不会把新问题一起静默掉。
+struct PetStreamLogThrottle {
+    last_state: Option<String>,
+    last_logged: Instant,
+    relog_interval: Duration,
+}
+
+impl PetStreamLogThrottle {
+    fn new() -> Self {
+        Self {
+            last_state: None,
+            last_logged: Instant::now(),
+            relog_interval: PET_STREAM_RELOG_INTERVAL,
+        }
+    }
+
+    /// 记录一次状态，返回这一行是否应当输出。
+    fn should_log(&mut self, state: &str) -> bool {
+        let repeated = self.last_state.as_deref() == Some(state);
+        self.last_state = Some(state.to_string());
+        if repeated && self.last_logged.elapsed() < self.relog_interval {
+            return false;
+        }
+        self.last_logged = Instant::now();
+        true
+    }
+}
+
 /// 按「是否有消费者」启停「宿主会话增量 SSE」消费任务（见
 /// [`consume_pet_session_stream`]），幂等：启用且无活动任务才 spawn；停用时
 /// abort 任务，连接立即关闭。
@@ -378,15 +420,26 @@ pub fn sync_pet_session_stream(app: &AppHandle, wanted: bool) {
     }
     let app = app.clone();
     *handle = Some(tauri::async_runtime::spawn(async move {
+        // 重连是 2s 一次的常态循环，宿主未就绪时会连续失败几十上百次：逐次输出
+        // 会刷满日志并挤掉真正的错误，因此按状态节流（见 [`PetStreamLogThrottle`]）。
+        let mut throttle = PetStreamLogThrottle::new();
         loop {
             let setting = config::get_store_dat_setting(&app);
             let url = format!("http://127.0.0.1:{}{}", setting.port, SESSION_STREAM_PATH);
             match consume_pet_session_stream(&app, &url).await {
                 Ok(()) => {
-                    log::info!("[pet-stream] host session stream ended; reconnecting in 2s");
+                    if throttle.should_log(PET_STREAM_ENDED) {
+                        log::info!("[pet-stream] host session stream ended; reconnecting in 2s");
+                    } else {
+                        log::debug!("[pet-stream] host session stream ended (repeated)");
+                    }
                 }
                 Err(error) => {
-                    log::warn!("[pet-stream] host session stream error: {error}; reconnecting in 2s");
+                    if throttle.should_log(&error) {
+                        log::warn!("[pet-stream] host session stream error: {error}; reconnecting in 2s");
+                    } else {
+                        log::debug!("[pet-stream] host session stream error (suppressed): {error}");
+                    }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1071,6 +1124,48 @@ mod tests {
     use zip::CompressionMethod;
 
     struct TestDirectory(PathBuf);
+
+    // ---- 重连日志节流（宿主不可用期间每 2s 一次失败不能刷满日志）----
+
+    fn throttle(relog_interval: Duration) -> PetStreamLogThrottle {
+        PetStreamLogThrottle {
+            last_state: None,
+            last_logged: Instant::now(),
+            relog_interval,
+        }
+    }
+
+    #[test]
+    fn pet_stream_throttle_suppresses_identical_failures() {
+        // 宿主不可用期间同一条 502 每次重连都复现：只留第一行，其余静默
+        let mut throttle = throttle(Duration::from_secs(60));
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(!throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(!throttle.should_log("HTTP 502 Bad Gateway"));
+
+        // 换成另一种坏法 → 立即重新输出，不会被前一种的静默期吞掉
+        assert!(throttle.should_log("error decoding response body"));
+        // 回到前一种原因同样算状态变化
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+    }
+
+    #[test]
+    fn pet_stream_throttle_relogs_after_interval() {
+        // 长时间不可用仍需留痕：到期后重记一次，而不是整段彻底静默
+        let mut throttle = throttle(Duration::ZERO);
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+    }
+
+    #[test]
+    fn pet_stream_throttle_keeps_ended_and_error_distinct() {
+        // 「正常结束」（宿主重启）与失败是两种状态，不会互相静默掉
+        let mut throttle = throttle(Duration::from_secs(60));
+        assert!(throttle.should_log(PET_STREAM_ENDED));
+        assert!(!throttle.should_log(PET_STREAM_ENDED));
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(throttle.should_log(PET_STREAM_ENDED));
+    }
 
     impl TestDirectory {
         fn new(name: &str) -> Self {

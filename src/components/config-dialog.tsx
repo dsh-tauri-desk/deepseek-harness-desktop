@@ -3,7 +3,7 @@ import { Cpu, LogoWindows, PersonPencil, Puzzle } from '@gravity-ui/icons'
 import { useEventBus } from '@hairy/react-lib'
 import { cn, Modal } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Case, If, Switch } from 'react-if-lite'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
@@ -29,11 +29,28 @@ export function ConfigDialog(props: ConfigDialogProps) {
   ]
 
   const [activeTab, setActiveTab] = useState('application')
+  const pluginBatchRunningRef = useRef(false)
 
-  useEventBus('config:dialog:hidden').on(disclosure.cancel)
+  function handlePluginBatchRunning(running: boolean) {
+    pluginBatchRunningRef.current = running
+  }
+
+  function hideConfigDialog() {
+    if (pluginBatchRunningRef.current)
+      return
+    disclosure.cancel()
+  }
+
+  function handleOpenChange(isOpen: boolean) {
+    if (!isOpen && pluginBatchRunningRef.current)
+      return
+    disclosure.cancel()
+  }
+
+  useEventBus('config:dialog:hidden').on(hideConfigDialog)
 
   return (
-    <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
+    <Modal isOpen={disclosure.visible} onOpenChange={handleOpenChange}>
       <Modal.Backdrop>
         <Modal.Container size="lg">
           <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5 h-screen">
@@ -78,7 +95,10 @@ export function ConfigDialog(props: ConfigDialogProps) {
                     <ConfigProfile />
                   </Case>
                   <Case cond="plugins">
-                    <ConfigPlugin />
+                    <ConfigPlugin
+                      onBatchRunning={handlePluginBatchRunning}
+                      onBatchClose={hideConfigDialog}
+                    />
                   </Case>
                   <Case cond="harness">
                     <ConfigCore />

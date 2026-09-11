@@ -36,7 +36,27 @@ fn existing_slot_dir(app_handle: &AppHandle, tag: &str) -> Option<PathBuf> {
         return Some(new);
     }
     let legacy = safe_slot_path(&deps, &format!("dsh-{tag}")).ok()?;
-    legacy.is_dir().then_some(legacy)
+    if legacy.is_dir() {
+        return Some(legacy);
+    }
+
+    // 官方核心 Release 使用 dsh-v<version>，历史桌面包目录可能使用带 build-id 的
+    // dsh-<version>-<build-id>。按 SemVer 兜底识别，避免同一版本因 tag 规范迁移而显示未安装。
+    let version = download::parse_version_from_tag(tag)?;
+    std::fs::read_dir(&deps)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find_map(|path| {
+            let name = path.file_name()?.to_str()?.to_string();
+            if name == config::DSH_CORE_DIR {
+                return None;
+            }
+            let candidate = safe_slot_path(&deps, &name).ok()?;
+            (candidate.is_dir()
+                && download::parse_version_from_tag(&name).as_deref() == Some(version.as_str()))
+            .then_some(candidate)
+        })
 }
 
 /// 构造槽位路径，并拒绝越出 dependencies 根目录的既有路径或符号链接。
@@ -59,15 +79,16 @@ fn read_manifest_dsh_version(dir: &Path) -> Option<String> {
         .map(|s| s.trim_start_matches(['^', '~', '=', '>', '<']).to_string())
 }
 
-/// 核心列表：本地核心 + deepseek-harness-pkg 各发布版本（按版本去重）。
+/// 核心列表：本地核心 + 官方 deepseek-harness Releases 的最近版本（数量由
+/// `DSH_CORE_RELEASE_LIMIT` 控制，按版本去重）。
 ///
-/// 版本行数据源为 GitHub releases（`fetch_dsh_pkg_releases`，最新在前，含
+/// 版本行数据源为官方 GitHub releases（`fetch_dsh_core_releases`，最新在前，含
 /// Pre-release label）：预览版（label 或 tag 命名，见 `download::is_preview_tag`）
-/// 照常列出供手动下载安装，仅带「预览版」标记、不参与更新提示。pkg 仓库会对
-/// 同一版本打多个 tag（含测试打包），这里按版本去重——同一版本只保留**最后一个**
-/// tag，预览标记以保留的 tag 为准。releases 拉取失败（离线/限流）时回退 git
-/// tags（无 label，预览标记按 tag 命名兜底），再失败降级为磁盘扫描，只列出
-/// 本地、激活与已下载的历史版本。
+/// 照常列出供手动下载安装，仅带「预览版」标记、不参与更新提示。官方 Releases 可能对
+/// 同一版本返回多个 tag，这里按版本去重——同一版本只保留**最后一个**
+/// tag，预览标记以保留的 tag 为准。官方 Releases 拉取失败（离线/限流）时不改用
+/// tags、HTML 或打包仓库补充核心版本，仅降级为磁盘扫描，保留本地、激活与已下载的
+/// 历史版本。
 pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     let source = active_source(app_handle);
     let local = local_core(app_handle);
@@ -121,31 +142,13 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
             .flatten()
     });
 
-    // 版本行：GitHub releases（最新在前，含 Pre-release label）→ 按版本去重，
-    // 同版本只保留最后一个 tag。releases 拉取失败（离线/限流）时回退 git tags，
-    // 预览标记按 tag 命名兜底（见 `download::is_preview_tag`）。
-    let (release_metas, remote_catalog_available) = match download::fetch_dsh_pkg_releases().await {
+    // 版本行只来自官方 Releases API（最新在前，下载层已限制为最近 10 个）；
+    // 同版本只保留最后一个 tag。接口失败时不回退到 tags，避免混入非官方核心列表数据。
+    let (release_metas, remote_catalog_available) = match download::fetch_dsh_core_releases().await {
         Ok(metas) => (metas, true),
         Err(e) => {
-            log::warn!(
-                "Failed to fetch dsh pkg releases ({}), falling back to git tags",
-                e
-            );
-            match download::fetch_dsh_pkg_tags().await {
-                Ok(tags) => (
-                    tags.into_iter()
-                        .map(|(tag, _)| download::DshPkgReleaseMeta {
-                            tag,
-                            prerelease: false,
-                        })
-                        .collect(),
-                    true,
-                ),
-                Err(e) => {
-                    log::warn!("Failed to fetch dsh pkg tags: {}", e);
-                    (Vec::new(), false)
-                }
-            }
+            log::warn!("Failed to fetch official dsh releases: {}", e);
+            (Vec::new(), false)
         }
     };
     let mut version_tags: Vec<(String, String, bool)> = Vec::new(); // (version, tag, preview)，保持首次出现顺序
@@ -495,10 +498,13 @@ pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<Harne
     if dest.exists() {
         return Ok(row_for_tag(app_handle, tag, &dest));
     }
+    if let Some(existing) = existing_slot_dir(app_handle, tag) {
+        return Ok(row_for_tag(app_handle, tag, &existing));
+    }
 
     // 1. 拉该 tag 的资产地址 + 可信摘要（digest 缺失时安全中止，沿用
     //    DSH_INTEGRITY_UNAVAILABLE 设计：不下载无法验证完整性的内容）
-    let info = download::fetch_dsh_pkg_asset(tag)
+    let info = download::fetch_dsh_core_asset(tag)
         .await
         .map_err(|e| format!("CORE_METADATA_FAILED: {e}"))?;
     let digest = info.digest.ok_or_else(|| {

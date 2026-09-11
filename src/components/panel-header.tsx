@@ -9,7 +9,7 @@ import { cn } from 'tailwind-variants'
  */
 export interface PanelHeaderProps {
   title: string | ReactNode
-  description: string
+  description: string | ReactNode
   className?: string
   action?: ReactNode
 }

@@ -6,7 +6,8 @@
 
 use crate::config;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 use super::local::local_core;
@@ -103,7 +104,31 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
     }
 }
 
-/// 当前活动核心的版本号（`--no-open` 等按版本判定的能力以它为准）。
+/// 从 DSH 核心入口所属的 `@deepseek-ai/dsh/package.json` 读取真实版本号。
+///
+/// 这里读取的是桌面端将要启动的核心引擎本身，而不是 `active_core` / `dsh_pkg_tag`
+/// 等桌面端选择记录；后者可能滞后于磁盘上的核心文件，不能作为插件兼容性判断依据。
+pub fn dsh_engine_version_from_binary(binary: &Path) -> Option<String> {
+    let package_dir = binary.parent()?.parent()?;
+    let content = fs::read_to_string(package_dir.join("package.json")).ok()?;
+    let manifest = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let version = manifest
+        .get("version")
+        .and_then(|value| value.as_str())?
+        .trim();
+
+    semver::Version::parse(version)
+        .ok()
+        .map(|version| version.to_string())
+}
+
+/// 当前桌面端正在使用的 DSH 核心引擎版本。
+pub fn active_engine_version(app_handle: &AppHandle) -> Option<String> {
+    let binary = active_dsh_binary(app_handle);
+    dsh_engine_version_from_binary(&binary)
+}
+
+/// 桌面端选择记录中的活动核心版本（仅用于核心列表/旧兼容逻辑）。
 pub fn active_version(app_handle: &AppHandle) -> Option<String> {
     match active_source(app_handle) {
         CoreSource::Local => local_core(app_handle).map(|c| c.version),
@@ -117,6 +142,32 @@ pub fn active_version(app_handle: &AppHandle) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dsh_engine_version_reads_core_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-core-engine-version-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        let package_dir = root.join("node_modules").join("@deepseek-ai").join("dsh");
+        let binary = package_dir.join("lib").join("bin.js");
+        std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("create core");
+        std::fs::write(
+            package_dir.join("package.json"),
+            r#"{"name":"@deepseek-ai/dsh","version":"0.1.5-rc.2"}"#,
+        )
+        .expect("write core manifest");
+
+        assert_eq!(
+            dsh_engine_version_from_binary(&binary).as_deref(),
+            Some("0.1.5-rc.2")
+        );
+        std::fs::remove_dir_all(root).expect("remove core test directory");
+    }
 
     #[test]
     fn core_source_round_trips() {

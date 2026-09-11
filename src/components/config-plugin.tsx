@@ -1,5 +1,7 @@
+import type { DshPlugin } from '../hooks/use-dsh-plugins'
+import type { PluginBatchAction } from './plugin-batch-dialog'
 import { CircleExclamation } from '@gravity-ui/icons'
-import { Button, Chip, Label, Spinner, Tooltip } from '@heroui/react'
+import { Button, Checkbox, Chip, Label, Link, Spinner, Tooltip } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
@@ -18,6 +20,7 @@ import { Item } from './item'
 import { Modal } from './modal'
 import { PanelHeader } from './panel-header'
 import { PanelState } from './panel-state'
+import { PluginBatchDialog } from './plugin-batch-dialog'
 
 /**
  * 操作 chip 的样式变体：busy 时禁止点击并降低透明度，否则可点击。
@@ -47,16 +50,25 @@ const actionChip = tv({
  * - 「异常」标记：插件带 `error` 字段（安装/升级/卸载失败或页面运行期上报）
  *   时显示 danger 图标按钮，Tooltip 展示错误详情，行内可直接升级/卸载修复。
  */
-export function ConfigPlugin() {
+export interface ConfigPluginProps {
+  onBatchRunning?: (running: boolean) => void
+  onBatchClose?: () => void
+}
+
+export function ConfigPlugin(props: ConfigPluginProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { plugins, loading, error, disablePlugin, enablePlugin } = useDshPlugins()
   const { preinstall } = useStore(store.harness)
 
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
+  const [batchDialogHolder, openBatchDialog] = useOverlay(PluginBatchDialog, { type: 'holder' })
 
   /** 行内操作进行中状态：id + 操作类型（update/remove/disable/enable/snapshot/restore/delete-snapshot），保证单例运行 */
   const [busy, setBusy] = useState<{ id: string, action: 'update' | 'remove' | 'disable' | 'enable' | 'snapshot' | 'restore' | 'delete-snapshot' } | null>(null)
+  const [batchAction, setBatchAction] = useState<PluginBatchAction | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [showBuiltInPlugins, setShowBuiltInPlugins] = useState(false)
 
   const upgrade = useMutation({
     mutationFn: (id: string) => invoke<void>('update_dsh_plugin', { id }),
@@ -153,8 +165,128 @@ export function ConfigPlugin() {
     },
   })
 
+  async function runBatchAction(action: PluginBatchAction, plugin: DshPlugin) {
+    switch (action) {
+      case 'disable':
+        await disablePlugin(plugin.id)
+        return
+      case 'enable':
+        await enablePlugin(plugin.id, plugin.patchDisabled)
+        return
+      case 'remove':
+        await invoke<void>('remove_dsh_plugin', { id: plugin.id })
+        return
+      case 'update':
+        await invoke<void>('update_dsh_plugin', { id: plugin.id })
+    }
+  }
+
+  function canBatchAction(plugin: DshPlugin, action: PluginBatchAction) {
+    switch (action) {
+      case 'disable':
+        return !plugin.internal && !plugin.patchDisabled && !plugin.disabled
+      case 'enable':
+        return plugin.patchDisabled || (!plugin.internal && plugin.disabled)
+      case 'remove':
+        return !plugin.internal
+      case 'update':
+        return plugin.updateAvailable || plugin.error != null
+    }
+  }
+
+  function selectedPluginsFor(action: PluginBatchAction) {
+    return plugins.filter(plugin => !plugin.internal && selectedIds.has(plugin.id) && canBatchAction(plugin, action))
+  }
+
+  function togglePluginSelection(id: string, checked: boolean) {
+    if (plugins.some(plugin => plugin.id === id && plugin.internal))
+      return
+
+    setSelectedIds((previous) => {
+      const next = new Set(previous)
+      if (checked)
+        next.add(id)
+      else
+        next.delete(id)
+      return next
+    })
+  }
+
+  function toggleAllSelection(checked: boolean) {
+    if (checked)
+      setSelectedIds(new Set(plugins.filter(plugin => !plugin.internal).map(plugin => plugin.id)))
+    else
+      setSelectedIds(new Set())
+  }
+
+  async function onBatchAction(action: PluginBatchAction) {
+    if (busy || batchAction != null)
+      return
+    const targets = selectedPluginsFor(action)
+    if (targets.length === 0)
+      return
+
+    if (action === 'remove') {
+      try {
+        await openDialog({
+          status: 'danger',
+          title: t('plugins.batch_remove_confirm_title'),
+          description: (
+            <p>{t('plugins.batch_remove_confirm_desc', { count: targets.length })}</p>
+          ),
+          confirmText: t('plugins.uninstall'),
+        })
+      }
+      catch (error) {
+        silence(error, 'plugin batch remove: dialog cancelled')
+        return
+      }
+    }
+
+    if (action === 'enable' && targets.some(plugin => plugin.patchDisabled)) {
+      try {
+        await openDialog({
+          status: 'warning',
+          title: t('plugins.batch_enable_override_confirm_title'),
+          description: (
+            <p>{t('plugins.batch_enable_override_confirm_desc', { count: targets.length })}</p>
+          ),
+          confirmText: t('plugins.enable_override_confirm'),
+        })
+      }
+      catch (error) {
+        silence(error, 'plugin batch enable: dialog cancelled')
+        return
+      }
+    }
+
+    setBatchAction(action)
+    props.onBatchRunning?.(true)
+    try {
+      await openBatchDialog({
+        action,
+        plugins: targets,
+        runAction: plugin => runBatchAction(action, plugin),
+        completeBatch: async (restartNow) => {
+          if (restartNow)
+            await store.harness.restart()
+          await queryClient.invalidateQueries({ queryKey: ['plugins'] })
+        },
+      })
+      setSelectedIds(new Set())
+    }
+    catch (error) {
+      silence(error, 'plugin batch: dialog failed')
+    }
+    finally {
+      setBatchAction(null)
+      props.onBatchRunning?.(false)
+      props.onBatchClose?.()
+    }
+  }
+
   async function onUpgrade(id: string) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     setBusy({ id, action: 'update' })
     try {
@@ -172,7 +304,7 @@ export function ConfigPlugin() {
   }
 
   async function onRemove(id: string, name: string) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     try {
       await openDialog({
@@ -205,7 +337,7 @@ export function ConfigPlugin() {
   }
 
   async function onDisable(id: string) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     // 禁用是可逆操作（保留包体，启用即可恢复），无需确认对话框。
     setBusy({ id, action: 'disable' })
@@ -223,7 +355,7 @@ export function ConfigPlugin() {
   }
 
   async function onEnable(id: string, clearConfigOverride = false) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     // 配置覆盖禁用：启用会修改用户的 cordis.patch.yml（仅移除该插件的禁用覆盖，
     // 其余配置条目保留），属于改写用户配置文件的操作，必须先明确确认。
@@ -261,7 +393,7 @@ export function ConfigPlugin() {
   }
 
   async function onSnapshot(id: string, name: string, hasSnapshot: boolean) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     // 已存在快照：覆盖式，先确认再覆盖（快照语义 = 覆盖当前状态）。
     if (hasSnapshot) {
@@ -295,7 +427,7 @@ export function ConfigPlugin() {
   }
 
   async function onRestore(id: string, name: string) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     try {
       await openDialog({
@@ -338,7 +470,7 @@ export function ConfigPlugin() {
   }
 
   async function onDeleteSnapshot(id: string, name: string) {
-    if (busy)
+    if (busy || batchAction != null)
       return
     try {
       await openDialog({
@@ -368,105 +500,238 @@ export function ConfigPlugin() {
     }
   }
 
+  // 与后端 watch::parse_plugins 保持一致：随启动加载的插件在前，其余按 id 字典序。
+  const sortedPlugins = [...plugins].sort((a, b) => {
+    if (a.bundled !== b.bundled)
+      return a.bundled ? -1 : 1
+    if (a.id < b.id)
+      return -1
+    if (a.id > b.id)
+      return 1
+    return 0
+  })
+  const selectablePlugins = plugins.filter(plugin => !plugin.internal)
+  const displayedPlugins = showBuiltInPlugins
+    ? sortedPlugins
+    : sortedPlugins.filter(plugin => !plugin.internal)
+  const selectedCount = selectablePlugins.filter(plugin => selectedIds.has(plugin.id)).length
+  const allSelected = selectablePlugins.length > 0 && selectablePlugins.every(plugin => selectedIds.has(plugin.id))
+  const disableTargets = selectedPluginsFor('disable')
+  const enableTargets = selectedPluginsFor('enable')
+  const removeTargets = selectedPluginsFor('remove')
+  const updateTargets = selectedPluginsFor('update')
+  const controlsDisabled = busy != null || batchAction != null
+  const batchToolbar = (
+    <div className="flex flex-wrap items-center gap-2 rounded-md bg-panel2 px-3 py-2">
+      <label className="flex cursor-pointer items-center gap-2">
+        <Checkbox
+          isSelected={allSelected}
+          isDisabled={controlsDisabled || selectablePlugins.length === 0}
+          onChange={toggleAllSelection}
+          aria-label={t('plugins.batch_select_all')}
+          className="shrink-0"
+        >
+          <Checkbox.Content>
+            <Checkbox.Control>
+              <Checkbox.Indicator />
+            </Checkbox.Control>
+          </Checkbox.Content>
+        </Checkbox>
+        <span className="text-xs text-muted">{t('plugins.batch_selected', { count: selectedCount })}</span>
+      </label>
+      <div className="ml-auto flex flex-wrap items-center gap-1.5">
+        <Button
+          size="sm"
+          variant="tertiary"
+          className="rounded-md"
+          isDisabled={controlsDisabled || disableTargets.length === 0}
+          onPress={() => onBatchAction('disable')}
+        >
+          {t('plugins.disable')}
+        </Button>
+        <Button
+          size="sm"
+          variant="tertiary"
+          className="rounded-md"
+          isDisabled={controlsDisabled || enableTargets.length === 0}
+          onPress={() => onBatchAction('enable')}
+        >
+          {t('plugins.enable')}
+        </Button>
+        <Button
+          size="sm"
+          variant="tertiary"
+          className="rounded-md"
+          isDisabled={controlsDisabled || removeTargets.length === 0}
+          onPress={() => onBatchAction('remove')}
+        >
+          {t('plugins.uninstall')}
+        </Button>
+        <Button
+          size="sm"
+          variant="tertiary"
+          className="rounded-md"
+          isDisabled={controlsDisabled || updateTargets.length === 0}
+          onPress={() => onBatchAction('update')}
+        >
+          {t('plugins.upgrade')}
+        </Button>
+      </div>
+    </div>
+  )
+
   return (
     <div>
-      <PanelHeader
-        className="sticky top-0 bg-canvas z-10 pb-3"
-        title={t('plugins.title')}
-        action={(
-          <Tooltip delay={0}>
-            <Button
-              size="sm"
-              variant="primary"
-              className="rounded-md"
-              onPress={store.harness.openPreinstall}
-              isDisabled={preinstall.installing}
-            >
-              {t('preinstall.open_preset')}
-            </Button>
-            <Tooltip.Content>
-              <p>{t('preinstall.settings_hint')}</p>
-            </Tooltip.Content>
-          </Tooltip>
-        )}
-        description={t('plugins.panel_tooltip')}
-      />
+      <div className="sticky top-0 z-10 bg-canvas pb-3">
+        <PanelHeader
+          className="bg-canvas"
+          title={t('plugins.title')}
+          action={(
+            <Tooltip delay={0}>
+              <Button
+                size="sm"
+                variant="primary"
+                className="rounded-md"
+                onPress={store.harness.openPreinstall}
+                isDisabled={preinstall.installing}
+              >
+                {t('preinstall.open_preset')}
+              </Button>
+              <Tooltip.Content>
+                <p>{t('preinstall.settings_hint')}</p>
+              </Tooltip.Content>
+            </Tooltip>
+          )}
+          description={(
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span>{t('plugins.panel_tooltip')}</span>
+              <label className="inline-flex cursor-pointer items-center gap-1.5">
+                <Checkbox
+                  isSelected={showBuiltInPlugins}
+                  isDisabled={controlsDisabled}
+                  onChange={setShowBuiltInPlugins}
+                  aria-label={t('plugins.show_builtin')}
+                  className="shrink-0"
+                >
+                  <Checkbox.Content>
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                  </Checkbox.Content>
+                </Checkbox>
+                <span>{t('plugins.show_builtin')}</span>
+              </label>
+            </span>
+          )}
+        />
+        <If cond={selectablePlugins.length > 0}>
+          {batchToolbar}
+        </If>
+      </div>
 
       {/* 加载 / 失败 / 空态 */}
       <PanelState loading={loading} error={error}>
         <If
-          cond={plugins.length > 0}
+          cond={displayedPlugins.length > 0}
           else={(
-            <Empty>{t('plugins.empty')}</Empty>
+            <Empty>{plugins.length > 0 ? t('plugins.no_visible') : t('plugins.empty')}</Empty>
           )}
         >
           <div className="flex flex-col gap-4">
-            {plugins.sort(a => a.internal ? -1 : 1).map(plugin => (
+            {displayedPlugins.map(plugin => (
               <Item
                 key={plugin.id}
                 left={(
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-1">
-                      <If cond={plugin.error != null}>
-                        <Tooltip delay={0}>
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            className="size-6 shrink-0 rounded-md text-danger"
-                            aria-label={t('plugins.abnormal_tooltip')}
-                          >
-                            <CircleExclamation />
-                          </Button>
-                          <Tooltip.Content className="max-w-[320px]">
-                            <div className="space-y-1">
-                              <p className="text-xs font-medium">
-                                {t('plugins.abnormal_desc', { name: plugin.name })}
-                              </p>
-                              <p className="whitespace-pre-wrap break-all font-mono text-[11px] opacity-80">
-                                {plugin.error?.message}
-                              </p>
-                            </div>
-                          </Tooltip.Content>
-                        </Tooltip>
-                      </If>
-                      <Label className="min-w-0 truncate text-sm font-medium text-ink">
-                        {plugin.name}
-                      </Label>
-                      <If cond={plugin.version !== ''}>
-                        <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px] text-muted">
-                          {plugin.version}
-                        </code>
-                      </If>
-                      <If cond={!plugin.internal && plugin.recommended}>
-                        <Chip size="sm" variant="soft" color="success" className="shrink-0 font-medium">
-                          {t('plugins.preset')}
-                        </Chip>
-                      </If>
-                      <If cond={plugin.internal}>
-                        <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px] text-muted">
-                          {t('plugins.builtin')}
-                        </code>
-                      </If>
-                      <If cond={plugin.disabled}>
-                        <Chip size="sm" variant="soft" color="default">
-                          {t('plugins.disabled_badge')}
-                        </Chip>
-                      </If>
-                      {/* 配置覆盖禁用：展示在 cordis.patch.yml 中被显式禁用的真实状态
+                  <>
+                    <Checkbox
+                      isSelected={selectedIds.has(plugin.id)}
+                      isDisabled={controlsDisabled || plugin.internal}
+                      onChange={checked => togglePluginSelection(plugin.id, checked)}
+                      aria-label={t('plugins.batch_select_plugin', { name: plugin.name })}
+                      className="shrink-0"
+                    >
+                      <Checkbox.Content>
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                      </Checkbox.Content>
+                    </Checkbox>
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-1">
+                        <If cond={plugin.error != null}>
+                          <Tooltip delay={0}>
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                              className="size-6 shrink-0 rounded-md text-danger"
+                              aria-label={t('plugins.abnormal_tooltip')}
+                            >
+                              <CircleExclamation />
+                            </Button>
+                            <Tooltip.Content className="max-w-[320px]">
+                              <div className="space-y-1">
+                                <p className="text-xs font-medium">
+                                  {t('plugins.abnormal_desc', { name: plugin.name })}
+                                </p>
+                                <p className="whitespace-pre-wrap break-all font-mono text-[11px] opacity-80">
+                                  {plugin.error?.message}
+                                </p>
+                              </div>
+                            </Tooltip.Content>
+                          </Tooltip>
+                        </If>
+                        {plugin.repo_url !== ''
+                          ? (
+                              <Link
+                                className="min-w-0 truncate text-sm font-medium text-accent hover:underline"
+                                onClick={() => {
+                                  void invoke('open_external_url', { url: plugin.repo_url })
+                                }}
+                              >
+                                {plugin.name}
+                              </Link>
+                            )
+                          : (
+                              <Label className="min-w-0 truncate text-sm font-medium text-ink">
+                                {plugin.name}
+                              </Label>
+                            )}
+                        <If cond={plugin.version !== ''}>
+                          <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                            {plugin.version}
+                          </code>
+                        </If>
+                        <If cond={!plugin.internal && plugin.recommended}>
+                          <Chip size="sm" variant="soft" color="success" className="shrink-0 font-medium">
+                            {t('plugins.preset')}
+                          </Chip>
+                        </If>
+                        <If cond={plugin.internal}>
+                          <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                            {t('plugins.builtin')}
+                          </code>
+                        </If>
+                        <If cond={plugin.disabled}>
+                          <Chip size="sm" variant="soft" color="default">
+                            {t('plugins.disabled_badge')}
+                          </Chip>
+                        </If>
+                        {/* 配置覆盖禁用：展示在 cordis.patch.yml 中被显式禁用的真实状态
                           （内置插件同样标注，issue #399：Scheduler/Pet 行此前只有「内置」） */}
-                      <If cond={plugin.patchDisabled}>
-                        <Chip size="sm" variant="soft" color="warning">
-                          {t('plugins.patch_disabled_badge')}
-                        </Chip>
+                        <If cond={plugin.patchDisabled}>
+                          <Chip size="sm" variant="soft" color="warning">
+                            {t('plugins.patch_disabled_badge')}
+                          </Chip>
+                        </If>
+                      </div>
+                      <If cond={plugin.description !== ''}>
+                        <TextEllipsis lineClamp={2} className="text-xs text-muted">
+                          {plugin.description}
+                        </TextEllipsis>
                       </If>
                     </div>
-                    <If cond={plugin.description !== ''}>
-                      <TextEllipsis lineClamp={2} className="text-xs text-muted">
-                        {plugin.description}
-                      </TextEllipsis>
-                    </If>
-                  </div>
+                  </>
                 )}
                 right={(
                   <>
@@ -474,7 +739,7 @@ export function ConfigPlugin() {
                         与文档 P1「对 dshmarket 点击升级」一致，且不会常驻——up-to-date 插件不显示升级按钮 */}
                     <If cond={plugin.updateAvailable || plugin.error != null}>
                       <Chip
-                        className={actionChip({ busy: !!busy })}
+                        className={actionChip({ busy: controlsDisabled })}
                         variant="primary"
                         color="accent"
                         size="sm"
@@ -495,7 +760,7 @@ export function ConfigPlugin() {
                         配置覆盖禁用时点击会先弹确认框，确认后后端才移除该覆盖 */}
                     <If cond={plugin.patchDisabled || (!plugin.internal && plugin.disabled)}>
                       <Chip
-                        className={actionChip({ busy: !!busy })}
+                        className={actionChip({ busy: controlsDisabled })}
                         variant="primary"
                         color="accent"
                         size="sm"
@@ -509,7 +774,7 @@ export function ConfigPlugin() {
                     </If>
                     <If cond={!plugin.internal && !plugin.patchDisabled && !plugin.disabled}>
                       <Chip
-                        className={actionChip({ busy: !!busy })}
+                        className={actionChip({ busy: controlsDisabled })}
                         size="sm"
                         onClick={() => onDisable(plugin.id)}
                       >
@@ -523,7 +788,7 @@ export function ConfigPlugin() {
                       {/* 单插件快照：快照始终可用（已存在时覆盖确认）；还原/删除快照仅在
                           存在快照时显示。还原会停服务，还原后 toast 提示重启（issue #303） */}
                       <Chip
-                        className={actionChip({ busy: !!busy })}
+                        className={actionChip({ busy: controlsDisabled })}
                         variant="primary"
                         color="accent"
                         size="sm"
@@ -536,7 +801,7 @@ export function ConfigPlugin() {
                       </Chip>
                       <If cond={plugin.hasSnapshot}>
                         <Chip
-                          className={actionChip({ busy: !!busy })}
+                          className={actionChip({ busy: controlsDisabled })}
                           variant="primary"
                           color="accent"
                           size="sm"
@@ -548,7 +813,7 @@ export function ConfigPlugin() {
                           </span>
                         </Chip>
                         <Chip
-                          className={actionChip({ busy: !!busy })}
+                          className={actionChip({ busy: controlsDisabled })}
                           size="sm"
                           onClick={() => onDeleteSnapshot(plugin.id, plugin.name)}
                         >
@@ -559,7 +824,7 @@ export function ConfigPlugin() {
                         </Chip>
                       </If>
                       <Chip
-                        className={actionChip({ busy: !!busy })}
+                        className={actionChip({ busy: controlsDisabled })}
                         variant="primary"
                         color="danger"
                         size="sm"
@@ -573,6 +838,14 @@ export function ConfigPlugin() {
                     </If>
                   </>
                 )}
+                footer={(
+                  <If cond={plugin.dshCompatible === false}>
+                    <div className="mt-2 flex items-start gap-1.5 text-xs text-warning">
+                      <CircleExclamation className="mt-0.5 size-3.5 shrink-0" />
+                      <span>{t('plugins.incompatible_hint', { support: plugin.dshVersionSupport })}</span>
+                    </div>
+                  </If>
+                )}
               />
             ))}
           </div>
@@ -580,6 +853,7 @@ export function ConfigPlugin() {
       </PanelState>
 
       {dialogHolder}
+      {batchDialogHolder}
     </div>
   )
 }

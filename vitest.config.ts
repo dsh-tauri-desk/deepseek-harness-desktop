@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 
 /**
- * 根测试配置：运行内置插件（packages/**）及 toast 生命周期回归测试，限制并发 worker 数与放宽超时。
+ * 根测试配置：运行内置插件（packages/**）、插件管理及 toast 生命周期回归测试，限制并发 worker 数与放宽超时。
  *
  * 仓库根还 vendored 了 dsh 核心源码（src/、source/、test/），其测试依赖 dsh 核心
  * 的 `@/` paths 解析（在插件 workspace 的 vitest 下不可用），故 exclude 出本范围。
@@ -12,7 +12,7 @@ import { defineConfig } from 'vitest/config'
  */
 export default defineConfig({
   test: {
-    include: ['packages/**/*.{test,spec}.{ts,tsx,js,mjs,cjs}', 'test/toast.test.ts'],
+    include: ['packages/**/*.{test,spec}.{ts,tsx,js,mjs,cjs}', 'test/toast.test.ts', 'test/plugin-batch.test.ts'],
     maxWorkers: 4,
     testTimeout: 30_000,
     hookTimeout: 30_000,

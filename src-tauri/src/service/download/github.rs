@@ -7,7 +7,7 @@
 //!
 //! 预览版（GitHub Release 标记 Pre-release、或 tag 命名含预览标记，见
 //! [`is_preview_tag`]）**不参与更新判定**：`/releases/latest` 按 label 自动排除，
-//! releases.atom 兜底按 tag 命名跳过；但核心列表（`fetch_dsh_pkg_releases`）
+//! releases.atom 兜底按 tag 命名跳过；核心列表（`fetch_dsh_core_releases`）
 //! 仍会列出预览版供用户手动下载安装。
 
 use crate::config;
@@ -16,7 +16,12 @@ use crate::config;
 const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/dsh-tauri-desk/deepseek-harness-pkg";
 /// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
 const DSH_PKG_REPO: &str = "https://github.com/dsh-tauri-desk/deepseek-harness-pkg";
-const GITHUB_RELEASES_PAGE_SIZE: usize = 100;
+/// 核心引擎列表及核心列表点击下载专用的官方仓库接口。
+const DSH_GITHUB_API: &str = "https://api.github.com/repos/deepseek-ai/deepseek-harness";
+const DSH_REPO: &str = "https://github.com/deepseek-ai/deepseek-harness";
+/// 核心版本列表只展示官方 Releases API 返回的最近版本。
+const DSH_CORE_RELEASE_LIMIT: usize = 10;
+const GITHUB_RELEASES_PAGE_SIZE: usize = 10;
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -113,6 +118,22 @@ async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String,
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "Missing sha in release commit response".to_string())
+}
+
+/// 解析官方核心引擎 release tag 的 commit；仅供核心列表点击下载链路使用。
+async fn fetch_core_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
+    let commit: serde_json::Value =
+        github_api_get(client, &format!("{DSH_GITHUB_API}/commits/{tag}"))
+            .await
+            .map_err(|e| format!("Core release commit request failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse core release commit response: {e}"))?;
+    commit
+        .get("sha")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "Missing sha in core release commit response".to_string())
 }
 
 /// 从 tag 内嵌的 build-id 提取 commit 标识：`dsh-0.1.0-rc.8-32331963388` → `32331963388`。
@@ -212,8 +233,17 @@ async fn fetch_dsh_digest_from_expanded_assets(
     tag: &str,
     expected_name: &str,
 ) -> Result<Option<String>, String> {
+    fetch_dsh_digest_from_expanded_assets_for_repo(client, DSH_PKG_REPO, tag, expected_name).await
+}
+
+async fn fetch_dsh_digest_from_expanded_assets_for_repo(
+    client: &reqwest::Client,
+    repo: &str,
+    tag: &str,
+    expected_name: &str,
+) -> Result<Option<String>, String> {
     let body = client
-        .get(format!("{DSH_PKG_REPO}/releases/expanded_assets/{tag}"))
+        .get(format!("{repo}/releases/expanded_assets/{tag}"))
         .send()
         .await
         .map_err(|e| format!("DSH_EXPANDED: {e}"))?
@@ -404,8 +434,189 @@ async fn fetch_latest_non_preview() -> Result<LatestDshPkg, String> {
 
 /// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
 ///
-/// API 失败时资产 URL 按 tag 确定性构造，摘要从同一个 tag 的页面读取，避免
-/// latest 地址与固定 tag 的摘要发生错配。
+/// 官方 Release 没有平台包时，按相同 SemVer 从桌面包仓库匹配资产与摘要；
+/// 旧版打包 tag 仍保留按 tag 确定性下载的兼容回退。
+async fn fetch_release_by_tag(
+    client: &reqwest::Client,
+    api: &str,
+    tag: &str,
+) -> Option<serde_json::Value> {
+    let url = format!("{api}/releases/tags/{tag}");
+    let response = match github_api_get(client, &url).await {
+        Ok(response) => response,
+        Err(error) => {
+            log::debug!("Release request failed for {tag} from {api}: {error}");
+            return None;
+        }
+    };
+    match response.json().await {
+        Ok(release) => Some(release),
+        Err(error) => {
+            log::warn!("Failed to parse release {tag} response from {api}: {error}");
+            None
+        }
+    }
+}
+
+fn release_asset<'a>(
+    release: &'a serde_json::Value,
+    expected_name: &str,
+) -> Option<&'a serde_json::Value> {
+    release
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(|value| value.as_str()) == Some(expected_name)
+            })
+        })
+}
+
+async fn fetch_packaged_release_for_version(
+    client: &reqwest::Client,
+    version: &str,
+    expected_name: &str,
+) -> Option<serde_json::Value> {
+    let mut page = 1;
+    loop {
+        let url = format!(
+            "{DSH_PKG_GITHUB_API}/releases?per_page={GITHUB_RELEASES_PAGE_SIZE}&page={page}"
+        );
+        let response = github_api_get(client, &url).await.ok()?;
+        let releases: serde_json::Value = response.json().await.ok()?;
+        let entries = releases.as_array()?;
+        if let Some(release) = entries.iter().find(|release| {
+            release
+                .get("tag_name")
+                .and_then(|value| value.as_str())
+                .and_then(parse_version_from_tag)
+                .as_deref()
+                == Some(version)
+                && release_asset(release, expected_name).is_some()
+        }) {
+            return Some(release.clone());
+        }
+        if entries.len() < GITHUB_RELEASES_PAGE_SIZE {
+            return None;
+        }
+        page += 1;
+    }
+}
+
+async fn fetch_packaged_tag_for_version_from_html(
+    client: &reqwest::Client,
+    version: &str,
+) -> Option<String> {
+    let body = client
+        .get(format!("{DSH_PKG_REPO}/releases"))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    parse_release_list_from_html(&body)
+        .into_iter()
+        .find(|release| parse_version_from_tag(&release.tag).as_deref() == Some(version))
+        .map(|release| release.tag)
+}
+
+pub async fn fetch_dsh_core_asset(tag: &str) -> Result<LatestDshPkg, String> {
+    let client = github_client()?;
+    let expected_name = config::get_dsh_download_url()?
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| "Missing DSH asset filename".to_string())?
+        .to_string();
+
+    // 官方 Release 负责版本/tag/commit 元数据；若官方 Release 没有桌面压缩包，
+    // 按相同 SemVer 从打包仓库选择平台包。官方仓库当前主要提供源码与证明文件。
+    let official_release = fetch_release_by_tag(&client, DSH_GITHUB_API, tag).await;
+    let official_asset = official_release
+        .as_ref()
+        .and_then(|release| release_asset(release, &expected_name));
+    let (release, asset_repo, fallback_asset_tag) = if official_asset.is_some() {
+        (official_release, DSH_REPO, None)
+    } else {
+        let mut packaged_release = fetch_release_by_tag(&client, DSH_PKG_GITHUB_API, tag)
+            .await
+            .filter(|release| release_asset(release, &expected_name).is_some());
+        if packaged_release.is_none() {
+            if let Some(version) = parse_version_from_tag(tag) {
+                packaged_release =
+                    fetch_packaged_release_for_version(&client, &version, &expected_name).await;
+            }
+        }
+        let package_tag = packaged_release
+            .as_ref()
+            .and_then(|release| release.get("tag_name").and_then(|value| value.as_str()))
+            .map(str::to_string);
+        let package_tag = match package_tag {
+            Some(package_tag) => Some(package_tag),
+            None => match parse_version_from_tag(tag) {
+                Some(version) => fetch_packaged_tag_for_version_from_html(&client, &version).await,
+                None => None,
+            },
+        };
+        (packaged_release, DSH_PKG_REPO, package_tag)
+    };
+    let asset = release
+        .as_ref()
+        .and_then(|release| release_asset(release, &expected_name));
+    let asset_tag = release
+        .as_ref()
+        .and_then(|release| release.get("tag_name").and_then(|value| value.as_str()))
+        .or_else(|| fallback_asset_tag.as_deref())
+        .unwrap_or(tag)
+        .to_string();
+    let asset_url = asset
+        .and_then(|asset| {
+            asset
+                .get("browser_download_url")
+                .and_then(|value| value.as_str())
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            fallback_asset_tag
+                .as_deref()
+                .and_then(|asset_tag| config::get_dsh_download_url_for_tag(asset_tag).ok())
+        })
+        .or_else(|| {
+            if tag.starts_with("dsh-") && !tag.starts_with("dsh-v") {
+                config::get_dsh_download_url_for_tag(tag).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    let mut digest = asset
+        .and_then(|asset| asset.get("digest").and_then(|value| value.as_str()))
+        .filter(|value| value.starts_with("sha256:"))
+        .map(str::to_string);
+    if digest.is_none() && !asset_url.is_empty() {
+        digest =
+            fetch_dsh_digest_from_expanded_assets_for_repo(&client, asset_repo, &asset_tag, &expected_name)
+                .await
+                .ok()
+                .flatten();
+    }
+    let commit = match fetch_core_tag_commit(&client, tag).await {
+        Ok(sha) => sha,
+        Err(error) => {
+            log::debug!("Failed to resolve official commit for {tag}: {error}");
+            commit_fallback_from_tag(tag)
+        }
+    };
+    Ok(LatestDshPkg {
+        tag: tag.to_string(),
+        commit,
+        asset_url,
+        digest,
+    })
+}
+
 pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
     let client = github_client()?;
     let expected_name = config::get_dsh_download_url()?
@@ -486,11 +697,13 @@ pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
     })
 }
 
-/// 从核心 tag 中解析版本号：`dsh-0.1.0-rc.7-32054485373`、
+/// 从核心 tag 中解析版本号：`dsh-v0.1.5-rc.2`、`dsh-0.1.0-rc.7-32054485373`、
 /// `src-0.1.2-alpha.1` 或 `dsh-src-0.1.2-alpha.1-33260039971` → 对应的 SemVer。
 pub fn parse_version_from_tag(tag: &str) -> Option<String> {
     let has_dsh_prefix = tag.starts_with("dsh-");
     let tag = tag.strip_prefix("dsh-").unwrap_or(tag);
+    let has_v_prefix = tag.starts_with('v');
+    let tag = tag.strip_prefix('v').unwrap_or(tag);
     if let Some(version) = tag.strip_prefix("src-") {
         let version = if has_dsh_prefix {
             version.rsplit_once('-').map(|(version, _)| version)?
@@ -501,15 +714,24 @@ pub fn parse_version_from_tag(tag: &str) -> Option<String> {
             .ok()
             .map(|_| version.to_string());
     }
-    let version = has_dsh_prefix.then(|| tag.rsplit_once('-').map(|(version, _)| version))??;
-    (!version.is_empty()).then(|| version.to_string())
+    if has_v_prefix {
+        return semver::Version::parse(tag).ok().map(|_| tag.to_string());
+    }
+    if !has_dsh_prefix {
+        return None;
+    }
+    let version = tag.rsplit_once('-').map(|(version, _)| version)?;
+    if semver::Version::parse(version).is_ok() {
+        return Some(version.to_string());
+    }
+    None
 }
 
 /// 是否「预览版」tag：预览版不参与自动更新判定（不提示用户更新），但核心列表
-/// 仍会列出、可手动下载安装（见 [`fetch_dsh_pkg_releases`]）。
+/// 仍会列出、可手动下载安装（见 [`fetch_dsh_core_releases`]）。
 ///
 /// GitHub API 的 `/releases/latest` 已按 label 排除 Pre-release；但 releases.atom
-/// 兜底（feed 无 label 字段）与核心列表的 git tags 兜底需要按 tag 命名判定。
+/// 兜底（feed 无 label 字段）与核心列表的官方 tag 需要按 tag 命名判定。
 /// 判定规则：tag 版本解析成功（`dsh-<version>-<build-id>`）且版本号的 pre-release
 /// 段含**非 rc** 的预览标记（`preview`/`beta`/`alpha`/`canary`/`next`）→ 预览版。
 /// rc（如 `0.1.1-rc.2`）不算预览版：pkg 仓库的 rc 发布会正常推送用户更新。
@@ -666,11 +888,46 @@ pub struct DshPkgReleaseMeta {
     pub prerelease: bool,
 }
 
-/// 通过 Releases 页面获取 pkg 发行列表。
+/// 拉取官方 Harness Releases 的最近 10 个版本（最新在前），含 GitHub 的
+/// Pre-release label。
 ///
-/// 页面位于 github.com，不消耗 api.github.com 的未认证配额；页面上的
-/// `Pre-release` 标签也能保留预览版信息。页面结构变化或网络失败时返回错误，
-/// 由调用方继续回退到 Tags API。
+/// 该列表是核心面板的唯一远程版本数据源，不使用打包仓库、Releases HTML 或
+/// git tags 回退。GitHub Releases API 默认按发布时间倒序返回，`per_page=10`
+/// 配合本地 `take` 双重保证最多返回最近 10 条。
+pub async fn fetch_dsh_core_releases() -> Result<Vec<DshPkgReleaseMeta>, String> {
+    let client = github_client()?;
+    let response = github_api_get(
+        &client,
+        &format!("{DSH_GITHUB_API}/releases?per_page={DSH_CORE_RELEASE_LIMIT}"),
+    )
+    .await
+    .map_err(|e| format!("Release list request failed: {e}"))?;
+    let releases: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release list response: {e}"))?;
+    let entries = releases
+        .as_array()
+        .ok_or_else(|| "DSH_RELEASE_LIST_INVALID: response was not an array".to_string())?;
+    let releases = entries
+        .iter()
+        .take(DSH_CORE_RELEASE_LIMIT)
+        .filter_map(|entry| {
+            let tag = entry.get("tag_name")?.as_str()?.to_string();
+            let prerelease = entry
+                .get("prerelease")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Some(DshPkgReleaseMeta { tag, prerelease })
+        })
+        .collect::<Vec<_>>();
+    if releases.is_empty() {
+        return Err("DSH_RELEASE_LIST_EMPTY: official release list was empty".to_string());
+    }
+    Ok(releases)
+}
+
+/// 通过 pkg 仓库 Releases 页面获取发行列表，作为桌面端包版本管理的原有回退来源。
 async fn fetch_dsh_pkg_releases_from_html(
     client: &reqwest::Client,
 ) -> Result<Vec<DshPkgReleaseMeta>, String> {
@@ -693,10 +950,8 @@ async fn fetch_dsh_pkg_releases_from_html(
 
 /// 拉取 pkg 仓库的完整 release 列表（最新在前），含 GitHub 的 Pre-release label。
 ///
-/// 核心面板的多版本列表以此作为远程数据源（替代 git tags）：git tags 不含
-/// Pre-release label，无法区分预览版；releases 列表还能天然排除 draft（未发布
-/// 对匿名请求不可见）。API 失败时先读取 github.com Releases 页面，再失败时
-/// 由调用方回退 git tags，预览标记按 tag 命名（[`is_preview_tag`]）兜底。
+/// 核心面板的多版本列表改用官方核心 Releases；此函数只供桌面端当前 DSH 包的
+/// 版本管理使用。git tags 不含 Pre-release label，API 失败时沿用原有页面回退。
 pub async fn fetch_dsh_pkg_releases() -> Result<Vec<DshPkgReleaseMeta>, String> {
     let client = github_client()?;
     let mut all_releases = Vec::new();
@@ -797,6 +1052,32 @@ mod tests {
     }
 
     #[test]
+    fn official_release_source_points_to_upstream_repository() {
+        assert_eq!(
+            DSH_PKG_GITHUB_API,
+            "https://api.github.com/repos/dsh-tauri-desk/deepseek-harness-pkg"
+        );
+        assert_eq!(
+            DSH_PKG_REPO,
+            "https://github.com/dsh-tauri-desk/deepseek-harness-pkg"
+        );
+        assert_eq!(
+            DSH_GITHUB_API,
+            "https://api.github.com/repos/deepseek-ai/deepseek-harness"
+        );
+        assert_eq!(
+            format!("{DSH_GITHUB_API}/releases"),
+            "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases"
+        );
+        assert_eq!(DSH_REPO, "https://github.com/deepseek-ai/deepseek-harness");
+    }
+
+    #[test]
+    fn core_release_catalog_is_limited_to_latest_ten() {
+        assert_eq!(DSH_CORE_RELEASE_LIMIT, 10);
+    }
+
+    #[test]
     fn atom_fallback_download_url_is_pinned_to_resolved_tag() {
         let tag = "dsh-src-0.1.2-alpha.1-33260039971";
         let url = config::get_dsh_download_url_for_tag(tag).expect("dsh url");
@@ -878,6 +1159,14 @@ mod tests {
             Some("0.1.0-rc.6")
         );
         assert_eq!(parse_version_from_tag("dsh-0.2.0"), None);
+        assert_eq!(
+            parse_version_from_tag("dsh-v0.1.5-rc.2").as_deref(),
+            Some("0.1.5-rc.2")
+        );
+        assert_eq!(
+            parse_version_from_tag("v0.1.5-rc.2").as_deref(),
+            Some("0.1.5-rc.2")
+        );
         assert_eq!(parse_version_from_tag("0.1.0-rc.7-abc"), None);
         assert_eq!(parse_version_from_tag(""), None);
         assert_eq!(
@@ -901,6 +1190,8 @@ mod tests {
         // rc 不算预览版：pkg 仓库的 rc 发布会正常推送用户更新
         assert!(!is_preview_tag("dsh-0.1.1-rc.2-32485170079"));
         assert!(!is_preview_tag("dsh-0.1.0-rc.8-32342588166"));
+        assert!(!is_preview_tag("dsh-v0.1.5-rc.2"));
+        assert!(is_preview_tag("dsh-v0.1.5-alpha.1"));
         // 正式版 / 无法解析的 tag 均不算预览版
         assert!(!is_preview_tag("dsh-0.2.0-32490000006"));
         assert!(!is_preview_tag("dsh-0.2.0"));

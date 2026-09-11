@@ -11,7 +11,9 @@
 //! 的勾选态，这里解析「实际已安装」的插件元信息（名称/版本/描述/仓库地址/
 //! 是否启动加载），供前端做已安装列表展示与后续插件管理。
 
+use semver::{Comparator, Op, Version, VersionReq};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -70,6 +72,12 @@ pub struct DshPlugin {
     /// 判定得到的「最新版本」（registry latest / git HEAD SHA）；未判定或不可判定时缺省
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_version: Option<String>,
+    /// 插件声明的 DSH 版本支持范围。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dsh_version_support: Option<String>,
+    /// 当前 DSH 版本是否在支持范围内；没有声明或无法解析时为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dsh_compatible: Option<bool>,
     /// 是否有单插件快照（`$DSH_HOME/.plugin-backups/<id>.tgz`），前端据此展示
     /// 还原 / 删除快照入口
     pub has_snapshot: bool,
@@ -91,6 +99,15 @@ struct PluginPackageJson {
     homepage: Option<String>,
     #[serde(default)]
     repository: Option<RepositoryField>,
+    /// DSH 插件扩展配置，兼容 `compatibility` / `supportedVersions` 等支持版本声明。
+    #[serde(default)]
+    dsh: Option<Value>,
+    #[serde(default)]
+    compatibility: Option<Value>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: HashMap<String, Value>,
+    #[serde(default)]
+    engines: HashMap<String, Value>,
 }
 
 /// repository 字段兼容两种形态：字符串 URL 或 `{ "type": "git", "url": ... }` 对象
@@ -133,7 +150,202 @@ fn read_plugin_meta(dir: &Path) -> Option<PluginPackageJson> {
 ///
 /// 只列出 profile package.json `dependencies` 中的直接依赖——node_modules 里
 /// 还有大量传递依赖（clsx/zod 等），它们不是用户安装的 dsh 插件，不应展示。
+fn support_range_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
+        Value::Array(values) => {
+            let ranges: Vec<String> = values.iter().filter_map(support_range_from_value).collect();
+            (!ranges.is_empty()).then(|| ranges.join(" || "))
+        }
+        Value::Object(object) => {
+            for key in [
+                "dsh",
+                "harness",
+                "version",
+                "versions",
+                "range",
+                "supported",
+                "supportedVersions",
+            ] {
+                if let Some(range) = object.get(key).and_then(support_range_from_value) {
+                    return Some(range);
+                }
+            }
+            let min = object
+                .get("min")
+                .or_else(|| object.get("minVersion"))
+                .or_else(|| object.get("minimum"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let max = object
+                .get("max")
+                .or_else(|| object.get("maxVersion"))
+                .or_else(|| object.get("maximum"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+
+            match (min, max) {
+                (Some(min), Some(max)) => Some(format!(">={min} <={max}")),
+                (Some(min), None) => Some(format!(">={min}")),
+                (None, Some(max)) => Some(format!("<={max}")),
+                (None, None) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn dsh_version_support(meta: &PluginPackageJson) -> Option<String> {
+    meta.dsh
+        .as_ref()
+        .and_then(|dsh| dsh.get("compatibility"))
+        .and_then(support_range_from_value)
+        .or_else(|| {
+            meta.dsh
+                .as_ref()
+                .and_then(|dsh| dsh.get("supportedVersions"))
+                .and_then(support_range_from_value)
+        })
+        .or_else(|| meta.dsh.as_ref().and_then(support_range_from_value))
+        .or_else(|| {
+            meta.compatibility
+                .as_ref()
+                .and_then(support_range_from_value)
+        })
+        .or_else(|| {
+            meta.peer_dependencies
+                .get("@deepseek-ai/dsh")
+                .or_else(|| meta.peer_dependencies.get("@deepseek-ai/dsh-settings"))
+                .or_else(|| meta.peer_dependencies.get("dsh"))
+                .and_then(support_range_from_value)
+        })
+        .or_else(|| {
+            meta.engines
+                .get("dsh")
+                .or_else(|| meta.engines.get("deepseek-harness"))
+                .or_else(|| meta.engines.get("harness"))
+                .and_then(support_range_from_value)
+        })
+}
+
+fn normalize_dsh_version(version: &str) -> String {
+    let mut version = version.trim();
+    loop {
+        let next = version
+            .strip_prefix("dsh-src-")
+            .or_else(|| version.strip_prefix("dsh-"))
+            .or_else(|| version.strip_prefix("src-"))
+            .or_else(|| version.strip_prefix('v'));
+        let Some(next) = next else {
+            break;
+        };
+        version = next;
+    }
+    version.to_string()
+}
+
+fn normalize_version_requirement(requirement: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_was_operator = false;
+
+    for token in requirement.split_whitespace() {
+        let operator_only = matches!(token, "<" | "<=" | ">" | ">=" | "=" | "~" | "^");
+        let starts_with_operator = token.starts_with('<')
+            || token.starts_with('>')
+            || token.starts_with('=')
+            || token.starts_with('~')
+            || token.starts_with('^');
+        if !normalized.is_empty()
+            && !normalized.ends_with(',')
+            && !previous_was_operator
+            && (operator_only || starts_with_operator)
+        {
+            normalized.push(',');
+        }
+        if !normalized.is_empty() && !normalized.ends_with([',', ' ']) && !previous_was_operator {
+            normalized.push(' ');
+        }
+        normalized.push_str(token);
+        previous_was_operator = operator_only;
+    }
+
+    normalized
+}
+
+fn comparator_version(comparator: &Comparator) -> Version {
+    let mut version = Version::new(
+        comparator.major,
+        comparator.minor.unwrap_or(0),
+        comparator.patch.unwrap_or(0),
+    );
+    version.pre = comparator.pre.clone();
+    version
+}
+
+/// DSH 的预发布支持声明通常用一个带预发布下限的范围表示整个发布线，
+/// 例如 `>=0.1.0-rc.8 <0.2.0` 应覆盖 `0.1.5-rc.2`。
+fn matches_dsh_requirement(requirement: &VersionReq, range: &str, current: &Version) -> bool {
+    if requirement.matches(current) {
+        return true;
+    }
+    if current.pre.is_empty()
+        || !range.contains('-')
+        || !requirement.matches(&Version::new(current.major, current.minor, current.patch))
+    {
+        return false;
+    }
+
+    requirement
+        .comparators
+        .iter()
+        .filter(|comparator| {
+            !comparator.pre.is_empty()
+                && matches!(
+                    comparator.op,
+                    Op::Greater | Op::GreaterEq | Op::Caret | Op::Tilde
+                )
+        })
+        .all(|comparator| {
+            let bound = comparator_version(comparator);
+            match comparator.op {
+                Op::Greater => current > &bound,
+                _ => current >= &bound,
+            }
+        })
+}
+
+fn check_dsh_compatibility(support: Option<&str>, current_version: Option<&str>) -> Option<bool> {
+    let support = support?.trim();
+    let current_version = current_version?;
+    let current = Version::parse(&normalize_dsh_version(current_version)).ok()?;
+    let mut parsed_requirement = false;
+    for range in support.split("||") {
+        let range = normalize_version_requirement(range.trim());
+        let Ok(requirement) = VersionReq::parse(&range) else {
+            continue;
+        };
+        parsed_requirement = true;
+        if matches_dsh_requirement(&requirement, &range, &current) {
+            return Some(true);
+        }
+    }
+    parsed_requirement.then_some(false)
+}
+
 fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlugin> {
+    parse_plugins_with_dsh_version(profile, presets, None)
+}
+
+fn parse_plugins_with_dsh_version(
+    profile: &Path,
+    presets: &[PreinstallPluginInfo],
+    current_dsh_version: Option<&str>,
+) -> Vec<DshPlugin> {
     let manifest_content = match std::fs::read_to_string(profile.join("package.json")) {
         Ok(content) => content,
         Err(_) => return Vec::new(),
@@ -192,6 +404,9 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
                 .and_then(|m| m.name.clone())
                 .or_else(|| preset.map(|p| p.name.clone()))
                 .unwrap_or_else(|| id.clone());
+            let dsh_version_support = meta.as_ref().and_then(dsh_version_support);
+            let dsh_compatible =
+                check_dsh_compatibility(dsh_version_support.as_deref(), current_dsh_version);
             let patch_disabled_by_name = patch_disabled_set.contains(name.as_str());
             Some(DshPlugin {
                 id: id.clone(),
@@ -208,13 +423,14 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
                 repo_url,
                 bundled: bundled.contains(id.as_str()),
                 disabled: disabled_map.contains_key(id),
-                patch_disabled: patch_disabled_set.contains(id.as_str())
-                    || patch_disabled_by_name,
+                patch_disabled: patch_disabled_set.contains(id.as_str()) || patch_disabled_by_name,
                 recommended: preset.map(|p| p.recommended).unwrap_or(false),
                 fix: preset.map(|p| p.fix).unwrap_or(false),
                 internal: internal_names.contains(id.as_str()),
                 update_available: false,
                 latest_version: None,
+                dsh_version_support,
+                dsh_compatible,
                 has_snapshot: false,
                 error: None,
             })
@@ -239,7 +455,12 @@ fn merge_current_errors(plugins: &mut [DshPlugin], registry: &HashMap<String, Pl
 /// 已安装插件列表（含解析后的元信息与错误记录），前端首次加载/手动刷新用
 pub fn list(app_handle: &AppHandle) -> Vec<DshPlugin> {
     let presets = load_presets(app_handle);
-    let mut plugins = parse_plugins(&profile_dir(app_handle), &presets);
+    let current_dsh_version = crate::service::core::active_engine_version(app_handle);
+    let mut plugins = parse_plugins_with_dsh_version(
+        &profile_dir(app_handle),
+        &presets,
+        current_dsh_version.as_deref(),
+    );
     // 合并错误注册表：错误记录变化不反映在文件指纹里，这里每次列表重建时并入。
     // 已恢复的安装错误会被过滤，避免持久化历史状态污染当前健康状态。
     let registry = errors::load(app_handle);
@@ -360,6 +581,80 @@ fn emit(app_handle: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dsh_compatibility_uses_semver_ranges_and_tolerates_tags() {
+        let range = Some(">=0.1.0 <0.2.0");
+        assert_eq!(check_dsh_compatibility(range, Some("0.1.5")), Some(true));
+        assert_eq!(
+            check_dsh_compatibility(Some(">=0.1.0-rc.8 <0.2.0"), Some("0.1.5-rc.2")),
+            Some(true)
+        );
+        assert_eq!(
+            check_dsh_compatibility(range, Some("dsh-0.2.0")),
+            Some(false)
+        );
+        assert_eq!(check_dsh_compatibility(None, Some("0.1.5")), None);
+        assert_eq!(
+            check_dsh_compatibility(Some("invalid"), Some("0.1.5")),
+            None
+        );
+        let multi_range = Some(">=0.1.0 <0.2.0 || >=0.3.0 <0.4.0");
+        assert_eq!(
+            check_dsh_compatibility(multi_range, Some("0.3.5")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn parse_plugins_exposes_declared_dsh_compatibility() {
+        let dir = build_profile(
+            "compatibility",
+            &[
+                (
+                    "dsh-compatible",
+                    r#"{"name":"dsh-compatible","dsh":{"compatibility":">=0.1.0 <0.2.0"}}"#,
+                ),
+                (
+                    "dsh-incompatible",
+                    r#"{"name":"dsh-incompatible","engines":{"dsh":">=0.2.0"}}"#,
+                ),
+                ("dsh-direct", r#"{"name":"dsh-direct","dsh":"^0.1.0"}"#),
+                (
+                    "dsh-settings-peer",
+                    r#"{"name":"dsh-settings-peer","peerDependencies":{"@deepseek-ai/dsh-settings":">=0.1.0-rc.8 <0.2.0"}}"#,
+                ),
+            ],
+        );
+        let plugins = parse_plugins_with_dsh_version(&dir, &[], Some("dsh-0.1.5"));
+
+        let compatible = plugins.iter().find(|p| p.id == "dsh-compatible").unwrap();
+        assert_eq!(
+            compatible.dsh_version_support.as_deref(),
+            Some(">=0.1.0 <0.2.0")
+        );
+        assert_eq!(compatible.dsh_compatible, Some(true));
+
+        let incompatible = plugins.iter().find(|p| p.id == "dsh-incompatible").unwrap();
+        assert_eq!(incompatible.dsh_version_support.as_deref(), Some(">=0.2.0"));
+        assert_eq!(incompatible.dsh_compatible, Some(false));
+
+        let direct = plugins.iter().find(|p| p.id == "dsh-direct").unwrap();
+        assert_eq!(direct.dsh_version_support.as_deref(), Some("^0.1.0"));
+        assert_eq!(direct.dsh_compatible, Some(true));
+
+        let settings_peer = plugins
+            .iter()
+            .find(|p| p.id == "dsh-settings-peer")
+            .unwrap();
+        assert_eq!(
+            settings_peer.dsh_version_support.as_deref(),
+            Some(">=0.1.0-rc.8 <0.2.0")
+        );
+        assert_eq!(settings_peer.dsh_compatible, Some(true));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// 构造临时 profile：package.json + node_modules 下的插件包清单
     /// （tag 用于区分不同测试的临时目录，避免并行执行时互相清理）
@@ -520,6 +815,8 @@ mod tests {
             internal: false,
             update_available: false,
             latest_version: None,
+            dsh_version_support: None,
+            dsh_compatible: None,
             has_snapshot: false,
             error: None,
         }];
@@ -553,6 +850,8 @@ mod tests {
             internal: false,
             update_available: false,
             latest_version: None,
+            dsh_version_support: None,
+            dsh_compatible: None,
             has_snapshot: false,
             error: None,
         };

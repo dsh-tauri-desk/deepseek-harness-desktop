@@ -42,6 +42,10 @@ export interface DshPlugin {
   updateAvailable: boolean
   /** 判定得到的「最新版本」（registry latest / git HEAD SHA）；未判定时缺省 */
   latestVersion?: string
+  /** 插件声明的 DSH 版本支持范围。 */
+  dshVersionSupport?: string
+  /** 当前 DSH 版本是否满足插件声明；无声明或无法解析时为空。 */
+  dshCompatible?: boolean
   /** 是否有单插件快照（$DSH_HOME/.plugin-backups/<id>.tgz），决定还原/删除快照入口 */
   hasSnapshot: boolean
   /** 异常信息（安装/升级/卸载失败或页面运行期上报）；undefined = 正常 */

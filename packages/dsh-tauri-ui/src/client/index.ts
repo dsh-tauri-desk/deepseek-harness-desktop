@@ -41,6 +41,7 @@ import { registerSettingsLocale } from './locales'
 import { registerSettingsSections } from './register/sections'
 import { registerSettingsSidebar } from './register/sidebar'
 import { registerSettingsTrigger } from './register/trigger'
+import globalStyle from './styles/global.cssr'
 import turnNavigationStyle from './styles/index.cssr'
 import { mountStyle } from './utils/style'
 
@@ -91,6 +92,10 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(
     () => mountStyle(turnNavigationStyle, TURN_NAVIGATION_STYLE_ID),
     'dsh-tauri-ui: turn navigation styles',
+  )
+  ctx.effect(
+    () => mountStyle(globalStyle, 'dsh-tauri-ui-global-styles'),
+    'dsh-tauri-ui: global styles',
   )
   registerSettingsLocale(ctx)
   // 设置分区投影：引用清理也走 effect（插件卸载后 slotsRef 复位，避免跨实例残留）。

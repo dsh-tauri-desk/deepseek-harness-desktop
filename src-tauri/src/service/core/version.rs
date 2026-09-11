@@ -79,16 +79,12 @@ fn read_manifest_dsh_version(dir: &Path) -> Option<String> {
         .map(|s| s.trim_start_matches(['^', '~', '=', '>', '<']).to_string())
 }
 
-/// 核心列表：本地核心 + 官方 deepseek-harness Releases 的最近版本（数量由
-/// `DSH_CORE_RELEASE_LIMIT` 控制，按版本去重）。
+/// 核心列表：本地核心 + deepseek-harness-pkg Releases 的预构建版本（按版本去重）。
 ///
-/// 版本行数据源为官方 GitHub releases（`fetch_dsh_core_releases`，最新在前，含
-/// Pre-release label）：预览版（label 或 tag 命名，见 `download::is_preview_tag`）
-/// 照常列出供手动下载安装，仅带「预览版」标记、不参与更新提示。官方 Releases 可能对
-/// 同一版本返回多个 tag，这里按版本去重——同一版本只保留**最后一个**
-/// tag，预览标记以保留的 tag 为准。官方 Releases 拉取失败（离线/限流）时不改用
-/// tags、HTML 或打包仓库补充核心版本，仅降级为磁盘扫描，保留本地、激活与已下载的
-/// 历史版本。
+/// 预览版（label 或 tag 命名，见 `download::is_preview_tag`）照常列出供手动下载安装，
+/// 仅带「预览版」标记、不参与更新提示。同一版本可能对应多个构建 tag，这里按版本去重，
+/// 只保留最后一个 pkg tag。Releases 拉取失败（离线/限流）时回退 pkg tags，再降级
+/// 为磁盘扫描，保留本地、激活与已下载的历史版本。
 pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     let source = active_source(app_handle);
     let local = local_core(app_handle);
@@ -142,13 +138,34 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
             .flatten()
     });
 
-    // 版本行只来自官方 Releases API（最新在前，下载层已限制为最近 10 个）；
-    // 同版本只保留最后一个 tag。接口失败时不回退到 tags，避免混入非官方核心列表数据。
-    let (release_metas, remote_catalog_available) = match download::fetch_dsh_core_releases().await {
+    // 版本行只来自预构建包仓库的 Releases（最新在前）。上游
+    // `deepseek-ai/deepseek-harness` 的 `dsh-v<version>` 是源码 Release，不是
+    // 桌面端可直接切换的槽位；若把它混入这里，列表会出现可点击但没有对应目录的
+    // 版本，最终在切换阶段报 CORE_VERSION_NOT_DOWNLOADED。
+    // 同版本只保留最后一个 pkg tag。接口失败时回退 tags，保证离线时仍能展示本地
+    // 槽位以及可识别的历史版本。
+    let (release_metas, remote_catalog_available) = match download::fetch_dsh_pkg_releases().await {
         Ok(metas) => (metas, true),
         Err(e) => {
-            log::warn!("Failed to fetch official dsh releases: {}", e);
-            (Vec::new(), false)
+            log::warn!(
+                "Failed to fetch dsh pkg releases ({}), falling back to git tags",
+                e
+            );
+            match download::fetch_dsh_pkg_tags().await {
+                Ok(tags) => (
+                    tags.into_iter()
+                        .map(|(tag, _)| download::DshPkgReleaseMeta {
+                            tag,
+                            prerelease: false,
+                        })
+                        .collect(),
+                    true,
+                ),
+                Err(e) => {
+                    log::warn!("Failed to fetch dsh pkg tags: {}", e);
+                    (Vec::new(), false)
+                }
+            }
         }
     };
     let mut version_tags: Vec<(String, String, bool)> = Vec::new(); // (version, tag, preview)，保持首次出现顺序
@@ -399,17 +416,35 @@ async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), Str
     let deps = dependencies_dir(app_handle);
     let active_dir = config::get_dsh_install_path(app_handle);
     fs_guard::validate_id(tag)?;
-    let target_dir = existing_slot_dir(app_handle, tag)
-        .ok_or_else(|| format!("CORE_VERSION_NOT_DOWNLOADED: {tag}"))?;
     let cur_tag = config::get_dsh_pkg_tag(app_handle);
+    let active_app_version = active_app_version(&cur_tag, config::get_dsh_version(app_handle));
+    let current_source = active_source(app_handle);
 
-    // 激活目录已是目标版本（tag 相同）→ 仅切来源标记（如 local → app 同版本）
-    if cur_tag.as_deref() == Some(tag) {
+    // 从本地核心切回桌面端时，预打包核心仍在固定的 `dependencies/dsh` 激活目录，
+    // 并不在历史槽位里。此前列表按版本把它标记为 present，但这里无条件查槽位，
+    // 因而同版本切回会误报 CORE_VERSION_NOT_DOWNLOADED。版本相同即可直接恢复
+    // App 来源；保留原 tag，避免把上游 `dsh-v…` 记录误写成 pkg 槽位 tag。
+    if current_source == CoreSource::Local
+        && config::get_dsh_binary_path(app_handle).exists()
+        && active_app_version.as_deref() == download::parse_version_from_tag(tag).as_deref()
+    {
+        stop_harness_for_core_switch(app_handle).await?;
         let mut setting = config::get_store_dat_setting(app_handle);
         setting.active_core = Some(CoreSource::App.as_str().to_string());
         config::set_store_dat_setting(app_handle, setting);
         return Ok(());
     }
+
+    // 记录 tag 与目标一致时，目标就是当前固定激活目录，不应先按历史槽位查找。
+    if current_source == CoreSource::App && cur_tag.as_deref() == Some(tag) {
+        let mut setting = config::get_store_dat_setting(app_handle);
+        setting.active_core = Some(CoreSource::App.as_str().to_string());
+        config::set_store_dat_setting(app_handle, setting);
+        return Ok(());
+    }
+
+    let target_dir = existing_slot_dir(app_handle, tag)
+        .ok_or_else(|| format!("CORE_VERSION_NOT_DOWNLOADED: {tag}"))?;
 
     // 切换前停止运行中的服务，避免目录被进程句柄锁定
     if workflow::has_owned_process() {
@@ -504,7 +539,7 @@ pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<Harne
 
     // 1. 拉该 tag 的资产地址 + 可信摘要（digest 缺失时安全中止，沿用
     //    DSH_INTEGRITY_UNAVAILABLE 设计：不下载无法验证完整性的内容）
-    let info = download::fetch_dsh_core_asset(tag)
+    let info = download::fetch_dsh_pkg_asset(tag)
         .await
         .map_err(|e| format!("CORE_METADATA_FAILED: {e}"))?;
     let digest = info.digest.ok_or_else(|| {

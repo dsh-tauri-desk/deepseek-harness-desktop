@@ -1,7 +1,7 @@
 import type { DshPlugin } from '../hooks/use-dsh-plugins'
 import type { PluginBatchAction } from './plugin-batch-dialog'
-import { CircleExclamation } from '@gravity-ui/icons'
-import { Button, Checkbox, Chip, Label, Link, Spinner, Tooltip } from '@heroui/react'
+import { CircleExclamation, Copy } from '@gravity-ui/icons'
+import { Button, Checkbox, Chip, Label, Spinner, Tooltip } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
@@ -11,6 +11,7 @@ import { If } from 'react-if-lite'
 import { tv } from 'tailwind-variants'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
+import { writeClipboardText } from '@/utils/clipboard'
 import { silence } from '@/utils/silence'
 import { toast } from '@/utils/toast'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
@@ -69,6 +70,17 @@ export function ConfigPlugin(props: ConfigPluginProps) {
   const [batchAction, setBatchAction] = useState<PluginBatchAction | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [showBuiltInPlugins, setShowBuiltInPlugins] = useState(false)
+
+  async function copyPluginRepoUrl(url: string): Promise<void> {
+    try {
+      await writeClipboardText(url)
+      toast(t('messages.copy_success'))
+    }
+    catch (err) {
+      console.error('[ConfigPlugin] copy repository URL failed:', err)
+      toast(t('messages.copy_failed'), { variant: 'danger' })
+    }
+  }
 
   const upgrade = useMutation({
     mutationFn: (id: string) => invoke<void>('update_dsh_plugin', { id }),
@@ -681,22 +693,26 @@ export function ConfigPlugin(props: ConfigPluginProps) {
                             </Tooltip.Content>
                           </Tooltip>
                         </If>
-                        {plugin.repo_url !== ''
-                          ? (
-                              <Link
-                                className="min-w-0 truncate text-sm font-medium text-accent hover:underline"
-                                onClick={() => {
-                                  void invoke('open_external_url', { url: plugin.repo_url })
-                                }}
-                              >
-                                {plugin.name}
-                              </Link>
-                            )
-                          : (
-                              <Label className="min-w-0 truncate text-sm font-medium text-ink">
-                                {plugin.name}
-                              </Label>
-                            )}
+                        <Label className="min-w-0 truncate text-sm font-medium text-ink">
+                          {plugin.name}
+                        </Label>
+                        <If cond={plugin.repo_url !== ''}>
+                          <Tooltip delay={0}>
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                              className="size-6 shrink-0 rounded-md text-muted hover:text-accent"
+                              aria-label={t('buttons.copy')}
+                              onPress={() => {
+                                void copyPluginRepoUrl(plugin.repo_url)
+                              }}
+                            >
+                              <Copy className="size-3.5" />
+                            </Button>
+                            <Tooltip.Content>{t('buttons.copy')}</Tooltip.Content>
+                          </Tooltip>
+                        </If>
                         <If cond={plugin.version !== ''}>
                           <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px] text-muted">
                             {plugin.version}

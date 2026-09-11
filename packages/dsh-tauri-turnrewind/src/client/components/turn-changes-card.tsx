@@ -8,23 +8,27 @@ import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, Icon, SquarePlus, useMountSt
  * 纯函数判定与格式化在 utils/format.ts（本文件只做组合与交互）。
  *
  * 交互边界（需求明确）：
- *   - **真功能**：「撤销」、「再显示 N 个文件 / 收起文件」、**点击文件打开**；
+ *   - **真功能**：「撤销」、「再显示 N 个文件 / 收起文件」、**点击文件打开**、
+ *     **「审核」（新核心打开侧边栏文件树）**；
  *   - **占位**：`📝 文件`（图标块）无点击处理（`data-placeholder` 标注）；
- *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`；开放打开功能**未**附带 hover 视觉）。
+ *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`；开放打开/审核功能**未**附带 hover 视觉）。
  *
- * 「点击文件打开」按内核能力分流：新核心经 owner props 的 `openFile` 在应用内右侧边栏
- * 打开文本预览页签；旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里
- * **静默**（判据与理由见 client/capabilities/index.ts 与 client/utils/open-file.ts）。
+ * 两处按内核能力分流（判据与理由见 client/capabilities/index.ts）：
+ *   - 「点击文件打开」：新核心经 owner props 的 `openFile` 在应用内右侧边栏打开文本预览页签；
+ *     旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里**静默**；
+ *   - 「审核」：新核心经 `sidebarRight.openTab('files')` 打开侧边栏文件树（会话工作区根目录）；
+ *     旧核心**不显示该按钮**——它连 `sidebarRightTabs` 服务都没有。
  *
  * 单文件与多文件的差异：单文件时标题就是文件名、不渲染清单，
  * hover 时副行的计数换成「查看更改 ↗」（当前停用）；多文件时标题是文件数、
  * 副行固定显示总计数，清单最多三行。
  */
 import { useEffect, useState } from 'react'
-import { hasSidebarPreview } from '../capabilities'
+import { hasSidebarFileTree, hasSidebarPreview, readSidebarRight } from '../capabilities'
 import {
   TURNREWIND_CARD_STYLE_ID,
   TURNREWIND_COUNTS_STYLE_ID,
+  TURNREWIND_SIDEBAR_FILES_KIND,
   TURNREWIND_SUMMARY_MAX_RETRIES,
   TURNREWIND_SUMMARY_RETRY_DELAY_MS,
   TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS,
@@ -35,6 +39,7 @@ import { ensureSummary, requestUndo, retrySummaryForTurn, useTurnrewindSession }
 import countsStyle from '../styles/counts.cssr'
 import { cardTitle, fileListWindow, formatCounts, formatTotals, hasTurnRecord, reasonKey, resolveCardState, summaryRetryDelayMs } from '../utils/format'
 import { fileOpenHandler } from '../utils/open-file'
+import { reviewOpenHandler } from '../utils/review'
 import { ChangeCounts } from './change-counts'
 import cardStyle from './turn-changes-card.cssr'
 
@@ -126,6 +131,19 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const onOpenFile = fileOpenHandler({ openFile: props.openFile, sidebarPreview: hasSidebarPreview() })
   const singlePath = single ? files[0]?.path : undefined
   const openLabel = (path: string): string => text('openFile', { name: path })
+
+  /*
+    「审核」：只在新核心出现。判据取「右侧边栏注册表里有文件树页类型」，比「有没有
+    sidebarRight」更严格——`openTab('files')` 在类型未注册时会直接抛
+    `no tab type is registered as "files"`，渲染一个点下去必然失败的按钮就是假交互。
+    旧核心连 `sidebarRightTabs` 都没有，据此**不渲染按钮**（需求：旧版本不显示）。
+    判据与理由见 client/capabilities/index.ts 与 client/utils/review.ts。
+  */
+  const onReview = reviewOpenHandler({
+    sidebar: readSidebarRight(),
+    fileTree: hasSidebarFileTree(),
+    kind: TURNREWIND_SIDEBAR_FILES_KIND,
+  })
 
   /**
    * 清单行：具备打开能力时渲染成按钮，否则是不可点的普通行——
@@ -233,20 +251,37 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
             </span>
           </div>
           <span className="dshp-turnrewind__spacer" />
-          {/* 已撤销：只留「已撤销」徽标，撤销按钮不再出现（避免看起来还能再撤一次）。 */}
+          {/* 已撤销：只留「已撤销」徽标，撤销与「审核」都不再出现（没有可撤 / 可审的变更）。 */}
           {undone
             ? <span className="dshp-turnrewind__badge">{text('undoneBadge')}</span>
             : (
-                <button
-                  type="button"
-                  className="dshp-turnrewind__undo"
-                  disabled={blocked || state.undoing}
-                  onClick={onUndo}
-                  title={text('undo')}
-                >
-                  {state.undoing ? text('undoing') : text('undo')}
-                  <Icon as={ArrowUturnCcwLeft} size={14} />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="dshp-turnrewind__undo"
+                    disabled={blocked || state.undoing}
+                    onClick={onUndo}
+                    title={text('undo')}
+                  >
+                    {state.undoing ? text('undoing') : text('undo')}
+                    <Icon as={ArrowUturnCcwLeft} size={14} />
+                  </button>
+                  {/*
+                    「审核」：点击在应用内右侧边栏打开**文件树**（会话工作区根目录），
+                    用户可以逐层翻看这一轮改过哪些文件。能力缺席（旧核心）时 `onReview`
+                    为 undefined，整个按钮不渲染——不给「点了没反应」的假交互。
+                  */}
+                  {onReview !== undefined && (
+                    <button
+                      type="button"
+                      className="dshp-turnrewind__review"
+                      onClick={onReview}
+                      title={text('review')}
+                    >
+                      {text('review')}
+                    </button>
+                  )}
+                </>
               )}
         </div>
 

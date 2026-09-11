@@ -66,6 +66,24 @@ export const TURNREWIND_EFFECT_CAPABILITIES = `${TURNREWIND_PLUGIN_NAME}: capabi
  */
 export const TURNREWIND_SIDEBAR_RIGHT_SERVICE = 'sidebarRight'
 
+/**
+ * 「右侧边栏页类型注册表」服务名（新内核由 `dsh-client-ui-sidebar-right` 与
+ * {@link TURNREWIND_SIDEBAR_RIGHT_SERVICE} 在同一个 effect 里发布）。
+ *
+ * 与 `sidebarRight` 同样只做运行时探测，绝不进 `inject`：旧内核没有它。
+ * 「审核」按钮的判据取**这个注册表里有没有文件树页类型**，而不是「有没有 sidebarRight」——
+ * 前者才能保证点击真的能打出内容（见 client/utils/review.ts）。
+ */
+export const TURNREWIND_SIDEBAR_RIGHT_TABS_SERVICE = 'sidebarRightTabs'
+
+/**
+ * 右侧边栏「文件树」页类型的 kind（新内核由 `dsh-client-ui-sidebar-files` 注册）。
+ *
+ * 「审核」按钮点击后就打开这个页：它画的是会话工作区根目录，用户可以直接逐层翻看本轮
+ * 改过哪些文件。旧内核连 `sidebarRightTabs` 都没有，注册表探测直接失败 → 不显示按钮。
+ */
+export const TURNREWIND_SIDEBAR_FILES_KIND = 'files'
+
 /** 卡片默认展示的文件行数（其余折叠到「再显示 N 个文件」）。 */
 export const TURNREWIND_VISIBLE_FILE_ROWS = 3
 

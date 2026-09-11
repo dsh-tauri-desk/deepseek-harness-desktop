@@ -20,6 +20,30 @@
 
 ## 同步记录
 
+### 2026 —— 修复 macOS 预设宠物黑底（issue #434，分支 `fix/434-macos-hevc-alpha-mov-pet`）
+
+不是上游同步，而是**素材编码格式**在 macOS 上不可用导致的黑底，记录在此以便后续核对素材来源。
+
+- **现象**：macOS 启用预设桌宠后，宠物是一个黑色矩形（透明区域全黑），Windows/Chromium 正常，且无任何 error 事件。
+- **根因**：预设宠物走 `<video>` 播放 VP9-alpha WebM，而 WKWebView（WebKit）解码时**直接丢弃 alpha 平面**
+  并按不透明渲染（[WebKit #64837](https://github.com/WebKit/WebKit/pull/64837) 2026 才合入）。窗口/WebView/CSS
+  透明链路与 Tauri 均无问题，黑底是视频像素层。Safari 原生支持的透明视频是 **HEVC-with-Alpha**
+  （`AVVideoCodecType.hevcWithAlpha`，`hvc1`），而该编码器只有 macOS 有。
+- **素材侧**：新建 [`dsh-tauri-desk/dsh-pet-mov`](https://github.com/dsh-tauri-desk/dsh-pet-mov)，
+  用 GitHub Actions 的 macOS runner 把上游 `dsh-pet/assets/webm` 批量转码为 `mov/*.mov`
+  （`ffmpeg -pix_fmt bgra` 解码 → `swift hevc_alpha_encoder.swift` 编码），
+  仓库**只保留 `config.jsonc` 与 `mov/`**（113 个 mov，约 79 MiB）。流水线按周跟随上游 `main` 重编，
+  产物由机器人提交回该仓库；桌面端以 codeload tarball 下载，不需要 Release。
+- **桌面侧**：
+  - `preset-pets.json` 新增 `platforms` 覆盖块：`macos` 换 `repo` = `dsh-tauri-desk/dsh-pet-mov`、
+    `ref` = 该仓库已生成的提交、`assets` = `""`（仓库根即素材）、`sizeMb` = 79；其余平台不变。
+  - `preset_pet.rs`：`read_platform_catalog` 按 `std::env::consts::OS` 并回覆盖块；
+    解压层支持**空前缀**（整个仓库即素材，仍需剥掉 `<repo>-<ref>/` 与安全校验）；
+    协议层放开 `mov/` 子目录与 `.mov` 扩展名，MIME 为 `video/quicktime`（WKWebView 才交给 AVFoundation）；
+    `get_preset_pet_assets` 改为按 `mov/` → `webm/` 的优先级选源（文件名主名与 `config.jsonc`
+    池条目一致，前端无需感知格式）。macOS 用户升级后清单 `ref` 变化会触发设置页的「更新」入口，
+    更新即从 webm 安装切到 mov 安装。
+
 ### 2026 —— 修复「会话被用户中止后 toast 与动画一直持续」（分支 `fix/pet-abort-hang`）
 
 不是上游同步，而是宿主收尾信号缺失导致的桌宠挂死，记录在此以便后续核对收尾语义。
@@ -231,6 +255,9 @@ PR #414、#415 的 GitHub CI 均已通过。
 1. 获取参考仓库最新版本与提交：`git -C source/dsh-pet fetch origin && git -C source/dsh-pet log --oneline e1ff8c1..origin/main`（dsh-dafeiyu 同理）。
 2. 若 dsh-pet 有新版本：评估影响面（`src/shared/work-status.ts`、`src/host/work-status.ts`、client 轮询、资产入库 commit），
    确认新 WebM/config 字段后升级 `preset-pets.json` 的 ref。
+   - 同时确认 `platforms.macos` 的 `ref` 是否要跟到 dsh-pet-mov 的新产物 commit
+     （该仓库按周跟随上游 `main` 重编并把 mov 提交回自己的 `main`；两边 ref 都要升，
+     否则 macOS 会停在旧动画集；该仓库无需 Release，桌面端直接下 codeload tarball）。
 3. 先更新本文件「同步基线」和「待同步」，再修改 host/client 实现。
 4. 同步协议时同时检查：
    - `src-tauri/resources/preset-pets.json`

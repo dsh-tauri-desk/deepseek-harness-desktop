@@ -38,7 +38,8 @@ const PET_WINDOW_BOTTOM_PAD: f64 = 10.0;
 /// 顶栏 Toast 区的最小窗口宽度（逻辑像素）：桌宠较小时仍保证气泡可读，
 /// 与 pet WebView 的 PET_BUBBLE_MIN_WIDTH 保持一致。
 const PET_WINDOW_MIN_WIDTH: f64 = 420.0;
-/// 预设 WebM 画布 16:9（高/宽 = 9/16），与 dsh-pet 协议画布比例保持一致。
+/// 预设动画画布 16:9（高/宽 = 9/16），与 dsh-pet 协议画布比例保持一致
+/// （WebM 与 macOS 的 HEVC-with-Alpha MOV 共用同一画布）。
 const PET_BUILTIN_ASPECT: f64 = 9.0 / 16.0;
 /// 自定义 Codex v2 精灵图默认 8x11 的 192x208 比例；实际比例以前端加载后为准，
 /// 这里仅作为窗口初始/DPI 尺寸的近似，避免与前端内置画布比例互相打架。

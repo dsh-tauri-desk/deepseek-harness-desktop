@@ -7,6 +7,14 @@
     "repo": "https://github.com/PC2005-cloud/dsh-pet",
     "ref": "e1ff8c1e4001878cbb80441262d530e16541f138",
     "assets": "dsh-pet/assets",
-    "sizeMb": 113
+    "sizeMb": 113,
+    "platforms": {
+      "macos": {
+        "repo": "https://github.com/dsh-tauri-desk/dsh-pet-mov",
+        "ref": "be0f3bb494cb71a4c73f916c0b92d25a3ab4d002",
+        "assets": "",
+        "sizeMb": 79
+      }
+    }
   }
 ]

@@ -3,7 +3,7 @@
  *
  * 配置由 Rust 从 ~/.dsh/pets/<id>/config.jsonc 读取、剥注释并校验后经
  * `get_preset_pet_config` 命令返回（字段形状 = 子仓库 dsh-pet assets/config.jsonc
- * 协议的受支持子集，动画池条目 = 动画名 = webm 文件名主名）。本模块只做两件事：
+ * 协议的受支持子集，动画池条目 = 动画名 = 动画文件名主名）。本模块只做两件事：
  * 1. 类型收敛：把命令返回值声明成可直接消费的结构；
  * 2. 权重掷骰：移植 dsh-pet src/shared/pickers.ts 的 rollKind / pickWeightedCategory /
  *    pickCategoryAction（DSH 无自动漫游，move 档由调用方决定保持待机，不在本模块移动窗口），
@@ -155,7 +155,7 @@ export function poolEntryToStatus(entry: string): string {
 }
 
 /**
- * DSH 会话状态 → dsh-pet 动画名（webm 文件名主名）的叠加映射。
+ * DSH 会话状态 → dsh-pet 动画名（动画文件名主名）的叠加映射。
  *
  * 两族状态：
  * 1. 细分工作状态档位（workStatus，host reducer 输出）：thinking/working/result/
@@ -185,7 +185,7 @@ export const PRESET_SESSION_ANIMATIONS: Record<string, string> = {
 }
 
 /**
- * 预设宠物：把播放状态解析为实际动画名（webm 文件名主名，如 待机呼吸休闲）。
+ * 预设宠物：把播放状态解析为实际动画名（动画文件名主名，如 待机呼吸休闲）。
  * - 活动名本身就是可播放动画名（adHoc 池条目 / 会话状态映射名）时直接命中资产；
  * - 会话状态（waiting/running/review/failed/bubble）经 PRESET_SESSION_ANIMATIONS
  *   叠加映射到具体动画名；映射名没有对应资产时返回 null（保持当前动画）；
@@ -274,7 +274,7 @@ export interface PetAnimationTarget {
  * 是否需要重载视频来切换动画（纯函数，可单测）。
  *
  * 【为什么存在】会话档位反复下发时（同一档位重复到达、或多会话交错让聚合档位在
- * 解析结果相同的动画之间来回切），旧实现按 override.revision 递增重载同一个 webm
+ * 解析结果相同的动画之间来回切），旧实现按 override.revision 递增重载同一个视频
  * 并从头播放——用户看到的现象是「气泡信息明明是同一个『整理结果中』，动画却一直
  * 重新播放」。动画是否重播只由播放目标决定：
  * - 目标资源变化（真换了动画 / 换了宠物）→ 重载；

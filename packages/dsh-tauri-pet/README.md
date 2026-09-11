@@ -11,9 +11,13 @@ DeepSeek Harness 的桌宠插件。它在设置页提供 `Pets` 与 `Codex` 两�
   `/hatch-dsh-pet 根据你对我的了解，养一只宠物`，不会自动提交。
 - **Codex**：显示 Codex 来源（`~/.codex/pets`）的宠物卡片；工具栏只有
   **Import**，用于导入 `.zip` 资源包。
-- 预设宠物媒体（WebM / GIF / config.jsonc）不再随本包内置：用户在设置页
+- 预设宠物媒体（WebM / MOV / GIF / config.jsonc）不再随本包内置：用户在设置页
   「下载」后安装到 `~/.dsh/pets/<id>`，桌宠窗口按 `config.jsonc` 的动画池
-  （动画名 = webm 文件名主名）直接播放下载产物，无运行时回退。
+  （动画名 = 动画文件名主名）直接播放下载产物，无运行时回退。
+  macOS 的 WKWebView 不认 VP9-alpha WebM（alpha 被丢弃、透明区域渲染成黑色，
+  issue #434），因此 macOS 按清单 `platforms.macos` 改从
+  [`dsh-tauri-desk/dsh-pet-mov`](https://github.com/dsh-tauri-desk/dsh-pet-mov)
+  只下载 `config.jsonc` + `mov/`（HEVC-with-Alpha），其余平台继续用上游 WebM。
 - 宠物大小滑条保持 50–200%，默认 100%。侧栏绿色圆点表示窗口当前 **visible** 状态，
   而不是只表示持久化的 `enabled` 状态。首次点击会永久启用；之后只显示或隐藏窗口，
   不会因隐藏而写入 `enabled=false`。
@@ -57,7 +61,7 @@ skill provider 或默认根目录。
 | `download_preset_pet` | 后台下载并安装预设宠物 |
 | `get_preset_download_progress` | 轮询预设宠物下载/解压进度 |
 | `get_preset_pet_config` | 读取已安装预设的 `config.jsonc`（dsh-pet 协议，校验后返回） |
-| `get_preset_pet_assets` | 列出已安装预设的 WebM URL manifest（dsh-pet 协议按需流式提供） |
+| `get_preset_pet_assets` | 列出已安装预设的动画 URL manifest（WebM 或 macOS 的 HEVC MOV，dsh-pet 协议按需流式提供） |
 | `import_pet` | 导入 Codex `.zip` 资源包 |
 | `set_pet_activity` | 更新 `idle`、`turn`、`moving-left`、`moving-right`、`waving`、`waiting`、`running`、`review` 或 `failed` |
 

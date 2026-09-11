@@ -6,7 +6,7 @@ import {
   IconSettingsOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { SETTINGS_NAV_ICON_STYLE_ID } from '../constants'
-import { useMountStyle } from '../style'
+import { useMountStyle } from '../utils/style'
 import { Icon } from './icon'
 import settingsNavIconStyle from './nav-icon.cssr'
 

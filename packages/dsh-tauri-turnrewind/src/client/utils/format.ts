@@ -23,7 +23,7 @@ import {
  * 但同时**不能丢掉未知码**（内核/宿主版本可能更新），未知码仍原样显示（见调用方）。
  */
 const REASON_KEYS: Record<string, LocaleKey> = {
-  [TURNREWIND_REASON_GIT_REQUIRED]: 'unavailableGitDesc',
+  // `GIT_REQUIRED` 刻意**没有**文案映射：非 Git 工作区整张卡片都不渲染（见 resolveCardState）。
   [TURNREWIND_REASON_GIT_UNAVAILABLE]: 'gitUnavailableReason',
   [TURNREWIND_REASON_EXPIRED]: 'expiredReason',
   [TURNREWIND_REASON_TURN_ACTIVE]: 'turnActiveReason',
@@ -99,10 +99,18 @@ export function resolveCardState(summary: SessionSummary | null, turn: number | 
   if (summary === null)
     return { kind: 'hidden' }
   if (!summary.isGit) {
-    // 非 Git：点撤销弹「需要 Git 仓库」说明；其它拒绝原因（家目录/盘根）只展示原因。
+    /*
+      非 Git 仓库：**整张卡片都不出现**（需求：这类工作区里撤销本就不适用，却会在每一轮
+      结尾弹一张「该工作区不是 Git 代码仓库」——用户什么都没改也会看到，纯属噪音）。
+
+      例外是**可操作的诊断**：git 可执行文件缺失（`GIT_UNAVAILABLE`）、危险路径
+      （家目录/盘根，`UNSAFE_WORKSPACE`）仍如实呈现——它们回答的是「为什么这个工作区
+      不能撤销」，而 `GIT_REQUIRED` 回答的是「这里本来就没有仓库」，后者没有任何可做的
+      事情，因此保持沉默。
+    */
     return summary.unavailableReason !== null && summary.unavailableReason !== TURNREWIND_REASON_GIT_REQUIRED
       ? { kind: 'unavailable', reason: summary.unavailableReason }
-      : { kind: 'git-required' }
+      : { kind: 'hidden' }
   }
   const record = summary.turns.find(item => item.turn === turn)
   if (record === undefined)

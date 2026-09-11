@@ -20,7 +20,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use zip::ZipArchive;
 use futures_util::StreamExt;
@@ -182,7 +182,10 @@ pub fn get_pet_status(app: AppHandle) -> PetStatus {
     status_from_setting(&config::get_store_dat_setting(&app))
 }
 
-/// 启用/停用桌宠；启用同时显示，停用同时隐藏并永久落盘。
+/// 永久启用/停用桌宠（点击侧栏入口的「关闭桌宠」）。
+///
+/// 停用 = 收起：销毁窗口实例（见 `desktop::pet::set_pet_window_visible`），
+/// 因此必须走 [`defer_pet_window_op`] 在非主线程执行。
 #[tauri::command]
 pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, String> {
     let updated = config::update_store_dat_setting(&app, |setting| {
@@ -192,9 +195,9 @@ pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, Strin
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = enabled;
-    pet_window::set_pet_window_visible(&app, enabled)?;
-    // 停用即无消费者：停掉宿主会话流订阅（启用时窗口已可见，直接恢复订阅）。
+    // 停用即无消费者：先停掉宿主会话流订阅，窗口销毁随后在后台完成。
     sync_pet_session_stream(&app, enabled);
+    defer_pet_window_op(&app, enabled)?;
     let status = status_from_setting(&updated);
     emit_pet_status(&app, &status);
     Ok(status)
@@ -347,11 +350,53 @@ fn pet_stream_handle() -> &'static Mutex<Option<tauri::async_runtime::JoinHandle
 
 /// 是否需要订阅宿主会话增量流：桌宠已启用且窗口可见。
 ///
-/// 临时隐藏（`hide_pet`）同样视为无消费者——窗口不渲染时转发毫无意义，停掉
-/// 订阅即让宿主的热路径与逐会话累计态一并短路。
+/// 收起桌宠（`hide_pet`）会销毁窗口，同样视为无消费者——窗口不渲染时转发毫无意义，
+/// 停掉订阅即让宿主的热路径与逐会话累计态一并短路。
 pub fn pet_stream_wanted(app: &AppHandle) -> bool {
     let status = status_from_setting(&config::get_store_dat_setting(app));
     status.enabled && status.visible
+}
+
+/// 断线重连日志的重记间隔：状态持续不变时最多这么久重记一次。
+///
+/// 宿主未就绪（启动中，或插件操作期间被主动停止）时这条流会每 2s 失败一次，
+/// 逐次输出会在几秒内刷满日志、把真正的错误挤掉。
+const PET_STREAM_RELOG_INTERVAL: Duration = Duration::from_secs(60);
+
+/// 「会话流正常结束」在日志节流里的状态名（宿主重启时属正常，不需要告警）。
+const PET_STREAM_ENDED: &str = "stream ended";
+
+/// 重连日志节流器：只在「状态首次出现 / 状态变化 / 距上次输出已超过
+/// [`PET_STREAM_RELOG_INTERVAL`]」时允许输出，其余相同的重复失败降级为 debug。
+///
+/// 状态用失败原因字符串表示：宿主不可用期间原因通常是稳定的一条（如
+/// `HTTP 502 Bad Gateway`），于是整段不可用期被压成首行 + 每分钟一行；原因变化
+/// （换了一种坏法）则立即重新输出，不会把新问题一起静默掉。
+struct PetStreamLogThrottle {
+    last_state: Option<String>,
+    last_logged: Instant,
+    relog_interval: Duration,
+}
+
+impl PetStreamLogThrottle {
+    fn new() -> Self {
+        Self {
+            last_state: None,
+            last_logged: Instant::now(),
+            relog_interval: PET_STREAM_RELOG_INTERVAL,
+        }
+    }
+
+    /// 记录一次状态，返回这一行是否应当输出。
+    fn should_log(&mut self, state: &str) -> bool {
+        let repeated = self.last_state.as_deref() == Some(state);
+        self.last_state = Some(state.to_string());
+        if repeated && self.last_logged.elapsed() < self.relog_interval {
+            return false;
+        }
+        self.last_logged = Instant::now();
+        true
+    }
 }
 
 /// 按「是否有消费者」启停「宿主会话增量 SSE」消费任务（见
@@ -378,15 +423,26 @@ pub fn sync_pet_session_stream(app: &AppHandle, wanted: bool) {
     }
     let app = app.clone();
     *handle = Some(tauri::async_runtime::spawn(async move {
+        // 重连是 2s 一次的常态循环，宿主未就绪时会连续失败几十上百次：逐次输出
+        // 会刷满日志并挤掉真正的错误，因此按状态节流（见 [`PetStreamLogThrottle`]）。
+        let mut throttle = PetStreamLogThrottle::new();
         loop {
             let setting = config::get_store_dat_setting(&app);
             let url = format!("http://127.0.0.1:{}{}", setting.port, SESSION_STREAM_PATH);
             match consume_pet_session_stream(&app, &url).await {
                 Ok(()) => {
-                    log::info!("[pet-stream] host session stream ended; reconnecting in 2s");
+                    if throttle.should_log(PET_STREAM_ENDED) {
+                        log::info!("[pet-stream] host session stream ended; reconnecting in 2s");
+                    } else {
+                        log::debug!("[pet-stream] host session stream ended (repeated)");
+                    }
                 }
                 Err(error) => {
-                    log::warn!("[pet-stream] host session stream error: {error}; reconnecting in 2s");
+                    if throttle.should_log(&error) {
+                        log::warn!("[pet-stream] host session stream error: {error}; reconnecting in 2s");
+                    } else {
+                        log::debug!("[pet-stream] host session stream error (suppressed): {error}");
+                    }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -404,6 +460,9 @@ pub fn move_pet_window(app: AppHandle, delta_x: i32, delta_y: i32) -> Result<(),
 }
 
 /// 显示桌宠窗口；只允许已永久启用的桌宠恢复显示。
+///
+/// 窗口不存在（首次启用，或上次收起时已被销毁）时在此重建；窗口操作统一经
+/// [`defer_pet_window_op`] 丢到非主线程执行。
 #[tauri::command]
 pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
     let setting = config::get_store_dat_setting(&app);
@@ -414,27 +473,78 @@ pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = true;
-    pet_window::set_pet_window_visible(&app, true)?;
     // 恢复显示 = 重新有消费者：重开会话流订阅。
     sync_pet_session_stream(&app, true);
+    defer_pet_window_op(&app, true)?;
     let status = status_from_setting(&setting);
     emit_pet_status(&app, &status);
     Ok(status)
 }
 
-/// 临时隐藏桌宠窗口，不改变永久 enabled；重启后已启用宠物重新显示。
+/// 临时收起桌宠（不改变永久 enabled；重启后已启用宠物重新显示）。
+///
+/// 「收起」= 销毁窗口实例，而不是 hide：隐藏窗口里的 `<video>` 仍会播放并持有
+/// Video Wake Lock，屏幕无法息屏（issue #469）。销毁后 webview 进程消失，视频与锁
+/// 一并释放，会话流订阅也随即停止。
 #[tauri::command]
 pub fn hide_pet(app: AppHandle) -> Result<PetStatus, String> {
+    collapse_pet(&app)?;
+    let status = status_from_setting(&config::get_store_dat_setting(&app));
+    emit_pet_status(&app, &status);
+    Ok(status)
+}
+
+/// 收起桌宠窗口：置瞬态不可见、停掉宿主会话流订阅，并**在非主线程**销毁窗口实例。
+///
+/// 供 `hide_pet` 命令与「桌宠窗口自身收到关闭请求」两条路径共用（后者发生在主线程的
+/// 窗口事件回调里），两条路径都不会在主线程触碰窗口生命周期 API，见
+/// [`defer_pet_window_op`]。
+pub fn collapse_pet(app: &AppHandle) -> Result<(), String> {
     transient_state()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = false;
-    pet_window::set_pet_window_visible(&app, false)?;
-    // 隐藏 = 无人渲染：停掉宿主会话流订阅，宿主侧热路径整条短路。
-    sync_pet_session_stream(&app, false);
-    let status = status_from_setting(&config::get_store_dat_setting(&app));
-    emit_pet_status(&app, &status);
-    Ok(status)
+    // 收起 = 无人渲染：停掉宿主会话流订阅，宿主侧热路径整条短路。
+    sync_pet_session_stream(app, false);
+    defer_pet_window_op(app, false)
+}
+
+/// 串行化桌宠窗口的可见性操作，保证「收起 → 再显示」按调用顺序执行。
+fn pet_window_op_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 把窗口可见性操作丢到异步运行时执行（创建窗口与销毁窗口都**不允许**在主线程调用）。
+///
+/// # 为什么必须离开主线程
+///
+/// Tauri 的 command handler 在主线程执行，而 `tauri-runtime-wry` 对主线程上的窗口
+/// 生命周期消息是**直接 panic**：
+///
+/// - `WindowMessage::Destroy`：`panic!("cannot handle \`WindowMessage::Destroy\` on the
+///   main thread")`（tauri-runtime-wry 2.11.4 lib.rs:3494）；调用点在 `send_user_message`
+///   判定「当前线程 == 主线程」后**同步**派发，因此主线程调 `destroy()` 必崩。
+/// - `create_window`：经 channel 等主线程事件循环回包，主线程调用必然死锁
+///   （同文件 lib.rs:2757 注释）。
+///
+/// 之前的 `hide()` 之所以看起来能用，只是因为 `WindowMessage::Hide` 走了不 panic 的分支；
+/// 换成销毁后就踩中了这条主线程断言（实测表现为：收起宠物后 `show_pet`、
+/// `get_pet_status` 等全部 invoke 超时、主 webview 一起卡住）。
+fn defer_pet_window_op(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // 串行锁：并发/快速连点的收起与显示不会交错，最终态等于最后一次调用。
+        let _guard = pet_window_op_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = pet_window::set_pet_window_visible(&app, visible) {
+            log::error!("PET_WINDOW_VISIBILITY_FAILED: visible={visible}: {error}");
+            let status = status_from_setting(&config::get_store_dat_setting(&app));
+            emit_pet_status(&app, &status);
+        }
+    });
+    Ok(())
 }
 
 /// pet 窗口点击穿透开关；返回实际生效的穿透态，前端据此对齐本地 optimistic 状态。
@@ -1071,6 +1181,48 @@ mod tests {
     use zip::CompressionMethod;
 
     struct TestDirectory(PathBuf);
+
+    // ---- 重连日志节流（宿主不可用期间每 2s 一次失败不能刷满日志）----
+
+    fn throttle(relog_interval: Duration) -> PetStreamLogThrottle {
+        PetStreamLogThrottle {
+            last_state: None,
+            last_logged: Instant::now(),
+            relog_interval,
+        }
+    }
+
+    #[test]
+    fn pet_stream_throttle_suppresses_identical_failures() {
+        // 宿主不可用期间同一条 502 每次重连都复现：只留第一行，其余静默
+        let mut throttle = throttle(Duration::from_secs(60));
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(!throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(!throttle.should_log("HTTP 502 Bad Gateway"));
+
+        // 换成另一种坏法 → 立即重新输出，不会被前一种的静默期吞掉
+        assert!(throttle.should_log("error decoding response body"));
+        // 回到前一种原因同样算状态变化
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+    }
+
+    #[test]
+    fn pet_stream_throttle_relogs_after_interval() {
+        // 长时间不可用仍需留痕：到期后重记一次，而不是整段彻底静默
+        let mut throttle = throttle(Duration::ZERO);
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+    }
+
+    #[test]
+    fn pet_stream_throttle_keeps_ended_and_error_distinct() {
+        // 「正常结束」（宿主重启）与失败是两种状态，不会互相静默掉
+        let mut throttle = throttle(Duration::from_secs(60));
+        assert!(throttle.should_log(PET_STREAM_ENDED));
+        assert!(!throttle.should_log(PET_STREAM_ENDED));
+        assert!(throttle.should_log("HTTP 502 Bad Gateway"));
+        assert!(throttle.should_log(PET_STREAM_ENDED));
+    }
 
     impl TestDirectory {
         fn new(name: &str) -> Self {

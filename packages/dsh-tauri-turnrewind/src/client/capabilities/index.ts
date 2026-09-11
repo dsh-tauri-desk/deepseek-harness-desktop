@@ -1,24 +1,36 @@
 /**
  * client/capabilities/index.ts — 运行时能力探测（跨内核代，不做版本嗅探）。
  *
- * 「打开文件」在两个内核代上的含义**完全不同**：
+ * 本插件要用两个**只存在于新内核**的右侧边栏能力：
  *
- * | 内核 | owner props 的 `openFile(path)` 实际做的事 |
- * |---|---|
- * | `0.1.5-rc.1` | `ctx.sidebarRight.openResource(fileAddress(...))` —— 在**应用内右侧边栏**打开文本预览页签 |
- * | `0.1.2-rc.1` | `ctx.remote.session.openWorkspacePath({ path })` —— 交给**宿主/系统**去打开该路径 |
+ * | 能力 | 发布方 | 用途 |
+ * |---|---|---|
+ * | `sidebarRight` 控制器 | `dsh-client-ui-sidebar-right` | `openResource`（打开文件预览）/ `openTab`（打开页类型） |
+ * | `sidebarRightTabs` 注册表 | 同一个 effect 里发布 | `get(kind)` 判断某个页类型（如文件树 `files`）是否真的注册了 |
  *
- * 需求是「像官方新核心那样打开侧边栏的文件，旧核心静默（不打开文件）」。两者都派发
- * `openFile`，因此**不能靠 `openFile` 是否存在**来区分；判据取「右侧边栏能力是否存在」：
- * 新内核由 `dsh-client-ui-sidebar-right` 经 `ctx.reflect.provide('sidebarRight', …)` 发布，
- * 旧内核连这个包都没有。用能力探测而不是版本号判断，内核再漂移也不会误开系统程序。
+ * 「打开文件」在两代内核上含义**完全不同**（旧内核的 `openFile` 会把路径交给宿主/系统打开），
+ * 因此判据不是「有没有 `openFile`」；「审核」按钮则额外要求**文件树页类型真的存在**，
+ * 否则点下去 `openTab('files')` 会抛 `no tab type is registered`。两处都用能力探测，
+ * 代替版本号嗅探——内核再漂移也只是退化成「能力缺席」。
  *
- * 探测在**点击那一刻**做（而不是 apply 时）：`sidebarRight` 由另一个客户端插件发布，
- * apply 顺序不保证它已经就位。
+ * 探测在**渲染/点击那一刻**做（而不是 apply 时）：这些服务由另一个客户端插件发布，
+ * apply 顺序不保证它们已经就位。
  */
 
 import type { ClientContext } from 'dsh-tauri/client'
-import { TURNREWIND_SIDEBAR_RIGHT_SERVICE } from '../constants'
+import {
+  TURNREWIND_SIDEBAR_FILES_KIND,
+  TURNREWIND_SIDEBAR_RIGHT_SERVICE,
+  TURNREWIND_SIDEBAR_RIGHT_TABS_SERVICE,
+} from '../constants'
+
+/**
+ * 右侧边栏控制器里本插件会用到的最小面（只声明真正调用的方法，不复制宿主契约）。
+ */
+export interface SidebarRightFace {
+  /** 打开一个页类型（新内核 `ctx.sidebarRight.openTab`）。 */
+  openTab?: (kind: string) => unknown
+}
 
 /** 已安装的上下文（apply 时注入；未安装 = 尚无能力信息，按「没有」处理）。 */
 let context: ClientContext | undefined
@@ -37,21 +49,61 @@ export function registerCapabilities(ctx: ClientContext): () => void {
 }
 
 /**
- * 当前内核是否具备「应用内右侧边栏预览」能力。
+ * 读反射注册表里的一个服务。
  *
- * 用 `reflect.get` 读服务（cordis 的 reflect 直接查注册表，不受 inject 守卫限制），
- * 因此本插件无需 `inject: ['sidebarRight']`——那会让旧内核上的插件加载直接失败。
- * @returns 有 `sidebarRight` 服务时为 true。
+ * 用 `reflect.get` 直接查注册表（不受 inject 守卫限制），因此本插件无需把它们写进
+ * `inject`——声明式依赖会让旧内核上的插件加载直接失败。
+ * @param name - 服务名。
+ * @returns 服务实例；缺席、形状不符或注册表抛错都返回 undefined。
  */
-export function hasSidebarPreview(): boolean {
+function readService(name: string): unknown {
   const reflect = context?.reflect
   if (reflect === undefined || typeof reflect.get !== 'function')
-    return false
+    return undefined
   try {
-    return reflect.get(TURNREWIND_SIDEBAR_RIGHT_SERVICE) !== undefined
+    return reflect.get(name)
   }
   catch {
     // 服务注册表在极端时序下可能抛错：按「没有该能力」处理，绝不因此报错。
+    return undefined
+  }
+}
+
+/**
+ * 读取右侧边栏控制器。
+ * @returns 控制器最小面；旧内核（没有该服务）返回 undefined。
+ */
+export function readSidebarRight(): SidebarRightFace | undefined {
+  const face = readService(TURNREWIND_SIDEBAR_RIGHT_SERVICE)
+  return face === null || face === undefined ? undefined : face as SidebarRightFace
+}
+
+/**
+ * 当前内核是否具备「应用内右侧边栏预览」能力（「打开文件」的判据）。
+ * @returns 有 `sidebarRight` 服务时为 true。
+ */
+export function hasSidebarPreview(): boolean {
+  return readSidebarRight() !== undefined
+}
+
+/**
+ * 右侧边栏是否注册了「文件树」页类型（「审核」按钮的判据）。
+ *
+ * 旧内核连 `sidebarRightTabs` 服务都没有 → false → 按钮不渲染。
+ * @returns 注册表里 `get('files')` 有定义时为 true。
+ */
+export function hasSidebarFileTree(): boolean {
+  const tabs = readService(TURNREWIND_SIDEBAR_RIGHT_TABS_SERVICE)
+  if (tabs === null || tabs === undefined)
+    return false
+  const get = (tabs as { get?: unknown }).get
+  if (typeof get !== 'function')
+    return false
+  try {
+    // `this` 必须留在注册表实例上（get 读内部 kinds 表）。
+    return (get.call(tabs, TURNREWIND_SIDEBAR_FILES_KIND)) !== undefined
+  }
+  catch {
     return false
   }
 }

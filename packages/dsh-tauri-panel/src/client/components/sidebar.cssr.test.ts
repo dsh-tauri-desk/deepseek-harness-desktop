@@ -7,7 +7,7 @@ import sidebarStyle from './sidebar.cssr'
 // （cssr.ts），使本包的样式树能在测试里直接 render() 核对选择器形态。
 // （vitest 会提升 vi.mock，声明位置在 import 之后也无碍。）
 vi.mock('dsh-tauri-ui/client', async () => {
-  const mod = await import('../../../../dsh-tauri-ui/src/client/cssr.ts')
+  const mod = await import('../../../../dsh-tauri-ui/src/client/utils/cssr.ts')
   return { cssr: mod.cssr }
 })
 

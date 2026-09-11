@@ -23,7 +23,7 @@ const FAILED_PULSE_TTL = 1800
 /**
  * 终态档（success/error）聚合保持时长：对齐 dsh-pet 的 BUBBLE_DURATION_MS=10000
  * （终态动画播一次 + 10s 收气泡）语义。不得复用 SUCCESS_TOAST_TIMEOUT(3s)——成功
- * WebM（如 雀跃庆祝）实际播放时长超过 3s 时，聚合状态提前回落会让 app.tsx 的
+ * 终态动画（如 雀跃庆祝）实际播放时长超过 3s 时，聚合状态提前回落会让 app.tsx 的
  * useWatch 调 pet.clear() 掐断未播完的动画（用户报告：成功动画没播完就换回待机）。
  * 动画播完由视频 ended（handleEnded → 清 override）自然回落，toast 收起仍走
  * scheduleHide 的独立 3s（SUCCESS_TOAST_TIMEOUT），二者互不影响。

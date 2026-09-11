@@ -32,6 +32,18 @@ interface PanelProtocol {
 | `renderPanelContent(spec)` | 切换会话区替换：未替换则打开 `spec.render`，已替换则关闭恢复官方会话界面（toggle 语义）；再调同 `id` → dispose 句柄 → 官方恢复 |
 | `closePanelContent()` | 显式恢复官方会话区；面板内需要跳转到会话的动作用它 |
 
+会话区替换的承载槽随核心版本变化（宿主同时 inject 两个候选，任一版本只有
+对应声明存在，另一候选静默等待）：
+
+| 核心版本 | 承载槽 | 注册形状 |
+| --- | --- | --- |
+| ≤ `0.1.2-rc.1` | `conversation`（`single`） | `{ name: 'conversation', id, priority: -1 }` |
+| ≥ `0.1.5-rc.1` | `main`（`keyed`，cell key `conversation`） | `{ name: 'main', key: 'conversation', priority: -1 }` |
+
+> 0.1.5-rc.1 起布局改为 `renderSlot('main', {}, { entryKey: activePanelId ?? 'conversation' })`，
+> 官方会话条目注册在 `main` 槽的 `conversation` cell，旧的 `conversation` 槽
+> 已不复存在。消费方无需感知该差异——`renderPanelContent` 仍是唯一入口。
+
 `PanelContentSpec`：
 
 ```ts
@@ -116,6 +128,11 @@ return ctx.slots.register(
 
 - **rc.2 ↔ alpha 双版本**：全部新增为「可选字段 / 能力探测 / 自实现镜像」，既有
   方法（`ActionItem` / `renderPanelContent` / `closePanelContent`）与消费方零破坏；
+- **会话区承载槽双候选**（`0.1.5-rc.1` 回归）：`0.1.5-rc.1` 把会话区并入
+  `main` keyed 槽、删除旧 `conversation` 槽。宿主同时 `inject` 两个候选
+  （`conversation` 单槽 + `main`/`conversation` keyed 条目），按核心实际声明择一
+  生效；只注册旧槽会导致 inject 回调永不执行 → 面板内容区不替换，只剩侧栏条目
+  选中样式；
 - **旧 WebView**（无 ResizeObserver / PointerEvent / rAF）：`supported=false`，
   手柄不渲染、宽度固定（`--dsh-chat-content-width` 回退 `780px`），仅 console.warn 一次；
 - **renderer 补丁缺失**：`<SlotOutlet>` 为 `undefined` → 侧栏面板整体不注册

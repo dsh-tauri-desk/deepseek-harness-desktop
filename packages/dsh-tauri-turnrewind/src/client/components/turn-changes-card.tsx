@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import type { TurnChangesCardProps, TurnFileChange } from '../types'
-import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, Icon, SquarePlus, useMountStyle } from 'dsh-tauri-ui/client'
+import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, FilePlus, Icon, useMountStyle } from 'dsh-tauri-ui/client'
 /**
  * turn-changes-card.tsx — 一轮结束时渲染的变更卡片（视觉对齐官方 deliverables 行）。
  *
@@ -8,25 +8,27 @@ import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, Icon, SquarePlus, useMountSt
  * 纯函数判定与格式化在 utils/format.ts（本文件只做组合与交互）。
  *
  * 交互边界（需求明确）：
- *   - **真功能**：「撤销」、「再显示 N 个文件 / 收起文件」、**点击文件打开**；
+ *   - **真功能**：「撤销」、「再显示 N 个文件 / 收起文件」、**点击文件打开**、
+ *     **「审核」（新核心打开侧边栏文件树）**；
  *   - **占位**：`📝 文件`（图标块）无点击处理（`data-placeholder` 标注）；
- *     「审核」整体隐藏（`TODO(review-action)`）；
- *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`，本次开放打开功能**未**附带 hover 视觉）。
+ *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`；开放打开/审核功能**未**附带 hover 视觉）。
  *
- * 「点击文件打开」按内核能力分流：新核心经 owner props 的 `openFile` 在应用内右侧边栏
- * 打开预览页签；旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里
- * **静默**，因此只在探测到右侧边栏能力时才把标题 / 清单行渲染成可点元素
- * （见 client/capabilities/index.ts 与 client/utils/open-file.ts）。
+ * 两处按内核能力分流（判据与理由见 client/capabilities/index.ts）：
+ *   - 「点击文件打开」：新核心经 owner props 的 `openFile` 在应用内右侧边栏打开文本预览页签；
+ *     旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里**静默**；
+ *   - 「审核」：新核心经 `sidebarRight.openTab('files')` 打开侧边栏文件树（会话工作区根目录）；
+ *     旧核心**不显示该按钮**——它连 `sidebarRightTabs` 服务都没有。
  *
  * 单文件与多文件的差异：单文件时标题就是文件名、不渲染清单，
  * hover 时副行的计数换成「查看更改 ↗」（当前停用）；多文件时标题是文件数、
  * 副行固定显示总计数，清单最多三行。
  */
 import { useEffect, useState } from 'react'
-import { hasSidebarPreview } from '../capabilities'
+import { hasSidebarFileTree, hasSidebarPreview, readSidebarRight } from '../capabilities'
 import {
   TURNREWIND_CARD_STYLE_ID,
   TURNREWIND_COUNTS_STYLE_ID,
+  TURNREWIND_SIDEBAR_FILES_KIND,
   TURNREWIND_SUMMARY_MAX_RETRIES,
   TURNREWIND_SUMMARY_RETRY_DELAY_MS,
   TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS,
@@ -37,8 +39,8 @@ import { ensureSummary, requestUndo, retrySummaryForTurn, useTurnrewindSession }
 import countsStyle from '../styles/counts.cssr'
 import { cardTitle, fileListWindow, formatCounts, formatTotals, hasTurnRecord, reasonKey, resolveCardState, summaryRetryDelayMs } from '../utils/format'
 import { fileOpenHandler } from '../utils/open-file'
+import { reviewOpenHandler } from '../utils/review'
 import { ChangeCounts } from './change-counts'
-import { GitRequiredDialog } from './git-required-dialog'
 import cardStyle from './turn-changes-card.cssr'
 
 export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | null {
@@ -52,7 +54,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   // 用 turn 作为天然的复位键（也避开 set-state-in-effect 的多余渲染）。
   const [expandedTurn, setExpandedTurn] = useState<number | undefined>(undefined)
   const expanded = expandedTurn !== undefined && expandedTurn === turn
-  const [dialogOpen, setDialogOpen] = useState(false)
 
   useEffect(() => {
     void ensureSummary(sessionId)
@@ -97,7 +98,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
     : { visible: [], hiddenCount: 0 }
   const undone = card.kind === 'undone'
   const blocked = card.kind === 'failed' || card.kind === 'unavailable'
-  const gitRequired = card.kind === 'git-required'
 
   const title = record !== null
     ? cardTitle(record, name => text('editedOne', { name }), count => text('editedMany', { count }))
@@ -117,10 +117,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const skippedNestedRepos = record?.skippedNestedRepos ?? []
 
   const onUndo = (): void => {
-    if (gitRequired) {
-      setDialogOpen(true)
-      return
-    }
     if (blocked || state.undoing || turn === undefined)
       return
     void requestUndo(sessionId, turn)
@@ -135,6 +131,19 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const onOpenFile = fileOpenHandler({ openFile: props.openFile, sidebarPreview: hasSidebarPreview() })
   const singlePath = single ? files[0]?.path : undefined
   const openLabel = (path: string): string => text('openFile', { name: path })
+
+  /*
+    「审核」：只在新核心出现。判据取「右侧边栏注册表里有文件树页类型」，比「有没有
+    sidebarRight」更严格——`openTab('files')` 在类型未注册时会直接抛
+    `no tab type is registered as "files"`，渲染一个点下去必然失败的按钮就是假交互。
+    旧核心连 `sidebarRightTabs` 都没有，据此**不渲染按钮**（需求：旧版本不显示）。
+    判据与理由见 client/capabilities/index.ts 与 client/utils/review.ts。
+  */
+  const onReview = reviewOpenHandler({
+    sidebar: readSidebarRight(),
+    fileTree: hasSidebarFileTree(),
+    kind: TURNREWIND_SIDEBAR_FILES_KIND,
+  })
 
   /**
    * 清单行：具备打开能力时渲染成按钮，否则是不可点的普通行——
@@ -188,7 +197,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
         <div className="dshp-turnrewind__head">
           {/* 占位：📝 文件图标块不做任何事（需求：文件按钮仅做占位）。 */}
           <span className="dshp-turnrewind__icon" title={text('fileButton')} aria-label={text('fileButton')} data-placeholder="file">
-            <Icon as={SquarePlus} size={18} />
+            <Icon as={FilePlus} size={18} />
           </span>
           <div className="dshp-turnrewind__meta">
             {onOpenFile !== undefined && singlePath !== undefined
@@ -236,34 +245,44 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
                   )
                 : (
                     <span className="dshp-turnrewind__hint-text">
-                      {gitRequired ? text('unavailableGitDesc') : explain(unavailableReason)}
+                      {explain(unavailableReason)}
                     </span>
                   )}
             </span>
           </div>
           <span className="dshp-turnrewind__spacer" />
-          {/* 已撤销：只留「已撤销」徽标，撤销按钮不再出现（避免看起来还能再撤一次）。 */}
+          {/* 已撤销：只留「已撤销」徽标，撤销与「审核」都不再出现（没有可撤 / 可审的变更）。 */}
           {undone
             ? <span className="dshp-turnrewind__badge">{text('undoneBadge')}</span>
             : (
-                <button
-                  type="button"
-                  className="dshp-turnrewind__undo"
-                  disabled={blocked || state.undoing}
-                  onClick={onUndo}
-                  title={text('undo')}
-                >
-                  {state.undoing ? text('undoing') : text('undo')}
-                  <Icon as={ArrowUturnCcwLeft} size={14} />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="dshp-turnrewind__undo"
+                    disabled={blocked || state.undoing}
+                    onClick={onUndo}
+                    title={text('undo')}
+                  >
+                    {state.undoing ? text('undoing') : text('undo')}
+                    <Icon as={ArrowUturnCcwLeft} size={14} />
+                  </button>
+                  {/*
+                    「审核」：点击在应用内右侧边栏打开**文件树**（会话工作区根目录），
+                    用户可以逐层翻看这一轮改过哪些文件。能力缺席（旧核心）时 `onReview`
+                    为 undefined，整个按钮不渲染——不给「点了没反应」的假交互。
+                  */}
+                  {onReview !== undefined && (
+                    <button
+                      type="button"
+                      className="dshp-turnrewind__review"
+                      onClick={onReview}
+                      title={text('review')}
+                    >
+                      {text('review')}
+                    </button>
+                  )}
+                </>
               )}
-          {/*
-            TODO(review-action): 「审核」占位按钮暂时整体隐藏（需求方要求），
-            重新启用时注意：已撤销的 turn 不应再显示它（那时已无变更可审）。
-            <button type="button" className="dshp-turnrewind__review" data-placeholder="review" title={text('review')}>
-              {text('review')}
-            </button>
-          */}
         </div>
 
         {window.visible.length > 0 && (
@@ -276,7 +295,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
         {window.hiddenCount > 0 && (
           <button type="button" className="dshp-turnrewind__more" onClick={() => setExpandedTurn(current => (current === turn ? undefined : turn))}>
             {expanded ? text('collapseFiles') : text('moreFiles', { count: window.hiddenCount })}
-            <Icon as={expanded ? ChevronUp : ChevronDown} size={14} />
+            <Icon as={expanded ? ChevronUp : ChevronDown} size={12} />
           </button>
         )}
 
@@ -312,7 +331,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
           </div>
         )}
       </div>
-      <GitRequiredDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
     </div>
   )
 }

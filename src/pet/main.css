@@ -7,7 +7,7 @@
    - 整体下移一点，避免贴顶挤占宠物视野；
    - 宽度收窄约 10%（toast.css 默认 w-[calc(100vw-2rem)]）。 */
 .toast-region--top-end {
-  top: 2.5rem;
+  top: 0;
 }
 
 .toast-region {

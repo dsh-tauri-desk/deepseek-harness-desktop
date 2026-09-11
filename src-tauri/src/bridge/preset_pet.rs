@@ -15,6 +15,12 @@
 //!
 //! 安全约束与 `import_pet` 同一纪律：拒绝 traversal/绝对路径/反斜杠/冒号、
 //! symlink/特殊条目、条目数/单文件/总量上限、全局互斥串行、staging 原子安装。
+//!
+//! 平台差异（issue #434）：macOS 的 WKWebView 解码 VP9-alpha WebM 时会丢弃 alpha
+//! 平面，透明区域渲染成不透明黑色且不触发 error 事件。因此 macOS 通过清单 `platforms`
+//! 覆盖块改从 `dsh-tauri-desk/dsh-pet-mov`（只保留 `config.jsonc` + `mov/`）下载
+//! HEVC-with-Alpha `.mov`，其余平台继续用上游 WebM；协议层同时接受 `mov/` 子目录与
+//! `.mov` 扩展名，`get_preset_pet_assets` 按目录存在性自动选源。
 
 use crate::config;
 use crate::desktop::pet as pet_window;
@@ -49,7 +55,7 @@ const PET_PRESET_USER_AGENT: &str =
 
 /// 清单条目（`resources/preset-pets.json` 的一个元素）。
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PresetPetSpec {
     id: String,
     name: String,
@@ -68,6 +74,59 @@ struct PresetPetSpec {
     /// 下载尺寸（MiB，用于卡片上的 `[number]mb` 标签）。
     #[serde(default)]
     size_mb: Option<f64>,
+    /// 按平台覆盖素材来源，键为 `std::env::consts::OS`（如 `macos`）。
+    /// 当前平台命中时在 `read_preset_catalog` 里并回基础条目（见 issue #434：
+    /// macOS 的 WKWebView 不认 VP9-alpha WebM，改从 HEVC-with-Alpha 仓库下载）。
+    #[serde(default)]
+    platforms: HashMap<String, PresetPetPlatformOverride>,
+}
+
+/// 平台覆盖块（`PresetPetSpec::platforms` 的一项）：只写需要改的字段，其余继承基础条目。
+///
+/// 两个结构都 `deny_unknown_fields`：清单随安装包分发，字段名写错（如 `sizeMB`）必须
+/// 立刻报 `PET_PRESET_CATALOG_INVALID`，而不是被 serde 静默忽略后沿用基础取值。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PresetPetPlatformOverride {
+    #[serde(default)]
+    desc: Option<String>,
+    /// 浏览图 URL；macOS 移植仓库只保留 `config.jsonc` + `mov/`，覆盖时可指向原仓库预览图。
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    assets: Option<String>,
+    #[serde(default)]
+    r#ref: Option<String>,
+    #[serde(default)]
+    size_mb: Option<f64>,
+}
+
+/// 并回当前平台的覆盖块（`platform` 为 `std::env::consts::OS` 的值）。
+/// 没有该平台的键时原样返回；覆盖块里没写的字段保持基础条目取值。
+fn apply_platform_override(spec: &mut PresetPetSpec, platform: &str) {
+    let Some(overrides) = spec.platforms.remove(platform) else {
+        return;
+    };
+    if let Some(value) = overrides.desc {
+        spec.desc = Some(value);
+    }
+    if let Some(value) = overrides.image {
+        spec.image = Some(value);
+    }
+    if let Some(value) = overrides.repo {
+        spec.repo = value;
+    }
+    if let Some(value) = overrides.assets {
+        spec.assets = value;
+    }
+    if let Some(value) = overrides.r#ref {
+        spec.r#ref = Some(value);
+    }
+    if let Some(value) = overrides.size_mb {
+        spec.size_mb = Some(value);
+    }
 }
 
 /// 已安装预设宠物的版本记录文件名（安装目录根下，记录安装时的 ref）。
@@ -164,6 +223,15 @@ fn read_preset_catalog(app: &AppHandle) -> Result<Vec<PresetPetSpec>, String> {
     serde_json::from_slice(&bytes).map_err(|error| {
         format!("PET_PRESET_CATALOG_INVALID: invalid preset-pets.json: {error}")
     })
+}
+
+/// 读取清单并套用当前平台的覆盖块（macOS 换 HEVC-with-Alpha 素材仓库，见 #434）。
+fn read_platform_catalog(app: &AppHandle, platform: &str) -> Result<Vec<PresetPetSpec>, String> {
+    let mut catalog = read_preset_catalog(app)?;
+    for spec in &mut catalog {
+        apply_platform_override(spec, platform);
+    }
+    Ok(catalog)
 }
 
 /// 预设宠物安装根目录：与 Chat 宠物共用 DSH 数据目录（`~/.dsh/pets` / `~/.dsh.dev/pets`）。
@@ -487,8 +555,15 @@ fn extract_preset_assets_with_progress(
         let _root = components.next(); // `<repo>-<ref>/` 根目录
         let relative = components.as_path();
         // 只接受 assets 前缀下的条目；根目录条目与仓库其它文件跳过。
-        let Ok(relative) = relative.strip_prefix(prefix_path) else {
-            continue;
+        // 空前缀（`assets: ""`）表示整个仓库就是素材（如 dsh-pet-mov 只保留
+        // `config.jsonc` + `mov/`），此时不做前缀过滤。
+        let relative = if prefix.is_empty() {
+            relative
+        } else {
+            let Ok(relative) = relative.strip_prefix(prefix_path) else {
+                continue;
+            };
+            relative
         };
         if relative.as_os_str().is_empty() {
             continue; // assets 目录本身的条目
@@ -732,7 +807,7 @@ async fn run_preset_download(app: &AppHandle, spec: PresetPetSpec, replace: bool
 /// 列出预设宠物清单（含安装状态与版本更新提示）。
 #[tauri::command]
 pub fn list_preset_pets(app: AppHandle) -> Result<Vec<PresetPetListItem>, String> {
-    let catalog = read_preset_catalog(&app)?;
+    let catalog = read_platform_catalog(&app, std::env::consts::OS)?;
     let root = preset_pets_root(&app);
     let mut items = Vec::with_capacity(catalog.len());
     let mut ids = HashSet::new();
@@ -770,7 +845,7 @@ pub fn list_preset_pets(app: AppHandle) -> Result<Vec<PresetPetListItem>, String
 #[tauri::command]
 pub fn download_preset_pet(app: AppHandle, id: String) -> Result<(), String> {
     let id = id.trim().to_string();
-    let catalog = read_preset_catalog(&app)?;
+    let catalog = read_platform_catalog(&app, std::env::consts::OS)?;
     let spec = catalog
         .into_iter()
         .find(|entry| entry.id == id)
@@ -825,7 +900,7 @@ pub fn download_preset_pet(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn update_preset_pet(app: AppHandle, id: String) -> Result<(), String> {
     let id = id.trim().to_string();
-    let catalog = read_preset_catalog(&app)?;
+    let catalog = read_platform_catalog(&app, std::env::consts::OS)?;
     let spec = catalog
         .into_iter()
         .find(|entry| entry.id == id)
@@ -948,10 +1023,13 @@ fn percent_decode_segment(value: &str) -> Result<String, String> {
         .map_err(|_| "PET_PRESET_ASSET_PATH_INVALID: asset name is not valid UTF-8".to_string())
 }
 
-/// 已安装预设宠物目录下的受控相对路径（webm/ 或 preview/ 单层子目录内）。
+/// 已安装预设宠物目录下的受控相对路径（webm/、mov/ 或 preview/ 单层子目录内）。
+///
+/// `mov/` 只出现在 macOS：WKWebView 不认 VP9-alpha WebM（alpha 平面被 parser 丢弃，
+/// 透明区域渲染成黑色且无 error 事件），改播 HEVC-with-Alpha `.mov`（issue #434）。
 fn resolve_preset_asset(app: &AppHandle, id: &str, subdir: &str, name: &str) -> Result<PathBuf, String> {
-    if !matches!(subdir, "webm" | "preview") {
-        return Err("PET_PRESET_ASSET_PATH_INVALID: subdir must be webm or preview".to_string());
+    if !matches!(subdir, "webm" | "mov" | "preview") {
+        return Err("PET_PRESET_ASSET_PATH_INVALID: subdir must be webm, mov or preview".to_string());
     }
     let root = preset_pets_root(app);
     let dir = installed_dir(&root, id);
@@ -1011,6 +1089,18 @@ fn preset_asset_path(path: &str) -> Option<(&str, &str, &str)> {
     Some((id, subdir, name))
 }
 
+/// 预设媒体扩展名 → Content-Type；同时充当扩展名白名单（None = 拒绝该资源）。
+/// `.mov` 必须是 `video/quicktime`：WKWebView 交给 AVFoundation 解码 HEVC-with-Alpha
+/// （`hvc1`）时才认得 alpha 通道。
+fn preset_asset_mime(name: &str) -> Option<&'static str> {
+    match name.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("webm") => Some("video/webm"),
+        Some("mov") => Some("video/quicktime"),
+        Some("gif") => Some("image/gif"),
+        _ => None,
+    }
+}
+
 /// 为 dsh-pet 自定义协议读取已安装预设宠物的媒体文件；调用方已在 builder 限制为 pet WebView。
 /// 与旧内置协议同一安全纪律：webview 白名单 + GET/HEAD + 路径三层解析 + canonicalize
 /// 包含性校验 + 符号链接拒绝 + 单文件大小上限 + Range 单字节区间。
@@ -1037,11 +1127,12 @@ pub fn preset_pet_asset_response(
     let Ok(relative) = safe_relative_path(&name) else {
         return protocol_error(StatusCode::FORBIDDEN, "PET_PRESET_ASSET_PATH_INVALID: asset name is not a safe relative path");
     };
-    if relative.components().count() != 1
-        || !matches!(name.rsplit_once('.').map(|(_, ext)| ext), Some("webm" | "gif"))
-    {
-        return protocol_error(StatusCode::FORBIDDEN, "PET_PRESET_ASSET_PATH_INVALID: asset must be a single webm/gif file");
+    if relative.components().count() != 1 {
+        return protocol_error(StatusCode::FORBIDDEN, "PET_PRESET_ASSET_PATH_INVALID: asset must be a single file");
     }
+    let Some(mime) = preset_asset_mime(&name) else {
+        return protocol_error(StatusCode::FORBIDDEN, "PET_PRESET_ASSET_PATH_INVALID: asset must be a single webm/mov/gif file");
+    };
     let path = match resolve_preset_asset(app, id, subdir, &name) {
         Ok(path) => path,
         Err(error) => return protocol_error(StatusCode::NOT_FOUND, &error),
@@ -1052,7 +1143,6 @@ pub fn preset_pet_asset_response(
     let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
         return protocol_error(StatusCode::NOT_FOUND, "PET_PRESET_ASSET_READ_FAILED: asset metadata unavailable");
     };
-    let mime = if name.ends_with(".webm") { "video/webm" } else { "image/gif" };
     let base = Response::builder()
         .header("Content-Type", mime)
         .header("Accept-Ranges", "bytes");
@@ -1109,8 +1199,54 @@ fn parse_single_byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
     (end >= start).then_some((start, end))
 }
 
-/// 列出已安装预设宠物的全部媒体（webm 动画 + preview 首张 gif 兜底图）。
-/// 池条目（config.jsonc 里的动画名）即 webm 文件名主名，与 dsh-pet 协议一致。
+/// 动画子目录候选：(目录名, 扩展名)，按优先级排列。
+///
+/// macOS 安装的是仓库 [dsh-tauri-desk/dsh-pet-mov] 的 HEVC-with-Alpha `mov/`，
+/// 其余平台是上游 VP9-alpha 的 `webm/`。两者文件名主名都等于 config.jsonc 的池
+/// 条目，播放层按主名取 URL，因此这里只按目录存在性选源，前端无需感知格式。
+const PRESET_ANIMATION_DIRS: [(&str, &str); 2] = [("mov", ".mov"), ("webm", ".webm")];
+
+/// 按优先级挑选动画目录，返回 主名 → 协议 URL 的映射（目录全缺/为空返回空表）。
+///
+/// 同一份 config.jsonc 的池条目对两种格式通用：命中第一个有内容的动画目录即停，
+/// 不会因为残留了另一种格式的目录而给出两套重叠 URL。
+fn collect_animation_assets(dir: &Path, id: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut assets = BTreeMap::new();
+    for (subdir, extension) in PRESET_ANIMATION_DIRS {
+        let animation_dir = dir.join(subdir);
+        if !animation_dir.is_dir() {
+            continue;
+        }
+        let mut entries = fs::read_dir(&animation_dir)
+            .map_err(|error| format!("PET_PRESET_ASSETS_READ_FAILED: failed to list {}: {error}", animation_dir.display()))?;
+        let mut files = Vec::new();
+        while let Some(entry) = entries.next() {
+            let entry = entry.map_err(|error| format!("PET_PRESET_ASSETS_READ_FAILED: {error}"))?;
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else { continue };
+            if name.ends_with(extension) {
+                files.push(name.to_string());
+            }
+        }
+        if files.is_empty() {
+            continue;
+        }
+        files.sort();
+        for file in files {
+            let stem = file.strip_suffix(extension).unwrap_or(&file).to_string();
+            let url = format!(
+                "{PRESET_ASSET_ORIGIN}/{id}/{subdir}/{}",
+                percent_encode_segment(&file)
+            );
+            assets.insert(stem, url);
+        }
+        break;
+    }
+    Ok(assets)
+}
+
+/// 列出已安装预设宠物的全部媒体（动画 + preview 首张 gif 兜底图）。
+/// 池条目（config.jsonc 里的动画名）即动画文件名主名，与 dsh-pet 协议一致。
 #[tauri::command]
 pub fn get_preset_pet_assets(app: AppHandle, id: String) -> Result<PresetPetAssets, String> {
     let id = id.trim();
@@ -1121,30 +1257,7 @@ pub fn get_preset_pet_assets(app: AppHandle, id: String) -> Result<PresetPetAsse
     if !dir.is_dir() {
         return Err(format!("PET_PRESET_NOT_INSTALLED: preset pet {id} is not installed"));
     }
-    let webm_dir = dir.join("webm");
-    let mut assets = BTreeMap::new();
-    if webm_dir.is_dir() {
-        let mut entries = fs::read_dir(&webm_dir)
-            .map_err(|error| format!("PET_PRESET_ASSETS_READ_FAILED: failed to list {}: {error}", webm_dir.display()))?;
-        let mut files = Vec::new();
-        while let Some(entry) = entries.next() {
-            let entry = entry.map_err(|error| format!("PET_PRESET_ASSETS_READ_FAILED: {error}"))?;
-            let file_name = entry.file_name();
-            let Some(name) = file_name.to_str() else { continue };
-            if name.ends_with(".webm") {
-                files.push(name.to_string());
-            }
-        }
-        files.sort();
-        for file in files {
-            let stem = file.trim_end_matches(".webm").to_string();
-            let url = format!(
-                "{PRESET_ASSET_ORIGIN}/{id}/webm/{}",
-                percent_encode_segment(&file)
-            );
-            assets.insert(stem, url);
-        }
-    }
+    let mut assets = collect_animation_assets(&dir, id)?;
     // 兜底图：preview 目录第一张 gif（按文件名排序，与 dsh-pet preview 语义一致）。
     let preview_dir = dir.join("preview");
     if preview_dir.is_dir() {
@@ -1429,6 +1542,90 @@ mod tests {
         assert_eq!(spec.r#ref, None);
         assert_eq!(spec.size_mb, Some(113.0));
         assert_eq!(spec.image, None);
+        assert!(spec.platforms.is_empty());
+    }
+
+    #[test]
+    fn platform_override_switches_only_macos_to_the_mov_repository() {
+        // 与 resources/preset-pets.json 同形状：macOS 换仓库/空前缀/尺寸，其余继承。
+        let base: PresetPetSpec = serde_json::from_str(
+            r#"{
+                "id": "maid-deepseek-whale",
+                "name": "Maid DeepSeek Whale",
+                "desc": "base",
+                "image": "https://example.com/preview.gif",
+                "repo": "https://github.com/PC2005-cloud/dsh-pet",
+                "ref": "e1ff8c1",
+                "assets": "dsh-pet/assets",
+                "sizeMb": 113,
+                "platforms": {
+                    "macos": {
+                        "repo": "https://github.com/dsh-tauri-desk/dsh-pet-mov",
+                        "ref": "be0f3bb",
+                        "assets": "",
+                        "sizeMb": 79
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        // 非 macOS：覆盖块不生效，仍用上游 webm 仓库。
+        let mut untouched = base.clone();
+        apply_platform_override(&mut untouched, "windows");
+        assert_eq!(untouched.repo, "https://github.com/PC2005-cloud/dsh-pet");
+        assert_eq!(untouched.assets, "dsh-pet/assets");
+        assert_eq!(untouched.r#ref.as_deref(), Some("e1ff8c1"));
+        assert_eq!(untouched.size_mb, Some(113.0));
+        assert_eq!(
+            tarball_urls(&untouched).unwrap()[0],
+            "https://codeload.github.com/PC2005-cloud/dsh-pet/tar.gz/e1ff8c1"
+        );
+
+        // macOS：换到只含 config.jsonc + mov/ 的仓库，assets 为空前缀（仓库根即素材）。
+        let mut macos = base;
+        apply_platform_override(&mut macos, "macos");
+        assert_eq!(macos.repo, "https://github.com/dsh-tauri-desk/dsh-pet-mov");
+        assert_eq!(macos.assets, "");
+        assert_eq!(macos.r#ref.as_deref(), Some("be0f3bb"));
+        assert_eq!(macos.size_mb, Some(79.0));
+        // 覆盖块未写的字段继续继承基础条目。
+        assert_eq!(macos.desc.as_deref(), Some("base"));
+        assert_eq!(macos.image.as_deref(), Some("https://example.com/preview.gif"));
+        assert_eq!(
+            tarball_urls(&macos).unwrap()[0],
+            "https://codeload.github.com/dsh-tauri-desk/dsh-pet-mov/tar.gz/be0f3bb"
+        );
+        // 覆盖块被消费后不再残留，避免同一 spec 二次套用。
+        assert!(macos.platforms.is_empty());
+    }
+
+    #[test]
+    fn shipped_catalog_parses_and_macos_override_is_downloadable() {
+        // 随包分发的清单是唯一事实来源：字段名/形状写错必须在这里炸，
+        // 而不是等用户点「下载」才在运行时静默沿用基础取值。
+        let bytes = fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/preset-pets.json")).unwrap();
+        let mut catalog: Vec<PresetPetSpec> = serde_json::from_slice(&bytes).unwrap();
+        assert!(!catalog.is_empty(), "预设清单不应为空");
+
+        let mov = catalog
+            .iter()
+            .find(|spec| spec.platforms.contains_key("macos"))
+            .expect("至少一个预设应提供 macOS 覆盖块");
+        let (owner, repo) = parse_repo_owner(
+            &mov.platforms["macos"].repo.clone().expect("macOS 覆盖块必须给出 repo"),
+        )
+        .unwrap();
+        assert_eq!((owner.as_str(), repo.as_str()), ("dsh-tauri-desk", "dsh-pet-mov"));
+        // dsh-pet-mov 只保留 config.jsonc 与 mov/：素材目录就是仓库根。
+        assert_eq!(mov.platforms["macos"].assets.as_deref(), Some(""));
+
+        for spec in &mut catalog {
+            // 基础条目与 macOS 覆盖都必须能构造出下载地址。
+            tarball_urls(spec).unwrap();
+            apply_platform_override(spec, "macos");
+            tarball_urls(spec).unwrap();
+        }
     }
 
     #[test]
@@ -1460,6 +1657,7 @@ mod tests {
             assets: "dsh-pet/assets".to_string(),
             r#ref: Some("f0f772e".to_string()),
             size_mb: None,
+            platforms: HashMap::new(),
         };
         let urls = tarball_urls(&spec).unwrap();
         assert_eq!(
@@ -1492,6 +1690,116 @@ mod tests {
         );
         assert!(!staging.join("README.md").exists());
         assert!(!staging.join("src/client.ts").exists());
+    }
+
+    #[test]
+    fn empty_assets_prefix_extracts_the_whole_repository_root() {
+        // dsh-pet-mov 只保留 config.jsonc + mov/，清单用空前缀把仓库根当素材目录。
+        let tarball = build_tar_gz(&[
+            ("dsh-pet-mov-be0f3bb/config.jsonc", br#"{"animations":{}}"#),
+            ("dsh-pet-mov-be0f3bb/mov/待机呼吸休闲.mov", b"mov-bytes"),
+            ("dsh-pet-mov-be0f3bb/README.md", b"readme"),
+        ]);
+        let directory = TestDirectory::new("root-prefix");
+        fs::create_dir_all(&directory.0).unwrap();
+        let tarball_path = directory.0.join("pkg.tar.gz");
+        fs::write(&tarball_path, &tarball).unwrap();
+        let staging = directory.0.join("staging");
+        extract_preset_assets(&tarball_path, &staging, "").unwrap();
+        assert!(staging.join("config.jsonc").is_file());
+        assert!(staging.join("mov/待机呼吸休闲.mov").is_file());
+        assert_eq!(fs::read(staging.join("mov/待机呼吸休闲.mov")).unwrap(), b"mov-bytes");
+        // 仓库根仍以 `<repo>-<ref>/` 第一段被剥掉，不落盘。
+        assert!(!staging.join("dsh-pet-mov-be0f3bb").exists());
+
+        // GitHub codeload 的 tar.gz 首条是 pax 全局头（typeflag 'g'，名为
+        // `pax_global_header`）：空前缀下它不能落盘成文件，也不能覆盖真实条目。
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        {
+            let mut archive = tar::Builder::new(&mut encoder);
+            archive.append_pax_extensions([("comment", &b"codeload test"[..])]).unwrap();
+            for (name, bytes) in [
+                ("dsh-pet-mov-be0f3bb/config.jsonc", &br#"{"animations":{}}"#[..]),
+                ("dsh-pet-mov-be0f3bb/mov/待机呼吸休闲.mov", b"mov-bytes"),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o100644);
+                header.set_cksum();
+                archive.append_data(&mut header, name, Cursor::new(bytes)).unwrap();
+            }
+        }
+        let with_pax = encoder.finish().unwrap();
+        let pax_tarball = directory.0.join("pax.tar.gz");
+        fs::write(&pax_tarball, &with_pax).unwrap();
+        let pax_staging = directory.0.join("pax-staging");
+        extract_preset_assets(&pax_tarball, &pax_staging, "").unwrap();
+        assert!(pax_staging.join("config.jsonc").is_file());
+        assert!(pax_staging.join("mov/待机呼吸休闲.mov").is_file());
+        assert!(!pax_staging.join("pax_global_header").exists(), "pax 全局头不得落盘");
+    }
+
+    #[test]
+    fn asset_mime_whitelists_webm_mov_and_gif_only() {
+        assert_eq!(preset_asset_mime("待机呼吸休闲.webm"), Some("video/webm"));
+        // HEVC-with-Alpha 必须是 video/quicktime，WKWebView 才交给 AVFoundation 解码 alpha。
+        assert_eq!(preset_asset_mime("待机呼吸休闲.mov"), Some("video/quicktime"));
+        assert_eq!(preset_asset_mime("daiji.gif"), Some("image/gif"));
+        for rejected in ["evil.sh", "clip.mp4", "noext", "clip.mov.exe"] {
+            assert_eq!(preset_asset_mime(rejected), None, "应拒绝 {rejected}");
+        }
+    }
+
+    #[test]
+    fn animation_assets_prefer_mov_over_webm() {
+        let directory = TestDirectory::new("anim-source");
+        let macos_pet = directory.0.join("macos-pet");
+        fs::create_dir_all(macos_pet.join("mov")).unwrap();
+        fs::write(macos_pet.join("mov/待机呼吸休闲.mov"), b"mov").unwrap();
+        fs::write(macos_pet.join("mov/东张西望.mov"), b"mov").unwrap();
+        // 目录里的非动画文件不应进入 manifest（池条目只会按主名取 URL）。
+        fs::write(macos_pet.join("mov/notes.txt"), b"skip").unwrap();
+        let assets = collect_animation_assets(&macos_pet, "macos-pet").unwrap();
+        assert_eq!(assets.len(), 2);
+        assert_eq!(
+            assets.get("待机呼吸休闲"),
+            Some(&format!(
+                "{PRESET_ASSET_ORIGIN}/macos-pet/mov/{}",
+                percent_encode_segment("待机呼吸休闲.mov")
+            ))
+        );
+
+        // 只有 webm/（非 macOS 安装）时回落 webm。
+        let other_pet = directory.0.join("other-pet");
+        fs::create_dir_all(other_pet.join("webm")).unwrap();
+        fs::write(other_pet.join("webm/待机呼吸休闲.webm"), b"webm").unwrap();
+        let assets = collect_animation_assets(&other_pet, "other-pet").unwrap();
+        assert_eq!(
+            assets.get("待机呼吸休闲"),
+            Some(&format!(
+                "{PRESET_ASSET_ORIGIN}/other-pet/webm/{}",
+                percent_encode_segment("待机呼吸休闲.webm")
+            ))
+        );
+
+        // 两种目录同时存在时以 mov/ 为准，不会产出两套重叠 URL。
+        fs::create_dir_all(other_pet.join("mov")).unwrap();
+        fs::write(other_pet.join("mov/待机呼吸休闲.mov"), b"mov").unwrap();
+        let assets = collect_animation_assets(&other_pet, "other-pet").unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(
+            assets.get("待机呼吸休闲"),
+            Some(&format!(
+                "{PRESET_ASSET_ORIGIN}/other-pet/mov/{}",
+                percent_encode_segment("待机呼吸休闲.mov")
+            ))
+        );
+
+        // 目录缺失 / 目录为空都返回空表而不报错。
+        assert!(collect_animation_assets(&directory.0.join("missing"), "missing").unwrap().is_empty());
+        let empty_pet = directory.0.join("empty-pet");
+        fs::create_dir_all(empty_pet.join("mov")).unwrap();
+        assert!(collect_animation_assets(&empty_pet, "empty-pet").unwrap().is_empty());
     }
 
     #[test]
@@ -1726,6 +2034,11 @@ mod tests {
         assert_eq!(
             preset_asset_path("/localhost/maid-deepseek-whale/preview/daiji.gif"),
             Some(("maid-deepseek-whale", "preview", "daiji.gif"))
+        );
+        // macOS 的 HEVC-with-Alpha 素材（dsh-pet-mov 的 mov/）。
+        assert_eq!(
+            preset_asset_path("/maid-deepseek-whale/mov/%E5%BE%85.mov"),
+            Some(("maid-deepseek-whale", "mov", "%E5%BE%85.mov"))
         );
         assert_eq!(preset_asset_path("/a/b/c/d"), None);
         assert_eq!(preset_asset_path("/../escape/webm/x.webm"), None);

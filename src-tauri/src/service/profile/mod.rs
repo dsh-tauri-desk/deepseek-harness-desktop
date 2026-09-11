@@ -675,7 +675,11 @@ pub fn ensure_active_profile_core_bundles(app_handle: &AppHandle) -> Result<bool
 /// （web 模板 bundles；已有文件绝不覆盖，重跑为 no-op），并补齐既有清单缺失的
 /// 核心 web bundle 层（见 [`ensure_profile_core_bundles`]）。
 fn init_profile_dir(dir: &Path, id: &str) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|e| format!("PROFILE_MKDIR: {e}"))?;
+    // 建目录 + 真实写入探测：目录已存在但属主不是当前用户时（issue #466，典型：
+    // 此前用 sudo 运行过 dsh），std 的 `create_dir_all` 会直接返回 Ok，直到后面
+    // 写清单才以裸 EACCES 失败——安全模式报的 `PROFILE_MKDIR: Permission denied`
+    // 就是这条路径。用 perm 的探测把「不可写 + 属主 + chown 命令」在最早一步给出。
+    crate::service::perm::ensure_dir_writable(dir, "PROFILE_MKDIR")?;
 
     ensure_profile_core_bundles(dir, id)?;
 

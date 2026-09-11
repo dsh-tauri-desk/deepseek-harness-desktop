@@ -347,9 +347,23 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
 
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
+    //
+    // 建目录 + 可写性预检（issue #466）：`~/.dsh` 属主不是当前用户时（典型：此前
+    // 用 sudo 运行过 dsh，macOS 的 sudo 保留 $HOME），读得到、写不了——dsh 起来后
+    // 必然崩在写 cordis.yml/settings.yaml 上，前端只能看到
+    // 「Harness exited early: exit status: 1」，完全不可行动。这里提前阻断并给出
+    // 可直接粘贴的 chown 指引。
     let dsh_home = config::get_dsh_data_path(&app_handle);
-    fs::create_dir_all(&dsh_home)
-        .map_err(|e| format!("DSH_HOME_MKDIR_FAILED: create dsh home failed: {e}"))?;
+    crate::service::perm::ensure_dir_writable(&dsh_home, "DSH_HOME_MKDIR_FAILED")?;
+    // 当前档案目录同样必须在 spawn 前可写：`$DSH_HOME` 可写不代表档案可写——属主
+    // 错位可能只落在 `profiles` 或 `profiles/<id>` 上（安全模式要新建 `profiles/safe`，
+    // 因此 `profiles` 不可写同样是致命状态）。预检不创建目录，避免抢先建出半初始化
+    // 档案（issue #452）。
+    crate::service::perm::ensure_writable_path(
+        &crate::service::plugin::profile_dir(&app_handle),
+        &dsh_home,
+        "PROFILE_NOT_WRITABLE",
+    )?;
 
     // 首装档案引导重试：desktop::setup 的引导若失败（磁盘/权限抖动），在真正
     // spawn dsh 前再补一次；幂等，已就绪时直接跳过。最佳努力：失败只告警，

@@ -340,6 +340,13 @@ fn sync_macos_fullscreen_menu(window: &tauri::Window<Wry>) {
 pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::WebviewWindow<Wry>> {
     let app_handle = app.clone();
 
+    // 启动期几何恢复窗口（issue #464）：必须在创建主窗口之前置位。恢复完成前
+    // 平台会先按 builder 默认值（1280×840）建窗并派发 Moved/Resized，这些瞬态
+    // 几何一旦落盘就会覆盖用户保存的尺寸/位置，使窗口「每次启动都要重新拉伸」。
+    // 守卫在本函数返回（几何已恢复、Windows 上窗口已 show）时释放；中途 `?`
+    // 返回也照常释放，不会把采样永久关掉。
+    let _geometry_restore = crate::config::GeometryRestoreGuard::begin();
+
     #[cfg(windows)]
     let _notification_handlers_registered = Arc::new(AtomicBool::new(false));
     #[cfg(windows)]
@@ -661,8 +668,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
+                    // 桌宠窗口没有装饰按钮，但 Alt+F4 / 系统关闭仍会走到这里：语义等同
+                    // 「收起宠物」——销毁窗口并同步瞬态可见性与会话流（issue #469）。
                     api.prevent_close();
-                    let _ = window.hide();
+                    let handle = window.app_handle().clone();
+                    if let Err(error) = crate::bridge::pet::collapse_pet(&handle) {
+                        log::warn!("[pet] PET_WINDOW_DESTROY_FAILED: {error}");
+                    }
                     return;
                 }
                 // get_store_dat_setting 内部已归一化，取值只可能是 tray 或 quit

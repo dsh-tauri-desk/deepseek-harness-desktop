@@ -50,13 +50,17 @@ goal（`10`）、queue（`20`）与工作树插件的会话横幅（`-10`）都�
 | 单文件标题 / 清单行点击打开文件 | **真功能**：在**应用内右侧边栏**打开该文件的文本预览页签（同官方 `producedChip`）。仅在具备该能力的内核上生效，见下 |
 | `＋` 图标块（文件） | **占位**（无点击处理，`data-placeholder` 标注） |
 | 单文件 / 多文件标题 hover 的「查看更改 ↗」 | **暂时整体停用**（源码 `TODO(view-changes-hover)` 保留实现；恢复时单文件与多文件的 `__head` 都要生效） |
-| `审核` | **暂时整体隐藏**（源码 `TODO(review-action)` 保留按钮实现） |
+| `审核` | **真功能（仅新核心）**：在应用内右侧边栏打开**文件树**（会话工作区根目录）。旧核心**不显示该按钮**，见下 |
 
 - 单文件：标题即文件名、不渲染清单；多文件：标题是文件数、副行是总计（绿 `+N` / 红 `-M`）。
-- **打开文件按内核能力分流**：新核心（`0.1.5-rc.1`，有应用内右侧边栏）→ 点标题 / 清单行
-  在侧边栏打开预览页签；旧核心（`0.1.2-rc.1`，`openFile` 会把路径交给宿主/系统打开）→
-  **完全静默**：标题与清单行渲染成不可点的普通元素，不调用 `openFile`（不给假交互）。
-  判定不看版本号，只看有没有 `sidebarRight` 服务（见 client/capabilities）。
+- **打开文件与审核都按内核能力分流**（判定不看版本号，只看服务在不在，见 client/capabilities）：
+  - **打开文件**：新核心（`0.1.5-rc.1`，有应用内右侧边栏）→ 点标题 / 清单行在侧边栏打开
+    文本预览页签；旧核心（`0.1.2-rc.1`，`openFile` 会把路径交给宿主/系统打开）→ **完全静默**：
+    标题与清单行渲染成不可点的普通元素，不调用 `openFile`（不给假交互）。
+  - **审核**：新核心 → 按钮可见，点击经 `ctx.sidebarRight.openTab('files')` 打开右侧边栏的
+    文件树页；旧核心没有 `sidebarRightTabs` 注册表 → **按钮根本不渲染**。判据取「注册表里
+    有没有 `files` 页类型」而不是「有没有 `sidebarRight`」：类型没注册时 `openTab('files')`
+    会抛 `no tab type is registered`，那种按钮就是「点了没反应」的假交互。
 - 本轮**只开放功能，没有新增任何 hover 样式**；清单行原有的 hover 背景高亮是上一轮视觉对齐时就有的。
 - 文件清单最多三行，其余折叠；本轮删除（D）的文件整行弱化。
 - **已撤销的 turn**：只剩「已撤销」徽标与文件名/清单行，不再有撤销按钮与审核。
@@ -74,13 +78,11 @@ goal（`10`）、queue（`20`）与工作树插件的会话横幅（`-10`）都�
 - **不在撤销范围内**的文件会如实标注（不静默漏掉）：超大文件未纳入快照、嵌套 Git 仓库被跳过时，
   卡片下方给出中性提示行（鼠标悬停可看具体路径）。
 - 快照被回收（超出保留范围 / 快照仓因超限被重建）→ 该轮显示「已过期」原因，撤销按钮禁用。
-- 工作区不是 Git 仓库 → 点「撤销」弹出说明弹窗：
-
-```text
-撤销需要使用 Git 代码仓库
-此操作仅在 Git 代码仓库中运行时有效。
-[ 关闭 ]
-```
+- **工作区不是 Git 仓库 → 整张卡片都不出现**（需求：这类工作区里撤销本就不适用，却在每一轮
+  结尾都弹一张「该工作区不是 Git 代码仓库」，用户什么都没改也会看到，纯属噪音）。
+  只有「这里本来就没有仓库」（`TURNREWIND_GIT_REQUIRED` / 无原因）保持沉默；
+  **可操作的诊断**仍如实呈现：没找到 git 可执行文件（`TURNREWIND_GIT_UNAVAILABLE`）、
+  家目录 / 盘根等危险路径（`TURNREWIND_UNSAFE_WORKSPACE`）照旧显示原因。
 
 ## 快照与撤销语义
 
@@ -189,21 +191,27 @@ ModuleLoader 的 factory 里运行，模块表只认识当前内核实际装载�
 owner 份额里读到 `running: false` 时既提前停轮询、也立刻整条隐藏（字段缺失按「可能在跑」处理），
 因此内核调整会话快照字段也不会让提示条失效。会话结束后只剩 turn 尾部的变更卡片。
 
-### 「打开文件」的内核差异（本轮新增的唯一一处行为分流）
+### 内核差异：功能按能力分流，不做版本嗅探
 
-`conversation.chat.turnTail` 的 owner props 在**两个内核上都**带 `openFile`，但语义不同：
+**打开文件**：`conversation.chat.turnTail` 的 owner props 在**两个内核上都**带 `openFile`，但语义不同：
 
 | 内核 | `openFile(path)` 实际做的事 | 本插件的行为 |
 |---|---|---|
 | `0.1.5-rc.1` | `ctx.sidebarRight.openResource(fileAddress(sessionId, cwd, path))` —— 应用内右侧边栏文本预览页签 | **调用它**（同官方 `producedChip`） |
 | `0.1.2-rc.1` | `ctx.remote.session.openWorkspacePath({ path })` —— 交给宿主/系统打开该路径 | **不调用**（静默，渲染成不可点元素） |
 
-判据因此不是「有没有 `openFile`」，也不是版本号，而是**有没有 `sidebarRight` 服务**
-（新内核由 `dsh-client-ui-sidebar-right` 经 `ctx.reflect.provide('sidebarRight', …)` 发布；
-旧内核连这个包都没有）。探测在**点击那一刻**做——`sidebarRight` 由另一个客户端插件发布，
-apply 顺序不保证它已就位；探测方式是 `ctx.reflect.get('sidebarRight')`（cordis 的 reflect
-直接查注册表，不受 inject 守卫限制），因此本插件**不把 `sidebarRight` 写进 `inject`**：
-声明式依赖会让旧内核上的插件加载直接失败。内核再漂移也只是退化成「不可点」，不会误开系统程序。
+**审核**：新内核由 `dsh-client-ui-sidebar-files` 把「文件树」注册为 kind `files` 的页类型
+（官方 guide 的 Files 入口用的就是它），点击经 `ctx.sidebarRight.openTab('files')` 在应用内
+右侧边栏打开；旧内核连 `dsh-client-ui-sidebar-right` 这个包都没有 → 按钮不渲染。
+
+判据因此不是「有没有 `openFile`」，也不是版本号，而是**服务是否存在**：
+打开文件看 `ctx.reflect.get('sidebarRight')`，审核看
+`ctx.reflect.get('sidebarRightTabs').get('files')`（新内核由 `dsh-client-ui-sidebar-right` 在
+同一个 effect 里 `ctx.reflect.provide('sidebarRight' | 'sidebarRightTabs', …)`；旧内核这两项都不存在）。
+探测在**渲染 / 点击那一刻**做——这些服务由另一个客户端插件发布，apply 顺序不保证它们已就位；
+探测方式是 cordis 的 reflect 直接查注册表（不受 inject 守卫限制），因此本插件**不把
+`sidebarRight` / `sidebarRightTabs` 写进 `inject`**：声明式依赖会让旧内核上的插件加载直接失败。
+内核再漂移也只是退化成「不可点 / 没有按钮」，不会误开系统程序，也不会渲染必然失败的按钮。
 
 ## 开发
 
@@ -226,6 +234,7 @@ before 快照抛异常时仍留审计行；结算中途抛错时保留条目、�
 容量治理（prune 只清不可达对象、超限整仓重建 + 代数轮换、排除清单复检、不碰用户仓库）、
 工作区队列（FIFO 不重叠 / 跨工作区不阻塞 / 队尾出队）、
 账本原子写与保留淘汰、卡片状态机与计数/文件名/原因码/重试退避纯函数、
-**打开文件的内核能力判据**（无 `sidebarRight` 时绝不调用 `openFile`；同步抛错 / rejected
-promise 都静默；disposer 清理）、
+**非 Git 卡片判定**（`GIT_REQUIRED` / 无原因 → 整卡不出现；git 缺失 / 危险路径仍如实呈现）、
+**打开文件与审核的内核能力判据**（无 `sidebarRight` 时绝不调用 `openFile`；注册表里没有
+`files` 页类型时不渲染审核按钮；同步抛错 / rejected promise 都静默；disposer 清理）、
 卡片与提示条的 css-render 形态（hover 换行、配色、几何、提示行分级、按钮基座且无新增 hover）。

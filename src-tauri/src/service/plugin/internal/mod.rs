@@ -245,6 +245,20 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    // 写入前可写性预检（issue #466）：档案目录属主不是当前用户时（典型：此前用
+    // sudo 运行过 dsh，macOS 的 sudo 保留 $HOME）**读得到、写不了**——清单能读，
+    // 但 .npmrc、cordis.yml、链接、依赖全部 EACCES。必须在任何写入与 pnpm 之前
+    // 给出可执行诊断（失败路径 + 属主 + chown 命令），否则用户只会看到 pnpm/写盘的
+    // 裸 os error 13，或一路走到 spawn 之后 dsh 才崩在 cordis.yml 上（只剩
+    // "exited early"）。放在 repair_loader_state 之前：它同样会写档案清单/patch/根
+    // 配置，权限错位时最先失败的就是那里。预检不创建目录：建档案留给
+    // dsh/init_profile_dir 自己的初始化逻辑（issue #452）。
+    crate::service::perm::ensure_writable_path(
+        &profile_dir(app_handle),
+        &config::get_dsh_data_path(app_handle),
+        "PROFILE_NOT_WRITABLE",
+    )?;
+
     repair_loader_state(app_handle)?;
     receive_current_or_next_flight(|| subscribe_or_start(app_handle, &internal)).await
 }
@@ -608,7 +622,13 @@ async fn ensure_inner(
     }
     // 无论本轮是否需要重装，都清理旧版 dsh 生成的 profile-local fallback。
     // 否则本轮 no-op 后，用户稍后从市场安装插件仍会把同一批 junction 交给 pnpm。
-    remove_legacy_profile_module_fallback(&profile)?;
+    //
+    // best-effort（issue #466）：这只是旧目录的 housekeeping，失败绝不能中止本轮
+    // 的插件核对/重装——该目录属主是 root（不可删除）时，用户看到的会是
+    // 「Plugin installation 阶段失败：INTERNAL_PLUGIN_FALLBACK_REMOVE_FAILED」，
+    // 把「档案目录权限不可写」这个真正要修的问题掩盖掉。与孤儿卸载「任何失败
+    // 只记告警」的约定一致；安装失败分支同样忽略该错误。
+    remove_legacy_profile_module_fallback_best_effort(&profile);
     if need.is_empty() {
         return Ok(());
     }
@@ -667,11 +687,19 @@ async fn ensure_inner(
     let install_result = install_internal(app_handle, &ids, cancel, owner).await;
     if let Err(e) = install_result {
         // 即使 pnpm 失败也清掉旧 fallback，下一次重试必须从干净入口开始。
-        let _ = remove_legacy_profile_module_fallback(&profile);
+        remove_legacy_profile_module_fallback_best_effort(&profile);
         return Err(format!("INTERNAL_PLUGIN_INSTALL_FAILED: {e}"));
     }
 
     Ok(())
+}
+
+/// best-effort 包装：旧版 profile-local fallback 清理失败只记告警，绝不阻断本轮的
+/// 插件核对与重装（issue #466）。返回 `Err` 的原函数保留完整错误细节供日志定位。
+fn remove_legacy_profile_module_fallback_best_effort(profile: &Path) {
+    if let Err(e) = remove_legacy_profile_module_fallback(profile) {
+        log::warn!("INTERNAL_PLUGIN_FALLBACK_CLEANUP_FAILED: {e}");
+    }
 }
 
 /// 清理旧版 profile-local fallback，避免 pnpm 管理跨目录 junction。
@@ -910,5 +938,45 @@ mod tests {
         let outcome = receive_flight_result(&mut result).await.unwrap();
         assert_eq!(outcome, Err(reason));
         assert_eq!(coordinator.next_id, 1);
+    }
+
+    /// issue #466：旧版 profile-local fallback 目录不可删（典型：属主是 root）时，
+    /// 清理失败只能告警，绝不阻断本轮的插件核对/重装——否则用户看到的是这条
+    /// housekeeping 错误，而真正要修的是档案目录权限。
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_fallback_cleanup_is_best_effort() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let profile =
+            std::env::temp_dir().join(format!("dsh-fallback-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        // 目录结构：profile/.dsh-module-fallback/node_modules/<entry>
+        let nested = profile.join(".dsh-module-fallback").join("node_modules");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("anymatch"), b"").unwrap();
+
+        // 去掉 node_modules 的写权限：递归删除其内部条目时 EACCES
+        let mut locked = std::fs::metadata(&nested).unwrap().permissions();
+        locked.set_mode(0o555);
+        std::fs::set_permissions(&nested, locked).unwrap();
+
+        // 以 root 身份运行时权限位不生效（清理会成功，`nested` 已被删除），此时跳过
+        // 错误断言，且恢复权限前必须先确认目录还在
+        if let Err(error) = remove_legacy_profile_module_fallback(&profile) {
+            assert!(
+                error.starts_with("INTERNAL_PLUGIN_FALLBACK_REMOVE_FAILED"),
+                "{error}"
+            );
+        }
+        // best-effort 包装：无论底层成功与否都不得返回错误或 panic
+        remove_legacy_profile_module_fallback_best_effort(&profile);
+
+        if let Ok(metadata) = std::fs::metadata(&nested) {
+            let mut open = metadata.permissions();
+            open.set_mode(0o755);
+            let _ = std::fs::set_permissions(&nested, open);
+        }
+        let _ = std::fs::remove_dir_all(&profile);
     }
 }

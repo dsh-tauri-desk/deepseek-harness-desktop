@@ -1,5 +1,5 @@
-import { cssr } from '../cssr'
 import { styles as sharedStyles } from '../theme'
+import { cssr } from '../utils/cssr'
 
 const { c, bem: { b, m } } = cssr
 const { primary, hover } = sharedStyles

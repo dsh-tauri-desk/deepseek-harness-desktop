@@ -46,7 +46,7 @@ import {
   settingsStore,
   useSettingsUi,
 } from '../store'
-import { useMountStyle } from '../style'
+import { useMountStyle } from '../utils/style'
 import { Icon } from './icon'
 import { ArrowLeft } from './icons'
 import { SettingsNavIcon } from './nav-icon'

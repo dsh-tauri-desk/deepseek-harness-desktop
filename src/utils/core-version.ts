@@ -4,7 +4,7 @@ import semver from 'semver'
  * 核心(dsh)版本判断：以 rc.2 为硬编码基准，高于该基准的版本引入破坏性更改、
  * 可能影响第三方插件。该判断与「推荐版本」逻辑无关，仅作为用户提示的阈值。
  */
-export const CORE_BREAKING_BASELINE = '0.1.1-rc.2'
+export const CORE_BREAKING_BASELINE = '0.1.2-rc.1'
 
 /**
  * Semver comparison using the `semver` package.

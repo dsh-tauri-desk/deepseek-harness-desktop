@@ -73,8 +73,15 @@ describe('resolveCardState', () => {
     expect(resolveCardState(summary(), 0)).toEqual({ kind: 'hidden' })
   })
 
-  it('asks for a Git repository when the workspace is not one', () => {
-    expect(resolveCardState(summary({ isGit: false, unavailableReason: 'TURNREWIND_GIT_REQUIRED' }), 1)).toEqual({ kind: 'git-required' })
+  it('非 Git 仓库：整张卡片都不出现（GIT_REQUIRED / 无原因都保持沉默）', () => {
+    // 用户实际报告：非 Git 工作区里每一轮结尾都弹「该工作区不是 Git 代码仓库」。
+    expect(resolveCardState(summary({ isGit: false, unavailableReason: 'TURNREWIND_GIT_REQUIRED' }), 1)).toEqual({ kind: 'hidden' })
+    expect(resolveCardState(summary({ isGit: false, unavailableReason: null }), 1)).toEqual({ kind: 'hidden' })
+  })
+
+  it('非 Git 但属于「可操作的诊断」时仍如实呈现（git 缺失 / 危险路径）', () => {
+    expect(resolveCardState(summary({ isGit: false, unavailableReason: 'TURNREWIND_GIT_UNAVAILABLE' }), 1))
+      .toEqual({ kind: 'unavailable', reason: 'TURNREWIND_GIT_UNAVAILABLE' })
     expect(resolveCardState(summary({ isGit: false, unavailableReason: 'TURNREWIND_UNSAFE_WORKSPACE' }), 1))
       .toEqual({ kind: 'unavailable', reason: 'TURNREWIND_UNSAFE_WORKSPACE' })
   })

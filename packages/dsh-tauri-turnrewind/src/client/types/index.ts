@@ -95,7 +95,6 @@ export type TurnCardState
   = | { kind: 'hidden' }
     | { kind: 'ready', record: TurnSummary }
     | { kind: 'undone', record: TurnSummary }
-    | { kind: 'git-required' }
     | { kind: 'unavailable', reason: string | null }
     | { kind: 'failed', reason: string }
 
@@ -142,13 +141,9 @@ export type LocaleKey
     | 'runningChanged'
     | 'binary'
     | 'unavailableTitle'
-    | 'unavailableGitDesc'
     | 'unavailableReason'
     | 'undoFailed'
     | 'conflictTitle'
-    | 'gitRequiredTitle'
-    | 'gitRequiredDesc'
-    | 'close'
     | 'expiredReason'
     | 'gitUnavailableReason'
     | 'turnActiveReason'

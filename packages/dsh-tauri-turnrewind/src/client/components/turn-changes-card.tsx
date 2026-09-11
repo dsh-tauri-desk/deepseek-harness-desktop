@@ -10,13 +10,11 @@ import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, Icon, SquarePlus, useMountSt
  * 交互边界（需求明确）：
  *   - **真功能**：「撤销」、「再显示 N 个文件 / 收起文件」、**点击文件打开**；
  *   - **占位**：`📝 文件`（图标块）无点击处理（`data-placeholder` 标注）；
- *     「审核」整体隐藏（`TODO(review-action)`）；
- *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`，本次开放打开功能**未**附带 hover 视觉）。
+ *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`；开放打开功能**未**附带 hover 视觉）。
  *
  * 「点击文件打开」按内核能力分流：新核心经 owner props 的 `openFile` 在应用内右侧边栏
- * 打开预览页签；旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里
- * **静默**，因此只在探测到右侧边栏能力时才把标题 / 清单行渲染成可点元素
- * （见 client/capabilities/index.ts 与 client/utils/open-file.ts）。
+ * 打开文本预览页签；旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里
+ * **静默**（判据与理由见 client/capabilities/index.ts 与 client/utils/open-file.ts）。
  *
  * 单文件与多文件的差异：单文件时标题就是文件名、不渲染清单，
  * hover 时副行的计数换成「查看更改 ↗」（当前停用）；多文件时标题是文件数、
@@ -38,7 +36,6 @@ import countsStyle from '../styles/counts.cssr'
 import { cardTitle, fileListWindow, formatCounts, formatTotals, hasTurnRecord, reasonKey, resolveCardState, summaryRetryDelayMs } from '../utils/format'
 import { fileOpenHandler } from '../utils/open-file'
 import { ChangeCounts } from './change-counts'
-import { GitRequiredDialog } from './git-required-dialog'
 import cardStyle from './turn-changes-card.cssr'
 
 export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | null {
@@ -52,7 +49,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   // 用 turn 作为天然的复位键（也避开 set-state-in-effect 的多余渲染）。
   const [expandedTurn, setExpandedTurn] = useState<number | undefined>(undefined)
   const expanded = expandedTurn !== undefined && expandedTurn === turn
-  const [dialogOpen, setDialogOpen] = useState(false)
 
   useEffect(() => {
     void ensureSummary(sessionId)
@@ -97,7 +93,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
     : { visible: [], hiddenCount: 0 }
   const undone = card.kind === 'undone'
   const blocked = card.kind === 'failed' || card.kind === 'unavailable'
-  const gitRequired = card.kind === 'git-required'
 
   const title = record !== null
     ? cardTitle(record, name => text('editedOne', { name }), count => text('editedMany', { count }))
@@ -117,10 +112,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const skippedNestedRepos = record?.skippedNestedRepos ?? []
 
   const onUndo = (): void => {
-    if (gitRequired) {
-      setDialogOpen(true)
-      return
-    }
     if (blocked || state.undoing || turn === undefined)
       return
     void requestUndo(sessionId, turn)
@@ -236,7 +227,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
                   )
                 : (
                     <span className="dshp-turnrewind__hint-text">
-                      {gitRequired ? text('unavailableGitDesc') : explain(unavailableReason)}
+                      {explain(unavailableReason)}
                     </span>
                   )}
             </span>
@@ -257,13 +248,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
                   <Icon as={ArrowUturnCcwLeft} size={14} />
                 </button>
               )}
-          {/*
-            TODO(review-action): 「审核」占位按钮暂时整体隐藏（需求方要求），
-            重新启用时注意：已撤销的 turn 不应再显示它（那时已无变更可审）。
-            <button type="button" className="dshp-turnrewind__review" data-placeholder="review" title={text('review')}>
-              {text('review')}
-            </button>
-          */}
         </div>
 
         {window.visible.length > 0 && (
@@ -312,7 +296,6 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
           </div>
         )}
       </div>
-      <GitRequiredDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
     </div>
   )
 }

@@ -47,9 +47,8 @@ export const TURNREWIND_RUNNING_CHIP_ORDER = -30
 /** 运行中提示条的客户端轮询间隔；宿主端另有 1.5s 的 git 刷新节奏。 */
 export const TURNREWIND_LIVE_POLL_INTERVAL_MS = 1200
 
-/** 卡片、弹窗、提示条与共享计数的 css-render style id。 */
+/** 卡片、提示条与共享计数的 css-render style id。 */
 export const TURNREWIND_CARD_STYLE_ID = `${TURNREWIND_PLUGIN_NAME}/TurnChangesCard.module.css`
-export const TURNREWIND_DIALOG_STYLE_ID = `${TURNREWIND_PLUGIN_NAME}/GitRequiredDialog.module.css`
 export const TURNREWIND_CHIP_STYLE_ID = `${TURNREWIND_PLUGIN_NAME}/RunningChangesChip.module.css`
 export const TURNREWIND_COUNTS_STYLE_ID = `${TURNREWIND_PLUGIN_NAME}/ChangeCounts.module.css`
 

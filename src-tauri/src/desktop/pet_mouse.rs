@@ -56,10 +56,16 @@ const MACOS_MOUSE_EVENTS: &[core_graphics::event::CGEventType] = &[
     core_graphics::event::CGEventType::OtherMouseDragged,
 ];
 
-/// 全局鼠标流的进程级状态（幂等启动标记）。
+/// 全局鼠标流的进程级状态：幂等启动标记 + 当前事件的接收窗口。
+///
+/// 接收窗口必须是**可变**的：收起桌宠会销毁窗口（issue #469），重新显示时创建的是
+/// 新窗口（旧 handle 已失效，向它 emit 不会有任何效果）。若把 `start_pet_mouse_stream`
+/// 收到的窗口句柄直接搬进节流线程，重建后的桌宠就再也收不到鼠标位置，穿透永远无法
+/// 按命中区恢复——宠物会整窗吞掉输入。这里改由前端每次挂载时刷新共享句柄。
 #[derive(Default)]
 pub struct PetMouseStreamState {
     started: Arc<AtomicBool>,
+    emitter: Arc<Mutex<Option<WebviewWindow>>>,
 }
 
 /// 物理像素的光标位置（CGEvent 坐标为虚拟屏幕全局坐标，副屏可含负值）。
@@ -69,9 +75,13 @@ struct MouseCursorPos {
     y: f64,
 }
 
-/// 启动全局鼠标位置流（幂等：已启动时直接返回）。
+/// 启动全局鼠标位置流（幂等：已启动时只刷新接收窗口，不重复起线程）。
+///
+/// 命令参数带 `WebviewWindow`，Tauri 保证在主线程执行；`bind_pet_mouse_emitter`
+/// 只做一次短临界区的句柄替换，不阻塞事件循环。
 #[tauri::command]
 pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseStreamState>) {
+    bind_pet_mouse_emitter(&state.emitter, window.clone());
     if state.started.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -88,8 +98,9 @@ pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseSt
         }
     });
 
-    // 节流线程：16ms 轮询最新坐标，变化才 emit（鼠标静止零事件）。
-    let emitter = window.clone();
+    // 节流线程：16ms 轮询最新坐标，变化才 emit（鼠标静止零事件）；每轮重新读取
+    // 接收窗口，保证窗口重建后事件仍然投递到桌宠。
+    let emitter = state.emitter.clone();
     thread::spawn(move || {
         let mut last_sent: Option<MouseCursorPos> = None;
         loop {
@@ -97,12 +108,24 @@ pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseSt
             if let Some(pos) = current {
                 if last_sent != Some(pos) {
                     last_sent = Some(pos);
-                    let _ = emitter.emit(PET_MOUSE_MOVE_EVENT, pos);
+                    let target = emitter
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone();
+                    if let Some(target) = target {
+                        let _ = target.emit(PET_MOUSE_MOVE_EVENT, pos);
+                    }
                 }
             }
             thread::sleep(THROTTLE_INTERVAL);
         }
     });
+}
+
+/// 把鼠标事件接收窗口指向最新挂载的桌宠窗口（窗口重建后必须调用）。
+fn bind_pet_mouse_emitter(slot: &Arc<Mutex<Option<WebviewWindow>>>, window: WebviewWindow) {
+    let mut current = slot.lock().unwrap_or_else(|error| error.into_inner());
+    *current = Some(window);
 }
 
 /// 平台分发：macOS 走 CGEventTap，其它平台走 rdev。

@@ -280,8 +280,12 @@ pub fn move_pet_window<R: Runtime>(
 
 /// 确保桌宠窗口存在并恢复位置。
 ///
-/// 幂等：已注册时直接复用返回；首次调用时创建 `pet` 窗口并恢复上一次保存的
-/// 位置（无记录则默认定位在主屏右下角略偏上，避免遮挡主工作区）。
+/// 幂等：已注册时直接复用返回；不存在（首次启用，或上次收起时已被销毁）时
+/// 创建 `pet` 窗口并恢复上一次保存的位置（无记录则默认定位在主屏右下角略偏上，
+/// 避免遮挡主工作区）。
+///
+/// **只能在非主线程调用**：内部经 `WebviewWindowBuilder::build()` 创建窗口，
+/// 主线程调用会与事件循环回包互相等待而死锁（见 [`set_pet_window_visible`]）。
 pub fn ensure_pet_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
         return Ok(window);
@@ -387,13 +391,30 @@ fn place_pet_at_default<R: Runtime>(window: &WebviewWindow<R>) {
     let _ = window.set_position(tauri::Position::Physical(PhysicalPosition::new(x, y)));
 }
 
-/// 显示或隐藏桌宠窗口；隐藏时保留窗口实例，显示时不抢占用户焦点。
+/// 显示或关闭桌宠窗口。
+///
+/// # 隐藏 = 销毁窗口实例（issue #469）
+///
+/// 这里**不做 hide**：隐藏只是把窗口从屏幕上撤下，WebView 进程与页面都还在，桌宠的
+/// 双 `<video>` 会继续解码播放——Chromium/WebView2 对「播放中（未暂停）的 video」
+/// 无条件持有 Video Wake Lock，屏幕因此永远无法息屏，还白占 CPU（用户报告：收起宠物
+/// 后仍无法黑屏）。销毁窗口才是真正「收起」：webview 进程随窗口一起消失，视频暂停、
+/// 唤醒锁释放、CPU 归零。代价是重新显示要重建 webview（页面前端挂载时用
+/// `get_pet_status` 拉取状态，不依赖创建时的事件投递）。
+///
+/// # 为什么 show 分支会创建窗口、而 destroy 分支不会死锁
+///
+/// `tauri-runtime-wry` 的 `RuntimeHandle::create_window` 经 channel 等待主线程事件循环
+/// 回包，**主线程调用必然死锁**（tauri-runtime-wry 2.11.4 lib.rs:2757 注释）。因此窗口
+/// 创建只允许发生在非主线程：调用方 `set_pet_enabled` / `show_pet` 都是 `AppHandle`
+/// 命令（Tauri 在异步运行时执行）；`hide_pet` 与窗口自己的关闭事件则只走 destroy，
+/// 而 `destroy()` 是 `proxy.send_event(Message::Destroy)` 的**非阻塞**投递，任何线程都安全。
 pub fn set_pet_window_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result<(), String> {
     if !visible {
         if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
             window
-                .hide()
-                .map_err(|error| format!("PET_WINDOW_HIDE_FAILED: {error}"))?;
+                .destroy()
+                .map_err(|error| format!("PET_WINDOW_DESTROY_FAILED: {error}"))?;
         }
         return Ok(());
     }
@@ -405,18 +426,19 @@ pub fn set_pet_window_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) -> 
     Ok(())
 }
 
-/// 在 setup 阶段预创建两个隐藏窗口，再沿用永久启用设置显示它们。
-/// 这样设置页同步 command 只会 show/hide 已存在窗口，不会在 command handler
-/// 内调用 WebviewWindowBuilder，避免 Tauri/Windows 的消息循环死锁。
+/// setup 阶段按「是否永久启用」决定桌宠窗口的初始状态。
+///
+/// 启用才创建并显示；未启用**不创建**：窗口是「显示宠物」的唯一目的，没人看时连
+/// webview 都不该存在（隐藏窗口同样会加载 pet.html、播放动画）。窗口此后由
+/// [`set_pet_window_visible`] 按需创建/销毁。
 pub fn init_pet_window<R: Runtime>(app: &AppHandle<R>) {
-    let enabled = crate::config::get_store_dat_setting(app).pet_enabled;
-    let pet = ensure_pet_window(app);
-    if let Ok(pet) = pet {
-        if enabled {
-            let _ = pet.show();
-        }
-    } else {
-        log::error!("PET_WINDOW_INIT_FAILED: failed to pre-create pet windows");
+    if !crate::config::get_store_dat_setting(app).pet_enabled {
+        // 全新安装默认不启用桌宠：不预创建窗口（也顺带不触发 Linux 未 realize
+        // 窗口的穿透请求路径）。
+        return;
+    }
+    if let Err(error) = set_pet_window_visible(app, true) {
+        log::error!("PET_WINDOW_INIT_FAILED: failed to create pet window: {error}");
     }
 }
 
@@ -424,7 +446,8 @@ pub fn init_pet_window<R: Runtime>(app: &AppHandle<R>) {
 ///
 /// 桌宠窗口按 `activePet` 只拉取一次协议资源（config + webm manifest），
 /// 更新换入新文件后 URL 不变，WebView 可能继续命中缓存里的旧 webm；
-/// 显式 reload 让新资源立即生效。窗口隐藏时 reload 同样安全（页面本身常驻）。
+/// 显式 reload 让新资源立即生效。窗口已被收起（销毁）时无需 reload——下次显示
+/// 会重新创建 webview，天然加载新资源。
 pub fn reload_pet_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
         let _ = window.eval("location.reload()");

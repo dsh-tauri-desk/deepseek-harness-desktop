@@ -661,8 +661,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
+                    // 桌宠窗口没有装饰按钮，但 Alt+F4 / 系统关闭仍会走到这里：语义等同
+                    // 「收起宠物」——销毁窗口并同步瞬态可见性与会话流（issue #469）。
                     api.prevent_close();
-                    let _ = window.hide();
+                    let handle = window.app_handle().clone();
+                    if let Err(error) = crate::bridge::pet::collapse_pet(&handle) {
+                        log::warn!("[pet] PET_WINDOW_DESTROY_FAILED: {error}");
+                    }
                     return;
                 }
                 // get_store_dat_setting 内部已归一化，取值只可能是 tray 或 quit

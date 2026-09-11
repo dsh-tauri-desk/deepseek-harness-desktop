@@ -19,6 +19,8 @@ export default defineConfig({
       'test/toast.test.ts',
       // issue #469：桌面端不得持有屏幕唤醒锁（桌宠 <video> 会间接加锁，导致无法息屏）。
       'test/disable-wake-lock.test.ts',
+      // issue #469：收起桌宠必须是销毁窗口（隐藏窗口里的视频仍在播放并持锁）。
+      'test/pet-window-lifecycle.test.ts',
     ],
     maxWorkers: 4,
     testTimeout: 30_000,

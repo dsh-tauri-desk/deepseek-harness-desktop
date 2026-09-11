@@ -4,11 +4,12 @@
  * 协议能力见 PROTOCOL.md。机制（全部在宿主，单一权威）：
  *   - 服务经 ctx.reflect.provide('panel.protocol', api) 暴露（cordis
  *     ReflectService，官方 runtime 同款用法 ctx.reflect.provide("sessions", this)）；
- *   - renderPanelContent：conversation 槽（single/session-maybe，layout 声明、
- *     官方 ui-conversation priority 0 是唯一注册者）以 priority -1 **动态注册**
- *     → 整个右侧会话区被替换（CenterColumn 内、零定位层）；官方条目被
- *     shadow 但仍 live（children/locale 有效）。再调（同 id）→ dispose 句柄
- *     → 官方恢复（toggle 语义）。
+ *   - renderPanelContent：会话区槽以 priority -1 **动态注册** shadow 官方条目
+ *     → 整个右侧会话区被替换（CenterColumn 内、零定位层）；官方条目被 shadow
+ *     但仍 live（children/locale 有效）。再调（同 id）→ dispose 句柄 → 官方恢复
+ *     （toggle 语义）。槽位形状随核心版本（见 PANEL_VIEW_SEAT_TARGETS）：
+ *     ≤0.1.2-rc.1 的 `conversation` 单槽 / ≥0.1.5-rc.1 的 `main` keyed 槽
+ *     （cell key `conversation`）。
  *   - 不能常驻注册 + SlotOutlet 透传：SlotOutlet 对 single 槽只渲染 live 条目，
  *     自己 live 后渲染官方条目 = 自递归（无公开 API 渲染被 shadow 条目）。
  */

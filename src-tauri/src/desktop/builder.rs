@@ -340,6 +340,13 @@ fn sync_macos_fullscreen_menu(window: &tauri::Window<Wry>) {
 pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::WebviewWindow<Wry>> {
     let app_handle = app.clone();
 
+    // 启动期几何恢复窗口（issue #464）：必须在创建主窗口之前置位。恢复完成前
+    // 平台会先按 builder 默认值（1280×840）建窗并派发 Moved/Resized，这些瞬态
+    // 几何一旦落盘就会覆盖用户保存的尺寸/位置，使窗口「每次启动都要重新拉伸」。
+    // 守卫在本函数返回（几何已恢复、Windows 上窗口已 show）时释放；中途 `?`
+    // 返回也照常释放，不会把采样永久关掉。
+    let _geometry_restore = crate::config::GeometryRestoreGuard::begin();
+
     #[cfg(windows)]
     let _notification_handlers_registered = Arc::new(AtomicBool::new(false));
     #[cfg(windows)]

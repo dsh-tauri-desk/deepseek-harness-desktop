@@ -170,7 +170,7 @@
 
 > 测试项：安装与首次启动（ITEM 01）
 > 风险：高
-> 覆盖：GitHub 不可达；下载/校验/解压失败；镜像兜底失败；可信 SHA-256 摘要缺失的安全中止；提示与重试
+> 覆盖：GitHub 不可达；下载/校验/解压失败；镜像兜底失败；可信 SHA-256 摘要缺失的安全中止；提示与重试；`$DSH_HOME`/档案目录不可写（属主非当前用户）的权限诊断
 
 ## [P1] 验证 GitHub 不可达时保留本地已装内核继续使用
 [测试类型] 可靠性
@@ -201,6 +201,12 @@
 [前置条件] 全新安装；首次网络受限导致失败（状态未 installed、无残留安装）；之后恢复网络
 [测试步骤] 1. 首次安装因网络中断以错误结束，确认未产生残留安装。2. 恢复网络后点击「重试」再次触发 install_dependencies。3. 等待安装完成并启动服务
 [预期结果] 1. 重试后下载续传或重新下载，SHA-256 校验通过，dsh/pnpm 正常落盘。2. install_dependencies 返回 true，installed 置为 true，preset/preset_hash 正常记录。3. 服务进入 Running，`http://127.0.0.1:3080/healthz` 返回成功（200），后续启动不再触发下载
+
+## [P2] 验证数据目录不可写时在写入前给出可执行权限诊断
+[测试类型] 可靠性
+[前置条件] 已装入 dsh/pnpm 内核；`$DSH_HOME`（release 为 `~/.dsh`）或其 `profiles/<当前档案>` 属主不是当前用户、可读但不可写（模拟此前用 sudo 跑过 dsh：`sudo mkdir -p ~/.dsh/profiles/web && sudo chown -R root ~/.dsh && sudo chmod -R a+rX ~/.dsh`）
+[测试步骤] 1. 在上述状态下启动桌面端，观察「Plugin installation」阶段的失败原因与后端日志。2. 检查是否仍 spawn dsh 进程、界面是否出现 `Harness exited early`。3. 点击「安全模式」，观察报错是否同样可执行。4. 执行报错给出的 `sudo chown -R "$(id -u):$(id -g)" ~/.dsh` 后重试启动
+[预期结果] 1. 阶段失败原因为 `PROFILE_NOT_WRITABLE: <路径> 不可写（Permission denied (os error 13)；该目录属主 uid=0, gid=0，当前用户 uid=<uid>, gid=<gid>）`，并含可直接粘贴的 chown 命令；不再出现 `INTERNAL_PLUGIN_FALLBACK_REMOVE_FAILED`（该 housekeeping 失败只记 `INTERNAL_PLUGIN_FALLBACK_CLEANUP_FAILED` 告警，不阻断本阶段）。2. dsh 不被拉起，界面不再出现 `Harness exited early: exit status: 1`（`launch` 在 spawn 前以同一诊断阻断）。3. 安全模式返回 `PROFILE_MKDIR: ... 不可写（...）` 及同一 chown 指引，而非裸 `Permission denied (os error 13)`，`~/.dsh/profiles/safe` 不会被误建。4. chown 后重试：内置插件正常安装，服务进入 Running 且 `http://127.0.0.1:3080/healthz` 返回成功（200）
 
 
 ---

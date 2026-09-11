@@ -23,7 +23,7 @@ export {
   PlugConnection,
   Plus,
   Puzzle,
-  SquarePlus,
+  FilePlus,
   TrashBin,
 } from './icons'
 export { MenuSelect } from './menu-select'

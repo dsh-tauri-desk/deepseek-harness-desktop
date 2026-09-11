@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import type { TurnChangesCardProps, TurnFileChange } from '../types'
-import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, Icon, SquarePlus, useMountStyle } from 'dsh-tauri-ui/client'
+import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, FilePlus, Icon, useMountStyle } from 'dsh-tauri-ui/client'
 /**
  * turn-changes-card.tsx — 一轮结束时渲染的变更卡片（视觉对齐官方 deliverables 行）。
  *
@@ -197,7 +197,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
         <div className="dshp-turnrewind__head">
           {/* 占位：📝 文件图标块不做任何事（需求：文件按钮仅做占位）。 */}
           <span className="dshp-turnrewind__icon" title={text('fileButton')} aria-label={text('fileButton')} data-placeholder="file">
-            <Icon as={SquarePlus} size={18} />
+            <Icon as={FilePlus} size={18} />
           </span>
           <div className="dshp-turnrewind__meta">
             {onOpenFile !== undefined && singlePath !== undefined
@@ -295,7 +295,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
         {window.hiddenCount > 0 && (
           <button type="button" className="dshp-turnrewind__more" onClick={() => setExpandedTurn(current => (current === turn ? undefined : turn))}>
             {expanded ? text('collapseFiles') : text('moreFiles', { count: window.hiddenCount })}
-            <Icon as={expanded ? ChevronUp : ChevronDown} size={14} />
+            <Icon as={expanded ? ChevronUp : ChevronDown} size={12} />
           </button>
         )}
 

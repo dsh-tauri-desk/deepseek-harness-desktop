@@ -22,10 +22,10 @@ describe('turn-changes-card.cssr（视觉对齐官方 deliverables 行）', () =
     expect(css).toMatch(/\.dshp-turnrewind__title\s*\{[^}]*font-weight: 600/)
   })
 
-  it('字号整体收小：标题 13 / 副行 13 / 清单行 13 / 徽标 11', () => {
+  it('字号整体收小：标题 13 / 副行 13 / 清单行 12 / 徽标 11', () => {
     expect(css).toMatch(/\.dshp-turnrewind__title\s*\{[^}]*font-size: 13px/)
     expect(css).toMatch(/\.dshp-turnrewind__sub\s*\{[^}]*font-size: 13px/)
-    expect(css).toMatch(/\.dshp-turnrewind__file\s*\{[^}]*font-size: 13px/)
+    expect(css).toMatch(/\.dshp-turnrewind__file\s*\{[^}]*font-size: 12px/)
     expect(css).toMatch(/\.dshp-turnrewind__badge\s*\{[^}]*font-size: 11px/)
   })
 

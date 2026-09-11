@@ -8,7 +8,8 @@
  *      每轮结束处显示「已编辑 N 个文件 / +N -M / 文件清单 / 撤销」，
  *      并以同样的优先级替换官方 “Files changed” 行；
  *   4. 槽位 B：`conversation.input.dock`（list）注册运行中提示条 ——
- *      输入框上方实时显示「N 个文件已更改 +N -M」，turn 结束后消失；
+ *      输入框上方实时显示「N 个文件已更改 +N -M」；读数在 turn 结束、新一轮开始、
+ *      会话结束/切换时都会归零（宿主 resetLive + hooks 的订阅世代），不会跨轮累加；
  *   5. 样式：各组件 `useMountStyle` 自挂自卸，无需全局样式 effect。
  *
  * 依赖纪律（跨内核代硬约束，见 docs/plugins/11.优化计划.turnrewind实现.md §2.4-B）：

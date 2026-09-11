@@ -49,6 +49,11 @@ interface ActiveTurn {
   liveTimer: ReturnType<typeof setInterval> | null
   /** 上一次实时刷新是否仍在飞（防止慢仓库堆积轮询）。 */
   liveBusy: boolean
+  /**
+   * 读数世代：每次作废（停表/重置）自增。在飞的 `git diff` 落地时世代已变即丢弃结果——
+   * 否则一次晚到的刷新会把刚被重置掉的读数**复活**，提示条又带着旧统计回来。
+   */
+  liveEpoch: number
   /** 本 turn 应用的排除路径（超限文件 + 嵌套仓库），捕获与实时读数共用。 */
   exclusions: string[]
   /** 本 turn 实际被跳过的嵌套仓库。 */
@@ -70,6 +75,18 @@ export interface TurnCapture {
   settleTurn: (sessionId: string, turn: number) => Promise<void>
   /** 会话空闲兜底：结算该会话所有未落定的 turn。 */
   settleIdle: (sessionId: string) => Promise<void>
+  /**
+   * 立刻作废实时读数（停表 + 清读数），条目本身保留给后台结算。
+   * 省略 `turn` 即整个会话（会话结束）；`turn/end` 与 idle 兜底按轮次调用。
+   */
+  resetLive: (sessionId: string, turn?: number) => void
+  /**
+   * 该轮是否仍未落定（before 快照在飞、或 after 快照尚未结算）。
+   *
+   * 撤销用它判定「仍在运行中」——**不能**用实时读数是否 active（读数是提示条的过程态，
+   * `turn/end` 一到就归零，而这一轮此后还要在后台结算）。省略 `turn` 表示整个会话。
+   */
+  isTurnPending: (sessionId: string, turn?: number) => boolean
   /** 运行中实时读数（客户端「运行中」提示条轮询）。 */
   liveState: (sessionId: string) => LiveSnapshot
   /** 卸载：清定时器并丢弃内存态（在飞任务由调用方等待）。 */
@@ -133,6 +150,7 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
       live: null,
       liveTimer: null,
       liveBusy: false,
+      liveEpoch: 0,
       exclusions: [],
       nestedDirs: [],
       generation: null,
@@ -239,10 +257,13 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
       live: { turn, fileCount: 0, insertions: 0, deletions: 0 },
       liveTimer: null,
       liveBusy: false,
+      liveEpoch: 0,
       exclusions: [...new Set([...exclusions, ...result.learnedExclusions])],
       nestedDirs: result.skippedNestedRepos,
       generation: store.generation ?? null,
     }
+    // 新一轮登记前先收回旧轮的读数：提示条从这一轮从零开始，绝不带着上一轮的统计。
+    retireOlderLive(sessionId, turn)
     if (register(entry))
       startLivePolling(entry)
   }
@@ -270,10 +291,13 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
     const workspaceRoot = entry.workspaceRoot
     if (workspaceRoot === null)
       return
+    // 记下本次刷新的世代：期间发生任何作废（turn/end、会话结束、新一轮开始），
+    // 结果都必须丢弃，不能让提示条把已经重置掉的读数复活。
+    const epoch = entry.liveEpoch
     entry.liveBusy = true
     try {
       const result = await queue.run(workspaceRoot, () => liveDiff(store, beforeCommit, { exclude: entry.exclusions }))
-      if (result.ok)
+      if (result.ok && entry.liveEpoch === epoch)
         entry.live = { turn: entry.turn, ...result.stats }
     }
     catch (error) {
@@ -290,16 +314,84 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
       entry.liveTimer = null
     }
     entry.live = null
+    // 世代自增：在飞的刷新落地时会被认作过期结果丢弃（见 refreshLive）。
+    entry.liveEpoch += 1
   }
 
-  /** 运行中实时读数；没有正在进行的 turn 时返回 active: false。 */
+  /**
+   * 作废实时读数（可只针对某一轮）。
+   *
+   * 读数是**过程态**：它相对的是本轮的 before 快照，工作区此后每一次改动都会让它变大。
+   * 一旦这一轮（或整个会话）结束，这份读数就再也不是「当前正在发生什么」，必须立刻归零——
+   * 否则客户端提示条会一直展示上一轮的统计，并且随着工作区继续变化而单调变大
+   * （用户实际反馈的「统计一直在叠加」）。
+   *
+   * 只清读数、不停条目：after 快照与账本仍然由结算路径照常完成。
+   * @param sessionId - 会话 id。
+   * @param turn - 省略即该会话全部轮次（会话结束/销毁）。
+   */
+  function resetLive(sessionId: string, turn?: number): void {
+    for (const entry of active.values()) {
+      if (entry.sessionId !== sessionId)
+        continue
+      if (turn !== undefined && entry.turn !== turn)
+        continue
+      stopLivePolling(entry)
+    }
+  }
+
+  /**
+   * 新一轮开始时收回更早轮次的读数。
+   *
+   * 只清 `turn` 更小的条目（严格单调），并发路径下不会误伤刚开始的这一轮；
+   * 上一轮若还在后台结算，它的读数也不再上报——提示条永远只反映当前这一轮。
+   */
+  function retireOlderLive(sessionId: string, turn: number): void {
+    for (const entry of active.values()) {
+      if (entry.sessionId === sessionId && entry.turn < turn)
+        stopLivePolling(entry)
+    }
+  }
+
+  /**
+   * 该轮是否仍未落定：before 快照还在飞（{@link beginning}）或 after 尚未结算（{@link active}）。
+   * 结算失败时条目会留在 `active` 里等重试，因此它同样算「未落定」——撤销必须继续拒绝。
+   * @param sessionId - 会话 id。
+   * @param turn - turn 号；省略即该会话是否有任何未落定的轮次。
+   */
+  function isTurnPending(sessionId: string, turn?: number): boolean {
+    for (const entry of active.values()) {
+      if (entry.sessionId === sessionId && (turn === undefined || entry.turn === turn))
+        return true
+    }
+    if (turn === undefined) {
+      for (const item of beginning.values()) {
+        if (item.sessionId === sessionId)
+          return true
+      }
+      return false
+    }
+    return beginning.has(activeKey(sessionId, turn))
+  }
+
+  /**
+   * 运行中实时读数；没有正在进行的 turn 时返回 active: false。
+   *
+   * 同一会话可能同时留着多条（旧轮还在后台结算，新一轮已经开始）：
+   * 只认**轮次最新**的那条的读数——按插入序取第一条会报出更早 before 快照的差值，
+   * 看上去就是跨轮累加的数字。
+   */
   function liveState(sessionId: string): LiveSnapshot {
+    let newest: ActiveTurn | null = null
     for (const entry of active.values()) {
       if (entry.sessionId !== sessionId || entry.live === null)
         continue
-      return { active: true, ...entry.live }
+      if (newest === null || entry.turn > newest.turn)
+        newest = entry
     }
-    return { active: false, turn: null, fileCount: 0, insertions: 0, deletions: 0 }
+    if (newest === null || newest.live === null)
+      return { active: false, turn: null, fileCount: 0, insertions: 0, deletions: 0 }
+    return { active: true, ...newest.live }
   }
 
   /**
@@ -329,7 +421,8 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
       const entry = active.get(key)
       if (entry === undefined)
         return
-      // 结算即结束运行中提示：先停轮询，再捕 after 快照（读数是过程态，不该跨 turn 残留）。
+      // 结算即结束运行中提示（`turn/end`/idle 已在事件边界调用过 resetLive，这里再兜一次：
+      // 读数是过程态，不该跨 turn 残留）。
       stopLivePolling(entry)
       if (entry.workspaceRoot === null || entry.store === null) {
         terminal = true
@@ -412,6 +505,8 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
     beginTurn,
     settleTurn,
     settleIdle,
+    resetLive,
+    isTurnPending,
     liveState,
     dispose(): void {
       disposed = true

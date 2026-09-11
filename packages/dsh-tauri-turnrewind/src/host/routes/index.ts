@@ -23,10 +23,20 @@ import { findSession, probeWorkspace, sessionCwdOf } from '../service/workspace'
 /** 运行中实时读数的读取面（由 capture 编排器提供；未接线时返回 inactive）。 */
 export type LiveStateReader = (sessionId: string) => LiveSnapshot
 
+/**
+ * 「该轮是否仍未落定」的读取面（撤销据此拒绝）。
+ *
+ * 不复用 {@link LiveStateReader}：读数是提示条的过程态，`turn/end` 一到就归零，
+ * 而这一轮此后还要在后台结算——用读数判定会把「还在结算」误判成「可以撤销」。
+ */
+export type TurnPendingReader = (sessionId: string, turn: number) => boolean
+
 /** 路由依赖（队列与捕获层共用同一实例，保证撤销与结算互斥）。 */
 export interface RouteDeps {
   dshHome?: string
   live?: LiveStateReader
+  /** 未落定判定；缺席时退化为「会话有活动读数」这一宽容判定（仅测试/降级路径）。 */
+  isTurnPending?: TurnPendingReader
   /** 工作区级串行队列。 */
   queue: WorkspaceQueue
 }
@@ -98,13 +108,14 @@ export function buildRoutes(ctx: HostContext, options: RouteDeps): any[] {
     const probe = await probeWorkspace(sessionCwdOf(session))
     // 归属校验用当前 worktree 根；探测失败时传 null，由 service 层按账本判定。
     // 撤销与捕获共用同一队列，且该会话仍在跑时直接拒绝（after 快照尚未结算）。
+    const isTurnPending = options.isTurnPending
     const outcome = await undoTurn({
       dshHome,
       sessionId,
       turn,
       currentWorkspace: probe.ok ? probe.root : null,
       queue,
-      turnActive: live?.(sessionId).active === true,
+      turnActive: isTurnPending === undefined ? live?.(sessionId).active === true : isTurnPending(sessionId, turn),
     })
     if (outcome.ok)
       return [200, { ok: true, restored: outcome.restored, removed: outcome.removed, failed: outcome.failed }]

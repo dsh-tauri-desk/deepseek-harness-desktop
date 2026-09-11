@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
+use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config;
@@ -31,13 +32,68 @@ use super::PreinstallPluginInfo;
 use super::{PreinstallLogPayload, PREINSTALL_LOG_EVENT};
 
 pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
-    run_single_plugin_command(
-        app_handle,
-        id,
-        "update",
-        &["update".to_string(), id.to_string()],
-    )
-    .await
+    run_single_plugin_command(app_handle, id, "update", &update_pnpm_args(id)).await
+}
+
+/// 升级时转发给 pnpm 的参数：`update <id> --latest`。
+///
+/// `--latest` 不能省：profile 里的依赖 spec 通常是范围（`catalog:` 或 `^x.y.z`），
+/// 裸 `pnpm update` 只在声明范围内取值——档案的 spec 是 `catalog:` 时范围来自
+/// `pnpm-workspace.yaml` 的 catalog 条目，条目钉在旧版本上（`^0.18.1` 之于 0.19.0，
+/// 0.x 的 caret 不含次版本）就会直接打印 `Already up to date` 并以 0 退出，桌面端
+/// 据此报「升级成功」而版本纹丝不动。加 `--latest` 才允许 pnpm 越过声明范围，并由
+/// pnpm 自己把 catalog 条目改写到新版本；git spec 不受影响（`--latest` 不会把
+/// `github:owner/repo` 退化成 semver 范围，实测原样保留）。
+fn update_pnpm_args(id: &str) -> Vec<String> {
+    vec!["update".to_string(), id.to_string(), "--latest".to_string()]
+}
+
+/// 依赖的「解析指纹」：profile `pnpm-lock.yaml` 当前 importer（`importers["."]`）
+/// 中该直接依赖的 `specifier @ version`；该依赖不在 lock 里时回落到
+/// `node_modules/<id>/package.json` 的实际版本。
+///
+/// 用途是核验升级是否真的落地（见 [`run_single_plugin_command`]）：pnpm 可能以 0
+/// 退出却什么都没装，而「什么都没装」在两种依赖上表现不同——registry 依赖是版本号
+/// 不变，git 依赖是版本号本来就可能不变（插件不 bump version）而只有 lock 里的
+/// codeload 提交变化。因此指纹取 lock 的解析结果，两种依赖都能识别。
+/// 两侧都读不到时返回 `None`，调用方跳过核验：绝不用不确定的读数误报升级失败。
+fn dependency_fingerprint(profile: &Path, id: &str) -> Option<String> {
+    if let Some(entry) = lock_dependency_entry(profile, id) {
+        return Some(entry);
+    }
+    installed_package_version(profile, id).map(|version| format!("{id}@{version}"))
+}
+
+/// `pnpm-lock.yaml` 当前 importer 中该直接依赖的 `specifier @ version`。
+///
+/// 必须经 importer 归属（与 [`super::update`] 读取 Git 锁定提交的口径一致）：全局
+/// 扫描会把同名传递依赖的解析结果算进来，指纹就会因无关依赖变动而抖动。
+/// lock 缺失、损坏或结构不是预期形态时返回 `None`（交由调用方跳过核验）。
+fn lock_dependency_entry(profile: &Path, id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(profile.join("pnpm-lock.yaml")).ok()?;
+    let lockfile: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let dependency = lockfile
+        .get("importers")?
+        .get(".")?
+        .get("dependencies")?
+        .get(id)?;
+    let specifier = dependency
+        .get("specifier")
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default();
+    let version = dependency
+        .get("version")
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default();
+    Some(format!("{specifier} @ {version}"))
+}
+
+/// `node_modules/<id>/package.json` 声明的版本（缺失或损坏返回 `None`）。
+fn installed_package_version(profile: &Path, id: &str) -> Option<String> {
+    let path = profile.join("node_modules").join(id).join("package.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
+    manifest.get("version")?.as_str().map(String::from)
 }
 
 /// 卸载单个插件：`dsh plugin --profile <当前档案> remove <id>`
@@ -205,6 +261,14 @@ async fn run_single_plugin_command(
 
     let envs = build_plugin_envs(app_handle, prefer_bundled_pnpm);
 
+    // 升级前的依赖解析指纹：升级命令以 0 退出后用它核验是否真的落地
+    // （见下方 `action == "update"` 分支的假成功核验）。非升级动作不需要。
+    let before_fingerprint = if action == "update" {
+        dependency_fingerprint(&profile_dir(app_handle), id)
+    } else {
+        None
+    };
+
     let mut args = vec![
         dsh_bin.as_os_str().to_os_string(),
         OsString::from("plugin"),
@@ -252,6 +316,24 @@ async fn run_single_plugin_command(
     // （见 [`ensure_plugin_entry_built`]）。包名先解析（预设 package 覆盖 /
     // 清单依赖 basename），解析不到时跳过核验（警告即可，不误杀成功更新）。
     if action == "update" {
+        // 假成功核验：pnpm 以 0 退出、但该依赖的解析结果与升级前完全一致，说明这次
+        // 升级没有落地（典型：档案 spec 是 `catalog:`，范围被 catalog 条目钉死）。
+        // 必须如实报错——报成功会让用户以为已在新版本上、实际仍在旧版本，比报失败
+        // 更难发现（与 [`remove`] 的「卸载后核验」同理）。
+        if let Some(before) = before_fingerprint.as_deref() {
+            if dependency_fingerprint(&profile_dir(app_handle), id).as_deref() == Some(before) {
+                let detail = installed_package_version(&profile_dir(app_handle), id)
+                    .unwrap_or_else(|| before.to_string());
+                let message = format!(
+                    "PLUGIN_UPDATE_NO_CHANGE: pnpm exited successfully but {id} is still at {detail}; the profile pins this dependency (for example a `catalog:` entry in pnpm-workspace.yaml), so the upgrade did not take effect"
+                );
+                log::error!("dsh plugin update made no change for {id}: {detail}");
+                if let Err(e) = errors::record(app_handle, id, action, &message) {
+                    log::warn!("failed to record plugin error for {id}: {e}");
+                }
+                return Err(message);
+            }
+        }
         let Some(name) = installed_package_name(app_handle, id) else {
             log::warn!("plugin {id} not resolvable to a package name, skipping entry verify");
             return Ok(());
@@ -338,5 +420,107 @@ mod tests {
             ))
             .is_empty()
         );
+    }
+
+    // ---- 升级参数与「假成功」核验 ----
+
+    #[test]
+    fn update_args_request_latest() {
+        // 回归锚点：缺了 `--latest`，pnpm 只在声明范围内取值。档案把依赖钉在
+        // `catalog:` 条目上时（catalog `^0.18.1` 之于 0.19.0），升级会退化成
+        // 「退出码 0 但什么都没装」的假成功——正是 sidebar 0.18.1→0.19.0 不生效的根因。
+        assert_eq!(
+            update_pnpm_args("dsh-better-sidebar"),
+            vec!["update", "dsh-better-sidebar", "--latest"]
+        );
+    }
+
+    /// 造一个最小 profile：写入 `pnpm-lock.yaml` 与 `node_modules/dsh-probe/package.json`。
+    fn probe_profile(label: &str, lock: &str, installed: Option<&str>) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dsh-plugin-fp-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("node_modules").join("dsh-probe")).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock).unwrap();
+        if let Some(version) = installed {
+            std::fs::write(
+                dir.join("node_modules")
+                    .join("dsh-probe")
+                    .join("package.json"),
+                format!(r#"{{"name":"dsh-probe","version":"{version}"}}"#),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// catalog 依赖的 lock 形态（与真实档案一致：specifier 是 `catalog:`，version 是解析结果）
+    const LOCK_CATALOG: &str = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      dsh-probe:\n        specifier: 'catalog:'\n        version: 0.18.1\n";
+
+    #[test]
+    fn fingerprint_uses_current_importer_entry() {
+        let dir = probe_profile("entry", LOCK_CATALOG, Some("0.18.1"));
+        assert_eq!(
+            dependency_fingerprint(&dir, "dsh-probe").as_deref(),
+            Some("catalog: @ 0.18.1")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fingerprint_changes_when_resolved_version_moves() {
+        // 升级真的落地 → 指纹必须变化；否则会把成功误判成「假成功」而报错
+        let before = probe_profile("bump-before", LOCK_CATALOG, Some("0.18.1"));
+        let after = probe_profile(
+            "bump-after",
+            &LOCK_CATALOG.replace("version: 0.18.1", "version: 0.19.0"),
+            Some("0.19.0"),
+        );
+        assert_ne!(
+            dependency_fingerprint(&before, "dsh-probe"),
+            dependency_fingerprint(&after, "dsh-probe")
+        );
+        std::fs::remove_dir_all(&before).ok();
+        std::fs::remove_dir_all(&after).ok();
+    }
+
+    #[test]
+    fn fingerprint_detects_git_commit_change_with_stable_version() {
+        // git 依赖：插件不 bump version，只有 lock 里的 codeload 提交变化。
+        // 指纹必须仍能识别（否则 git 插件的正常升级会被误报为假成功）。
+        let lock = |sha: &str| {
+            format!("lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      dsh-probe:\n        specifier: 'catalog:'\n        version: https://codeload.github.com/o/r/tar.gz/{sha}\n")
+        };
+        let before = probe_profile("git-before", &lock("aaaaaaaaaaaaaaaa"), Some("0.2.21"));
+        let after = probe_profile("git-after", &lock("bbbbbbbbbbbbbbbb"), Some("0.2.21"));
+        assert_ne!(
+            dependency_fingerprint(&before, "dsh-probe"),
+            dependency_fingerprint(&after, "dsh-probe")
+        );
+        std::fs::remove_dir_all(&before).ok();
+        std::fs::remove_dir_all(&after).ok();
+    }
+
+    #[test]
+    fn fingerprint_falls_back_to_installed_version() {
+        // lock 里没有该依赖（或 lock 不可用）→ 回落到 node_modules 版本，
+        // 「版本没动」这一假成功形态仍然可识别
+        let dir = probe_profile(
+            "fallback",
+            "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies: {}\n",
+            Some("0.18.1"),
+        );
+        assert_eq!(
+            dependency_fingerprint(&dir, "dsh-probe").as_deref(),
+            Some("dsh-probe@0.18.1")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fingerprint_is_none_when_nothing_is_readable() {
+        // 两侧都读不到 → None，调用方跳过核验：不确定时绝不误报升级失败
+        let dir = probe_profile("unreadable", "", None);
+        assert_eq!(dependency_fingerprint(&dir, "dsh-probe"), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

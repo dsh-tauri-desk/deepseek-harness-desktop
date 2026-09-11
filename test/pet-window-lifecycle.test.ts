@@ -46,6 +46,32 @@ describe('pet window collapse (destroy, not hide)', () => {
   })
 })
 
+describe('pet window lifecycle never runs on the main thread', () => {
+  const bridge = readSource('../src-tauri/src/bridge/pet.rs')
+
+  it('defers every window visibility change off the command thread', () => {
+    // command handler 在主线程执行，而 tauri-runtime-wry 在主线程上：
+    // destroy 直接 panic（lib.rs:3494 "cannot handle WindowMessage::Destroy on the main
+    // thread"）、create_window 经 channel 等事件循环回包而死锁。所以窗口操作必须
+    // 经 defer_pet_window_op 丢到异步运行时。
+    expect(bridge).toContain('fn defer_pet_window_op')
+    expect(bridge).toContain('tauri::async_runtime::spawn')
+    expect(bridge).toContain('let _guard = pet_window_op_lock()')
+
+    for (const name of ['set_pet_enabled', 'show_pet', 'collapse_pet']) {
+      const body = functionBody(bridge, name)
+      expect(body, `${name} must defer the window op`).toContain('defer_pet_window_op')
+      // 命令里不得直接触碰窗口生命周期 API（那正是超时/panic 的来源）。
+      expect(body, `${name} must not call set_pet_window_visible directly`).not.toContain('set_pet_window_visible')
+    }
+  })
+
+  it('serializes concurrent visibility operations with a lock', () => {
+    // 快速连点收起/显示时两次 spawn 会并发；加锁保证最终态等于最后一次调用。
+    expect(bridge).toContain('OnceLock<Mutex<()>>')
+  })
+})
+
 describe('pet window collapse state sync', () => {
   const bridge = readSource('../src-tauri/src/bridge/pet.rs')
 
@@ -55,7 +81,7 @@ describe('pet window collapse state sync', () => {
     // 销毁窗口之外还要落瞬态可见性与会话流，否则侧栏图标仍显示「已激活」、
     // 宿主侧还会持续为桌宠推送会话数据。
     expect(body).toContain('visible = false')
-    expect(body).toContain('set_pet_window_visible(app, false)')
+    expect(body).toContain('defer_pet_window_op(app, false)')
     expect(body).toContain('sync_pet_session_stream(app, false)')
   })
 

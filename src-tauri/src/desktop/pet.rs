@@ -284,8 +284,10 @@ pub fn move_pet_window<R: Runtime>(
 /// 创建 `pet` 窗口并恢复上一次保存的位置（无记录则默认定位在主屏右下角略偏上，
 /// 避免遮挡主工作区）。
 ///
-/// **只能在非主线程调用**：内部经 `WebviewWindowBuilder::build()` 创建窗口，
-/// 主线程调用会与事件循环回包互相等待而死锁（见 [`set_pet_window_visible`]）。
+/// 创建窗口只能来自 app setup 或异步运行时的命令任务：`WebviewWindowBuilder::build()`
+/// 经 channel 等主线程事件循环回包，主线程调用会死锁；销毁窗口则**绝不能**在主线程
+/// 调用（`WindowMessage::Destroy` 在主线程直接 panic）。两条约束都由
+/// `bridge::pet::defer_pet_window_op` 统一保证。
 pub fn ensure_pet_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
         return Ok(window);
@@ -402,13 +404,17 @@ fn place_pet_at_default<R: Runtime>(window: &WebviewWindow<R>) {
 /// 唤醒锁释放、CPU 归零。代价是重新显示要重建 webview（页面前端挂载时用
 /// `get_pet_status` 拉取状态，不依赖创建时的事件投递）。
 ///
-/// # 为什么 show 分支会创建窗口、而 destroy 分支不会死锁
+/// # 线程约束（务必读完再改）
 ///
-/// `tauri-runtime-wry` 的 `RuntimeHandle::create_window` 经 channel 等待主线程事件循环
-/// 回包，**主线程调用必然死锁**（tauri-runtime-wry 2.11.4 lib.rs:2757 注释）。因此窗口
-/// 创建只允许发生在非主线程：调用方 `set_pet_enabled` / `show_pet` 都是 `AppHandle`
-/// 命令（Tauri 在异步运行时执行）；`hide_pet` 与窗口自己的关闭事件则只走 destroy，
-/// 而 `destroy()` 是 `proxy.send_event(Message::Destroy)` 的**非阻塞**投递，任何线程都安全。
+/// `tauri-runtime-wry` 对主线程上的窗口生命周期消息是「创建会死锁、销毁会 panic」：
+///
+/// - **销毁**走 `WindowMessage::Destroy`，主线程调用直接
+///   `panic!("cannot handle \`WindowMessage::Destroy\` on the main thread")`
+///   （tauri-runtime-wry 2.11.4 lib.rs:3494）。command handler 在主线程执行，所以
+///   收起命令必须经 `bridge::pet::defer_pet_window_op` 丢到异步运行时再调本函数。
+/// - **创建**（`ensure_pet_window` → `WebviewWindowBuilder::build()`）经 channel 等
+///   主线程事件循环回包，仅允许 app setup 或异步运行时任务调用（app setup 在事件
+///   循环初始化前、不与回包竞争，是唯一的主线程例外）。
 pub fn set_pet_window_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result<(), String> {
     if !visible {
         if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {

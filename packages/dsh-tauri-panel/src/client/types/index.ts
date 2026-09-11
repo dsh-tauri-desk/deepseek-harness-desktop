@@ -14,6 +14,21 @@ export interface SidebarRootProps {
   t: (key: string) => string
 }
 
+/**
+ * 会话区替换的槽位候选（跨核心版本的 inject 键 + register options 形状）。
+ *
+ * 核心 0.1.5-rc.1 起把会话区并入 keyed 槽 `main`（cell key `conversation`），
+ * 旧 `conversation` 单槽消失；两个候选同时 inject，任一版本只有对应声明存在。
+ */
+export interface PanelViewSeatTarget {
+  /** 需要 inject / register 的槽位声明键（与 register options.name 同值）。 */
+  slot: string
+  /** keyed 槽的 cell key（≥0.1.5 的 `main`）；旧单槽无此字段。 */
+  key?: string
+  /** 旧单槽的条目 id（single 槽的稳定标识）；keyed 槽无此字段。 */
+  id?: string
+}
+
 /** 内容区替换规格（renderPanelContent 入参）。 */
 export interface PanelContentSpec {
   /** 视图唯一标识（同一时刻只存在一个替换；active 态以它匹配 ActionItem）。 */

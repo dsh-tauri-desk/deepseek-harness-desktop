@@ -1,9 +1,35 @@
+import type { PanelViewSeatTarget } from '../types'
+
 /** Stable client-side identifiers shared by the panel implementation. */
 export { PANEL_CONTENT_ADAPTIVE_MAX, PANEL_CONTENT_ADAPTIVE_MIN, PANEL_CONTENT_DEFAULT, PANEL_CONTENT_EDGE_BUDGET, PANEL_CONTENT_MIN, PANEL_WIDTH_PREF_KEY, PANEL_WIDTH_VARS } from './width'
 
 export const PANEL_PROTOCOL_SERVICE = 'panel.protocol'
+/**
+ * ≤ 0.1.2-rc.1 核心的会话区槽：布局直接 `renderSlot('conversation')`，官方
+ * ui-conversation 是唯一注册者，桌面端以 priority -1 动态注册 shadow 它。
+ */
 export const PANEL_VIEW_SLOT = 'conversation'
+/**
+ * ≥ 0.1.5-rc.1 核心把会话区并入 keyed 槽 `main`：布局改为
+ * `renderSlot('main', {}, { entryKey: activePanelId ?? 'conversation' })`，官方
+ * 会话条目以 `{ name: 'main', key: 'conversation' }` 注册；旧 `conversation`
+ * 槽在核心中已不存在（声明/渲染都没有）。
+ */
+export const PANEL_VIEW_MAIN_SLOT = 'main'
+/** `main` keyed 槽里承载官方会话的 cell key（与布局的 entryKey 一致）。 */
+export const PANEL_VIEW_MAIN_KEY = 'conversation'
 export const PANEL_VIEW_COMPONENT_ID = 'dsh-tauri-panel-conversation-seat'
+/**
+ * 会话区替换的槽位候选：同时 inject 两个版本各自的槽，按核心版本择一生效。
+ *
+ * 只注册旧 `conversation` 槽时，0.1.5+ 核心里的声明永不出现 → inject 回调永不
+ * 执行 → 内容区不替换，只剩侧栏条目的选中样式（回归现象）。两个候选天然版本
+ * 互斥（同一核心只会声明其中一个），同时 inject 零副作用：未声明的候选静默等待。
+ */
+export const PANEL_VIEW_SEAT_TARGETS: readonly PanelViewSeatTarget[] = [
+  { id: PANEL_VIEW_COMPONENT_ID, slot: PANEL_VIEW_SLOT },
+  { key: PANEL_VIEW_MAIN_KEY, slot: PANEL_VIEW_MAIN_SLOT },
+]
 export const PANEL_STYLE_ID = 'dsh-tauri-panel-styles'
 export const SIDEBAR_STYLE_ID = 'dsh-tauri-panel-sidebar-styles'
 export const ACTION_ITEM_STYLE_ID = 'dsh-tauri-panel-action-item-styles'

@@ -108,7 +108,7 @@ export function Pet(props: PetProps) {
   const adHocRef = useRef(adHoc)
   adHocRef.current = adHoc
   const adHocSeqRef = useRef(0)
-  // 预设宠物资源（config.jsonc + webm manifest）：按宠物 id 一起拉取并整体更新，
+  // 预设宠物资源（config.jsonc + 动画 manifest）：按宠物 id 一起拉取并整体更新，
   // 避免切换宠物时残留上一个宠物的动画池/URL（旧数据在 fetch 完成前不生效）。
   const [petResources, setPetResources] = useState<{
     pet: string
@@ -134,7 +134,9 @@ export function Pet(props: PetProps) {
   const handleEndedRef = useRef<(event?: Event) => void>(() => {})
 
   const activePet = normalizeActivePet(rustStatus.active_pet)
-  // 预设宠物（未限定 id，来自 ~/.dsh/pets 下载产物）走 WebM 协议渲染；
+  // 预设宠物（未限定 id，来自 ~/.dsh/pets 下载产物）走 <video> 协议渲染：
+  // Windows/Linux 是 VP9-alpha WebM，macOS 是 HEVC-with-Alpha MOV（issue #434，
+  // WKWebView 不认 WebM alpha）。此处只认 manifest 给的 URL，不感知格式；
   // 来源限定 id（chat:/codex:）走 Codex v2 精灵图渲染。
   const isPreset = !activePet.includes(':')
   // 预设宠物资源按当前激活宠物生效：切换宠物时旧资源保持到新 fetch 完成，避免闪烁。
@@ -151,7 +153,7 @@ export function Pet(props: PetProps) {
   // 这里给出可见提示引导去设置页下载（issue #401）。全新安装 active_pet 为空串
   // （无默认选择），不会走此分支。
   const presetMissing = isPreset && error?.includes('PET_PRESET_NOT_INSTALLED') === true
-  // 预设宠物配置驱动动画池：池条目是动画名（webm 文件名主名，如 待机呼吸休闲），
+  // 预设宠物配置驱动动画池：池条目是动画名（动画文件名主名，如 待机呼吸休闲），
   // 点击/拖拽/待机链按名字从 assets map 取 URL。配置缺失或命令失败时回落与旧
   // 实现一致的默认池（idle/turn/wave），这些名字在 assets 中不存在时自然不播放。
   const pools = useMemo(() => {
@@ -223,7 +225,7 @@ export function Pet(props: PetProps) {
   }, [])
 
   // 预设宠物按 activePet 拉取协议配置与媒体 manifest；切换宠物时重载。
-  // 已安装预设的 config.jsonc 池条目（待机呼吸休闲 等）即 webm 文件名主名，
+  // 已安装预设的 config.jsonc 池条目（待机呼吸休闲 等）即 动画文件名主名，
   // assets map 的 key 与池条目一一对应，动画链/点击/拖拽直接按名字取 URL。
   useEffect(() => {
     // 无激活宠物（active_pet 为空串，全新安装未选择）时不拉取任何资源，避免
@@ -318,7 +320,7 @@ export function Pet(props: PetProps) {
     // 只用于预设宠物（WebM）；自定义宠物走精灵图渲染，不走视频。
     if (isPreset === false || videoARef.current === null || videoBRef.current === null)
       return undefined
-    // 预设配置池条目 = 动画名 = webm 文件名主名；adHoc 已携带动画名时直接命中，
+    // 预设配置池条目 = 动画名 = 动画文件名主名；adHoc 已携带动画名时直接命中，
     // 会话状态（waiting/running/review/failed/bubble）经 PRESET_SESSION_ANIMATIONS
     // 叠加映射到具体动画名（写代码/轻快记录/玩游戏气急败坏…）。
     const name = resolvePresetName(activity, pools, assets)
@@ -345,7 +347,7 @@ export function Pet(props: PetProps) {
     // 防重：同一播放目标（资源 URL + 循环语义 + 重播序号）不重复加载。
     // override.revision 不是重播依据 —— 会话档位反复下发（同一档位重复到达，或多会话
     // 交错让聚合档位在解析结果相同的动画之间来回切）时，按 revision 重载会让同一个
-    // webm 从头播放：用户看到「气泡信息没变，动画却一直重新播放」。只有点击回应等
+    // 视频从头播放：用户看到「气泡信息没变，动画却一直重新播放」。只有点击回应等
     // 显式重播（seq 递增）或目标真的变化时才重载。
     const nextTarget: PetAnimationTarget = { once, seq, src: source }
     if (!shouldReloadAnimation(appliedRef.current, nextTarget))
@@ -390,7 +392,7 @@ export function Pet(props: PetProps) {
   // 点击回应：clickCount 变化（useDrag 判定「500ms 内两次按下且未拖拽 = 双击」后递增）
   // → 播放一次点击回应动画。adHoc 优先级在会话 override 之上：双击回应可打断会话状态，
   // 播完回落原动画（handleEnded）。动画名来自预设 config.jsonc 的 clicks 池（协议，
-  // 池条目 = 动画名 = webm 文件名主名）；配置缺失/池条目不可播放时回落 waving。
+  // 池条目 = 动画名 = 动画文件名主名）；配置缺失/池条目不可播放时回落 waving。
   useEffect(() => {
     if (props.clickCount === undefined || props.clickCount === prevClickRef.current)
       return undefined
@@ -610,7 +612,7 @@ function isPetStatus(value: string): value is PetStatus {
 }
 
 /**
- * 把预设配置池条目（动画名，webm 文件名主名）映射为可播放状态：预设宠物条目
+ * 把预设配置池条目（动画名，动画文件名主名）映射为可播放状态：预设宠物条目
  * 直接就是动画名（如 待机呼吸休闲 / 点击回应-开心跃动）；兼容旧内置键 'wave'
  * → 'waving' 的归一化。拖拽/方向专用状态不参与回应池；其余必须命中会话状态
  * 或 bubble，否则返回 null（调用方回落默认动画）。

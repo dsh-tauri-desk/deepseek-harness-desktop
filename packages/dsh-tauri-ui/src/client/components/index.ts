@@ -16,6 +16,7 @@ export {
   CommentPlus,
   Ellipsis,
   EllipsisVertical,
+  FilePlus,
   FolderOpen,
   GraduationCap,
   LogoGithub,
@@ -23,7 +24,6 @@ export {
   PlugConnection,
   Plus,
   Puzzle,
-  FilePlus,
   TrashBin,
 } from './icons'
 export { MenuSelect } from './menu-select'

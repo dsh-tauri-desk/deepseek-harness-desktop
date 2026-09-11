@@ -17,7 +17,7 @@
     "id": "dsh-tauri-ui",
     "spec": "dsh-tauri-ui",
     "name": "DSH Tauri UI",
-    "description": "Customized Tauri UI plugin for the DeepSeek Harness desktop shell (skeleton): registers the shell.overlay seat for the future desktop chrome",
+    "description": "Customized Tauri UI plugin for the DeepSeek Harness desktop shell: provides the settings sidebar, settings sections, and shared UI integration points",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-ui"
   },
   {

@@ -1,7 +1,7 @@
 # DSH TurnRewind 会话流程设计
 
-> 实施方案与已确认决策：见 [`docs/plugins/11.优化计划.turnrewind实现.md`](../plugins/11.优化计划.turnrewind实现.md)。
-> 本文档只保留交互稿；卡片挂载方式已定为「方式一 · 接管 `conversation.chat.turnTail`」。
+> 历史交互稿。当前实现、协议、限制和内核兼容性以 [`packages/dsh-tauri-turnrewind/README.md`](../../packages/dsh-tauri-turnrewind/README.md) 为准。
+> 卡片挂载方式已定为「方式一 · 接管 `conversation.chat.turnTail`」。本文档保留早期交互草图，不是实现契约。
 
 ## 运行中文件变更记录
 

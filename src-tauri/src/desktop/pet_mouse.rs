@@ -32,7 +32,7 @@
 //! - **Windows / Linux**：用 `rdev::listen`（这两平台 rdev 不调 TSM，无此 bug）。
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -62,10 +62,15 @@ const MACOS_MOUSE_EVENTS: &[core_graphics::event::CGEventType] = &[
 /// 新窗口（旧 handle 已失效，向它 emit 不会有任何效果）。若把 `start_pet_mouse_stream`
 /// 收到的窗口句柄直接搬进节流线程，重建后的桌宠就再也收不到鼠标位置，穿透永远无法
 /// 按命中区恢复——宠物会整窗吞掉输入。这里改由前端每次挂载时刷新共享句柄。
+///
+/// `revision` 同时是节流线程的去重复位信号：换窗口后必须**强制**补发一次位置，否则
+/// 光标静止时新页面收不到任何 `device-mouse-move`，穿透态停在「整窗接收事件」，
+/// 透明区域会吞掉点击（CodeRabbit review：force one cursor-state update after rebinding）。
 #[derive(Default)]
 pub struct PetMouseStreamState {
     started: Arc<AtomicBool>,
     emitter: Arc<Mutex<Option<WebviewWindow>>>,
+    revision: Arc<AtomicUsize>,
 }
 
 /// 物理像素的光标位置（CGEvent 坐标为虚拟屏幕全局坐标，副屏可含负值）。
@@ -78,10 +83,10 @@ struct MouseCursorPos {
 /// 启动全局鼠标位置流（幂等：已启动时只刷新接收窗口，不重复起线程）。
 ///
 /// 命令参数带 `WebviewWindow`，Tauri 保证在主线程执行；`bind_pet_mouse_emitter`
-/// 只做一次短临界区的句柄替换，不阻塞事件循环。
+/// 只做一次短临界区的句柄替换与一次原子自增，不阻塞事件循环。
 #[tauri::command]
 pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseStreamState>) {
-    bind_pet_mouse_emitter(&state.emitter, window.clone());
+    bind_pet_mouse_emitter(&state.emitter, &state.revision, window);
     if state.started.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -99,14 +104,20 @@ pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseSt
     });
 
     // 节流线程：16ms 轮询最新坐标，变化才 emit（鼠标静止零事件）；每轮重新读取
-    // 接收窗口，保证窗口重建后事件仍然投递到桌宠。
+    // 接收窗口，保证窗口重建后事件仍然投递到桌宠。接收窗口换代（revision 变化）
+    // 时忽略去重，强制补发一次当前坐标——新页面需要一次事件才能算出穿透态。
     let emitter = state.emitter.clone();
+    let revision = state.revision.clone();
     thread::spawn(move || {
         let mut last_sent: Option<MouseCursorPos> = None;
+        let mut bound_revision = revision.load(Ordering::SeqCst);
         loop {
+            let current_revision = revision.load(Ordering::SeqCst);
+            let rebound = current_revision != bound_revision;
+            bound_revision = current_revision;
             let current = latest.lock().expect("pet mouse store poisoned").take();
             if let Some(pos) = current {
-                if last_sent != Some(pos) {
+                if rebound || last_sent != Some(pos) {
                     last_sent = Some(pos);
                     let target = emitter
                         .lock()
@@ -123,9 +134,17 @@ pub fn start_pet_mouse_stream(window: WebviewWindow, state: State<'_, PetMouseSt
 }
 
 /// 把鼠标事件接收窗口指向最新挂载的桌宠窗口（窗口重建后必须调用）。
-fn bind_pet_mouse_emitter(slot: &Arc<Mutex<Option<WebviewWindow>>>, window: WebviewWindow) {
+///
+/// 自增 `revision` 让节流线程知道「换了接收方」：即使光标没动、去重判定会跳过发送，
+/// 也必须补发一次位置，否则重建后的桌宠收不到任何鼠标事件、穿透态无法按命中区计算。
+fn bind_pet_mouse_emitter(
+    slot: &Arc<Mutex<Option<WebviewWindow>>>,
+    revision: &Arc<AtomicUsize>,
+    window: WebviewWindow,
+) {
     let mut current = slot.lock().unwrap_or_else(|error| error.into_inner());
     *current = Some(window);
+    revision.fetch_add(1, Ordering::SeqCst);
 }
 
 /// 平台分发：macOS 走 CGEventTap，其它平台走 rdev。

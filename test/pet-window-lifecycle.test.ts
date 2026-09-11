@@ -75,4 +75,11 @@ describe('recreated pet window keeps its mouse stream', () => {
     expect(mouse).toContain('bind_pet_mouse_emitter')
     expect(mouse).toContain('state.emitter.clone()')
   })
+
+  it('forces one cursor update after a rebind, even without cursor movement', () => {
+    // 去重（last_sent）会跳过「光标没动」的发送：换窗口后若不强制补发一次，
+    // 新页面收不到任何 device-mouse-move，穿透态停在整窗接收事件，透明区域吞点击。
+    expect(mouse).toContain('revision.fetch_add')
+    expect(mouse).toContain('rebound')
+  })
 })

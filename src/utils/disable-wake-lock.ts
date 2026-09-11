@@ -1,16 +1,23 @@
 /**
- * 禁用 Screen Wake Lock（屏幕唤醒锁）。
+ * 禁用 Screen Wake Lock（页面可申请的「屏幕唤醒锁」）。
  *
- * 背景（issue #469）：桌宠窗口用 `<video>` 播放 WebM 动画，Chromium/WebView2 对
- * 「播放中（未暂停）的 video」**无条件**持有 Video Wake Lock——与窗口是否可见、
- * 是否 muted 都无关。锁一旦被持有，Windows 就无视「关闭显示器」超时，屏幕永远不黑
- * （且视频持续播放空占 CPU）。`收起宠物` 只是隐藏窗口，视频仍在播放，锁不会被释放。
+ * 背景（issue #469）：桌宠窗口用 `<video>` 播放 WebM 动画，播放期间系统无法息屏——
+ * Windows 无视「关闭显示器」超时，屏幕永远不黑，还长时间空占 CPU。
  *
- * 本应用没有任何「保持屏幕常亮」的正当需求（长任务进度靠 UI/通知表达，不靠锁屏），
- * 因此直接在 WebView 内把 `navigator.wakeLock.request` 换成永远 reject 的实现：
- * 页面（含 dsh 界面、第三方代码、内置插件）后续任何申请都会立刻失败，Chromium 因
- * 此不再持有屏幕唤醒锁。方法被替换（而非删除 API）可让页面拿到明确的 Error，
- * 避免 `TypeError: navigator.wakeLock.request is not a function` 这类误导性崩溃。
+ * # 这里挡的是哪把锁（两把锁不要混淆）
+ *
+ * 1. **Screen Wake Lock（本模块）**：页面经 `navigator.wakeLock.request('screen')`
+ *    主动申请的锁。任何页面代码（dsh 界面、第三方代码、内置插件）都能申请，本应用
+ *    没有任何常亮的正当需求，因此整体禁掉。
+ * 2. **Video Wake Lock（不由本模块负责）**：Chromium/WebView2 内部对「播放中
+ *    （未暂停）的 `<video>`」**无条件**申请的 `kPreventDisplaySleep`，与页面是否调用
+ *    wakeLock API、与 muted / 窗口可见性都无关。禁用本模块的 `navigator.wakeLock`
+ *    **不会**释放它——释放它的唯一办法是让视频停下来：`desktop::pet::set_pet_window_visible(false)`
+ *    会**销毁**桌宠窗口（而不是 hide），webview 随窗口消失，媒体管线一并停止（见
+ *    issue #469 的第二处修复）。`muted` 也不是解药：muted 只影响音频，不解除该锁。
+ *
+ * 之所以仍然保留本模块：它把「页面主动申请常亮」这条路径彻底封死，避免将来某个
+ * 页面（设置页、插件面板）再加一个与桌宠无关的常亮申请；成本只是一次方法替换。
  *
  * 幂等：两个入口（src/main.tsx 主窗口 / src/pet/main.tsx 桌宠窗口）都会调用，
  * 重复调用保留首次记录的原函数，恢复时不会把替换后的实现存成「原函数」。

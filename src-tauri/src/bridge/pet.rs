@@ -182,7 +182,7 @@ pub fn get_pet_status(app: AppHandle) -> PetStatus {
     status_from_setting(&config::get_store_dat_setting(&app))
 }
 
-/// 启用/停用桌宠；启用同时显示，停用同时隐藏并永久落盘。
+/// 启用/停用桌宠；启用同时显示，停用同时**销毁窗口**并永久落盘。
 #[tauri::command]
 pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, String> {
     let updated = config::update_store_dat_setting(&app, |setting| {
@@ -347,8 +347,8 @@ fn pet_stream_handle() -> &'static Mutex<Option<tauri::async_runtime::JoinHandle
 
 /// 是否需要订阅宿主会话增量流：桌宠已启用且窗口可见。
 ///
-/// 临时隐藏（`hide_pet`）同样视为无消费者——窗口不渲染时转发毫无意义，停掉
-/// 订阅即让宿主的热路径与逐会话累计态一并短路。
+/// 收起桌宠（`hide_pet`）会销毁窗口，同样视为无消费者——窗口不渲染时转发毫无意义，
+/// 停掉订阅即让宿主的热路径与逐会话累计态一并短路。
 pub fn pet_stream_wanted(app: &AppHandle) -> bool {
     let status = status_from_setting(&config::get_store_dat_setting(app));
     status.enabled && status.visible
@@ -457,6 +457,9 @@ pub fn move_pet_window(app: AppHandle, delta_x: i32, delta_y: i32) -> Result<(),
 }
 
 /// 显示桌宠窗口；只允许已永久启用的桌宠恢复显示。
+///
+/// 窗口不存在（首次启用，或上次收起时已被销毁）时在此重建——本命令是 `AppHandle`
+/// 命令，Tauri 在异步运行时执行，不违反「窗口创建不得在主线程」的约束。
 #[tauri::command]
 pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
     let setting = config::get_store_dat_setting(&app);
@@ -475,19 +478,32 @@ pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
     Ok(status)
 }
 
-/// 临时隐藏桌宠窗口，不改变永久 enabled；重启后已启用宠物重新显示。
+/// 临时收起桌宠（不改变永久 enabled；重启后已启用宠物重新显示）。
+///
+/// 「收起」= 销毁窗口实例（`set_pet_window_visible(false)` → `destroy()`），而不是
+/// hide：隐藏窗口里的 `<video>` 仍会播放并持有 Video Wake Lock，屏幕无法息屏
+/// （issue #469）。销毁后 webview 进程消失，视频与锁一并释放，会话流订阅也随即停止。
 #[tauri::command]
 pub fn hide_pet(app: AppHandle) -> Result<PetStatus, String> {
+    collapse_pet(&app)?;
+    let status = status_from_setting(&config::get_store_dat_setting(&app));
+    emit_pet_status(&app, &status);
+    Ok(status)
+}
+
+/// 收起桌宠窗口：销毁实例、置瞬态不可见、停掉宿主会话流订阅（幂等）。
+///
+/// 供 `hide_pet` 命令与「桌宠窗口自身收到关闭请求」两条路径共用：后者发生在主线程的
+/// 窗口事件回调里，销毁是异步投递、停流只是 abort 任务句柄，都不阻塞事件循环。
+pub fn collapse_pet(app: &AppHandle) -> Result<(), String> {
     transient_state()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = false;
-    pet_window::set_pet_window_visible(&app, false)?;
-    // 隐藏 = 无人渲染：停掉宿主会话流订阅，宿主侧热路径整条短路。
-    sync_pet_session_stream(&app, false);
-    let status = status_from_setting(&config::get_store_dat_setting(&app));
-    emit_pet_status(&app, &status);
-    Ok(status)
+    pet_window::set_pet_window_visible(app, false)?;
+    // 收起 = 无人渲染：停掉宿主会话流订阅，宿主侧热路径整条短路。
+    sync_pet_session_stream(app, false);
+    Ok(())
 }
 
 /// pet 窗口点击穿透开关；返回实际生效的穿透态，前端据此对齐本地 optimistic 状态。

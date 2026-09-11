@@ -27,12 +27,12 @@ interface RustPetStatus {
  * 穿透切换一律经由 Rust 命令 `set_pet_ignore_cursor_events` 而非直接调用
  * `setIgnoreCursorEvents`：Linux / Wayland 下 tao 处理 `CursorIgnoreEvents(true)`
  * 时对底层 GdkWindow 直接 `unwrap()`（tao 0.35.3 event_loop.rs:457，上游截至
- * 0.37.0 未修复），窗口从未显示（未 realize）即 panic 崩掉整个桌面端。本应用
- * 在 setup 阶段总会预创建隐藏的 pet 窗口（`desktop::pet::init_pet_window`），
- * 全新安装默认不启用桌宠则窗口永远不 show，其 WebView 仍会收到首个全局鼠标
- * 事件并请求穿透——挂载即崩（issue #437）。Rust 侧对不可见窗口吞掉 `true`
- * 请求，前端再叠加一层：跟踪窗口可见性（`pet://status`），窗口隐藏时直接跳过
- * 穿透请求，避免对禁用桌宠的默认安装逐次移动鼠标都产生无效 IPC。
+ * 0.37.0 未修复），窗口从未显示（未 realize）即 panic 崩掉整个桌面端（issue #437）。
+ * Rust 侧对不可见窗口吞掉 `true` 请求；前端再叠加一层：跟踪窗口可见性
+ * （`pet://status`），窗口隐藏时直接跳过穿透请求，避免无效 IPC。
+ *
+ * 桌宠窗口只在「显示宠物」期间存在（收起即销毁，见 issue #469，本 hook 随页面
+ * 一起重挂载），因此启动时不再存在「永久隐藏窗口也会请求穿透」的路径。
  *
  * issue #394 的「延后到首个 device-mouse-move 再应用」仍然保留：避免挂载时
  * 立刻与事件循环竞争，但真正防止 panic 的是上面的两层可见性保护。

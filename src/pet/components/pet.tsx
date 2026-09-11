@@ -1,12 +1,11 @@
 import type { CSSProperties, Ref, RefObject, SyntheticEvent } from 'react'
+import type { PetAnimationTarget, PetConfig } from '../config'
 import type { PetHandle, PetStatus } from '../hooks/use-pet'
-import type { PetAnimationTarget, PetConfig } from '../pet-config'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { If } from 'react-if-lite'
-import { PET_STATUSES } from '../hooks/use-pet'
 import {
   fallbackPresetName,
   isLoopingAnimation,
@@ -17,7 +16,8 @@ import {
   rollKind,
   shouldReloadAnimation,
   spriteStatusFallback,
-} from '../pet-config'
+} from '../config'
+import { PET_STATUSES } from '../hooks/use-pet'
 
 const PET_BASE_WIDTH = 220
 /** 已安装预设被清理/未安装时的提示文案：桌宠窗口无 i18n 基础设施（气泡文案同样硬编码），按窗口语言就近显示。 */

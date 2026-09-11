@@ -1,4 +1,4 @@
-import type { PetAnimationTarget, PetCategory, PetWeights } from './pet-config'
+import type { PetAnimationTarget, PetCategory, PetWeights } from './'
 import { describe, expect, it, vi } from 'vitest'
 import {
   fallbackPresetName,
@@ -11,7 +11,7 @@ import {
   rollKind,
   shouldReloadAnimation,
   spriteStatusFallback,
-} from './pet-config'
+} from './'
 
 const WEIGHTS: PetWeights = { idle: 10, turn: 5, move: 5 }
 

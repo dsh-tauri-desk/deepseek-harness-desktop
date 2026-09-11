@@ -47,7 +47,7 @@ export function ToastProvider(props: ToastProviderProps) {
                         <Spinner color="current" size="sm" />
                       </Toast.Indicator>
                     </If>
-                    <Toast.Content>
+                    <Toast.Content className="overflow-hidden">
                       <If cond={content?.title !== undefined}>
                         <Toast.Title>{content?.title}</Toast.Title>
                       </If>

@@ -961,7 +961,8 @@ mod tests {
         locked.set_mode(0o555);
         std::fs::set_permissions(&nested, locked).unwrap();
 
-        // 以 root 身份运行时权限位不生效（清理会成功），此时跳过错误断言
+        // 以 root 身份运行时权限位不生效（清理会成功，`nested` 已被删除），此时跳过
+        // 错误断言，且恢复权限前必须先确认目录还在
         if let Err(error) = remove_legacy_profile_module_fallback(&profile) {
             assert!(
                 error.starts_with("INTERNAL_PLUGIN_FALLBACK_REMOVE_FAILED"),
@@ -971,9 +972,11 @@ mod tests {
         // best-effort 包装：无论底层成功与否都不得返回错误或 panic
         remove_legacy_profile_module_fallback_best_effort(&profile);
 
-        let mut open = std::fs::metadata(&nested).unwrap().permissions();
-        open.set_mode(0o755);
-        let _ = std::fs::set_permissions(&nested, open);
+        if let Ok(metadata) = std::fs::metadata(&nested) {
+            let mut open = metadata.permissions();
+            open.set_mode(0o755);
+            let _ = std::fs::set_permissions(&nested, open);
+        }
         let _ = std::fs::remove_dir_all(&profile);
     }
 }

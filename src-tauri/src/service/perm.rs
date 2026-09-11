@@ -42,7 +42,12 @@ pub fn is_permission_error(error: &io::Error) -> bool {
 /// 锁、网络盘抖动）按「无法判定」放行——绝不能因为一次探测失败就阻断启动。
 pub fn ensure_dir_writable(dir: &Path, prefix: &str) -> Result<(), String> {
     if let Err(error) = std::fs::create_dir_all(dir) {
-        return Err(dir_error(prefix, dir, dir, &error));
+        // 创建失败时 `dir` 往往**根本不存在**（父级不可写，例如 `$DSH_HOME/profiles`
+        // 属主是 root 时新建 `profiles/safe`）：修复指引里的 chown/takeown 目标必须
+        // 是真实存在的目录，否则那条命令会以 "No such file or directory" 失败。上溯
+        // 到最近的已存在祖先。
+        let remedy = nearest_existing_dir(dir).unwrap_or_else(|| dir.to_path_buf());
+        return Err(dir_error(prefix, dir, &remedy, &error));
     }
     probe(dir, dir, prefix)
 }
@@ -57,16 +62,24 @@ pub fn ensure_dir_writable(dir: &Path, prefix: &str) -> Result<(), String> {
 /// 同时覆盖档案目录、`profiles` 父级与其它子目录，避免用户按提示只改一层后再次撞上
 /// 权限错误。
 pub fn ensure_writable_path(target: &Path, home_root: &Path, prefix: &str) -> Result<(), String> {
+    match nearest_existing_dir(target) {
+        Some(dir) => probe(&dir, home_root, prefix),
+        // 上溯不到任何已存在目录（理论上不可能：$DSH_HOME 由调用方保证存在）→ 放行，
+        // 由真正执行写入的一方报错。
+        None => Ok(()),
+    }
+}
+
+/// `target` 自身（它是目录时）或最近的已存在祖先目录。
+fn nearest_existing_dir(target: &Path) -> Option<PathBuf> {
     let mut current = Some(target);
     while let Some(dir) = current {
         if dir.is_dir() {
-            return probe(dir, home_root, prefix);
+            return Some(dir.to_path_buf());
         }
         current = dir.parent();
     }
-    // 上溯不到任何已存在目录（理论上不可能：$DSH_HOME 由调用方保证存在）→ 放行，
-    // 由真正执行写入的一方报错。
-    Ok(())
+    None
 }
 
 /// 真实写入探测：create + delete 一个带 pid 的临时文件。
@@ -81,7 +94,10 @@ fn probe(dir: &Path, remedy_root: &Path, prefix: &str) -> Result<(), String> {
             Ok(())
         }
         Err(error) if is_permission_error(&error) => {
-            Err(dir_error(prefix, dir, remedy_root, &error))
+            // 指引里的修复目标必须是真实存在的目录（调用方给的 hint 理论上存在，
+            // 但 `$DSH_HOME` 在全新安装时可能尚未创建）：不存在就退回被探测的那一层。
+            let remedy = if remedy_root.is_dir() { remedy_root } else { dir };
+            Err(dir_error(prefix, dir, remedy, &error))
         }
         Err(error) => {
             log::warn!(
@@ -95,20 +111,20 @@ fn probe(dir: &Path, remedy_root: &Path, prefix: &str) -> Result<(), String> {
 
 /// 组装错误串：权限类失败给出属主信息与可执行的修复命令，其余保持原始形态。
 ///
-/// `failing` 是实际探测失败的目录（可能就是 `target` 的某个祖先），`remedy_root`
-/// 是建议 `chown` 的根（见 [`ensure_writable_path`]）。
+/// `failing` 是实际失败/探测的路径（可能是 `target` 本身或它的某个祖先），
+/// `remedy_root` 是**真实存在**、建议交给用户修复（chown / takeown）的目录——
+/// 属主信息也取自它，这样即使 `failing` 尚未创建，用户看到的仍是那个真正需要
+/// 改属主的已存在目录。
 fn dir_error(prefix: &str, failing: &Path, remedy_root: &Path, error: &io::Error) -> String {
     if !is_permission_error(error) {
         return format!("{prefix}: {}: {error}", failing.display());
     }
     format!(
         "{prefix}: {failing} 不可写（{error}{owner}）。应用无权修改该目录的属主/权限，\
-         dsh 在其下写 cordis.yml/settings.yaml 与插件依赖必然失败。请执行 \
-         `sudo chown -R \"$(id -u):$(id -g)\" {remedy}` 后重试——该状态通常由此前用 \
-         sudo 运行过 dsh 造成（macOS 的 sudo 保留 $HOME，`~/.dsh` 会被 root 创建）。",
+         dsh 在其下写 cordis.yml/settings.yaml 与插件依赖必然失败。{remedy}",
         failing = failing.display(),
-        owner = owner_suffix(failing),
-        remedy = shell_quote(remedy_root),
+        owner = owner_suffix(remedy_root),
+        remedy = remedy_hint(remedy_root),
     )
 }
 
@@ -137,8 +153,31 @@ fn owner_suffix(_path: &Path) -> String {
 
 /// POSIX 单引号包裹，内部单引号转义为 `'\''`——修复命令必须能被原样粘贴执行
 /// （用户名/路径可能含空格）。
+#[cfg(unix)]
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// 平台专属修复指引：**不能**在 Windows 上给出 `sudo chown`——那里的
+/// `PermissionDenied` 来自 ACL/属主（NTFS），POSIX 命令既不可用也修不好。
+#[cfg(unix)]
+fn remedy_hint(root: &Path) -> String {
+    format!(
+        "请在终端执行 `sudo chown -R \"$(id -u):$(id -g)\" {}` 后重试——该状态通常由此前\
+         用 sudo 运行过 dsh 造成（macOS 的 sudo 保留 $HOME，`~/.dsh` 会被 root 创建）。",
+        shell_quote(root)
+    )
+}
+
+/// Windows：先接管所有权再授予当前用户完全控制（两命令都需管理员身份的终端）。
+#[cfg(not(unix))]
+fn remedy_hint(root: &Path) -> String {
+    format!(
+        "请以管理员身份打开终端执行 `takeown /f \"{path}\" /r /d y && \
+         icacls \"{path}\" /grant \"%USERNAME%\":(OI)(CI)F /T` 接管所有权并授予当前用户\
+         完全控制后重试。",
+        path = root.display(),
+    )
 }
 
 #[cfg(test)]
@@ -241,11 +280,34 @@ mod tests {
             let error = ensure_writable_path(&dir, &root, "PROFILE_NOT_WRITABLE").unwrap_err();
             assert!(error.starts_with("PROFILE_NOT_WRITABLE:"), "{error}");
             assert!(error.contains(&shell_quote(&root)), "{error}");
+
+            // 创建失败（父级不可写）时修复目标必须是**已存在**的目录：新建
+            // `dir/safe` 会 EACCES，若按不存在的目标给出 chown 命令，用户照抄只会得到
+            // "No such file or directory"。
+            let missing = dir.join("safe");
+            let error = ensure_dir_writable(&missing, "PROFILE_MKDIR").unwrap_err();
+            assert!(error.starts_with("PROFILE_MKDIR:"), "{error}");
+            assert!(error.contains(&shell_quote(&dir)), "{error}");
+            assert!(!error.contains(&shell_quote(&missing)), "{error}");
         }
 
         let mut open = std::fs::metadata(&dir).unwrap().permissions();
         open.set_mode(0o755);
         let _ = std::fs::set_permissions(&dir, open);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 修复指引必须与平台匹配：Windows 的 `PermissionDenied` 来自 NTFS ACL/属主，
+    /// 给 POSIX 的 `sudo chown` 既不可用也修不好。
+    #[test]
+    fn remedy_hint_is_platform_appropriate() {
+        let root = Path::new("data-dir");
+        #[cfg(unix)]
+        assert!(remedy_hint(root).contains("sudo chown -R"));
+        #[cfg(not(unix))]
+        {
+            assert!(remedy_hint(root).contains("icacls"));
+            assert!(!remedy_hint(root).contains("chown"));
+        }
     }
 }

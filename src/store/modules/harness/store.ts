@@ -131,7 +131,10 @@ async function checkHealthViaProxy(): Promise<ReadinessProbeResult> {
       console.warn('[Harness] transient 502 during health check, retrying')
     }
     else {
-      console.error('[Harness] health check failed:', err)
+      // 单次探测失败是启动期的常态：服务尚未就绪、boot page 还是 404 等都会走到
+      // 这里，而轮询会一直重试到该阶段 deadline；真正的失败由 startupError 以
+      // errors.startup_* 报出。逐次记 ERROR 只会造成「满屏错误但其实启动正常」。
+      console.warn('[Harness] health check failed, retrying:', err)
     }
     return {
       healthy: false,

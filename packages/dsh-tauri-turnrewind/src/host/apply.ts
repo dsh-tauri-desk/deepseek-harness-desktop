@@ -5,7 +5,8 @@
  *   1. 捕获编排器先建（pre-step 到达时账本读写已就绪）；
  *   2. `agent/pre-step` 是唯一会 **await** 的钩子（执行屏障）；任何异常都吞掉后
  *      继续 `next()`——快照失败绝不能拦住用户的 turn（AGENTS.plugins.md 宿主侧规则）；
- *   3. `session/event` 的 turn/end 与 `agent/status → idle` 只做后台结算转发；
+ *   3. `session/event` 的 turn/end、`agent/status → idle` 与 `session/disposed`
+ *      在作废运行中读数（提示条状态）之后，只做后台结算转发；
  *   4. 路由注册在 effect 内，卸载统一释放；捕获编排器同样在 effect 内 dispose。
  */
 
@@ -66,6 +67,9 @@ export function apply(ctx: HostContext, config: PluginConfig = {}): void {
     const turn = event?.data?.turn
     if (typeof session?.id !== 'string' || typeof turn !== 'number')
       return
+    // 提示条读数在 turn 边界**同步**作废：结算是后台的（大仓库要几秒到几十秒），
+    // 不能让它决定提示条什么时候消失，否则用户会一直看着上一轮的统计在变大。
+    capture.resetLive(session.id, turn)
     void capture.settleTurn(session.id, turn).catch((error: unknown) => {
       ctx.logger?.warn?.(`${TURNREWIND_PLUGIN_NAME}: settle turn failed: ${String(error)}`)
     })
@@ -78,14 +82,30 @@ export function apply(ctx: HostContext, config: PluginConfig = {}): void {
     const sessionId = payload?.agent?.session?.id
     if (typeof sessionId !== 'string')
       return
+    // 漏发 turn/end 的中断在这里收尾：同样立刻作废读数，提示条不跨轮残留。
+    capture.resetLive(sessionId)
     void capture.settleIdle(sessionId).catch((error: unknown) => {
       ctx.logger?.warn?.(`${TURNREWIND_PLUGIN_NAME}: idle settle failed: ${String(error)}`)
     })
   })
 
-  // 4) HTTP 路由（客户端 UI 经此读摘要 / 运行中读数 / 执行撤销）。
+  // 4) 会话结束（关闭/删除/应用退出）：整个会话的运行中读数归零，
+  //    提示条不会带着上一轮的统计留到下次打开。
+  ctx.on('session/disposed', (session: any) => {
+    const sessionId = typeof session?.id === 'string' && session.id.length > 0 ? session.id : session?.sessionId
+    if (typeof sessionId !== 'string' || sessionId.length === 0)
+      return
+    capture.resetLive(sessionId)
+  })
+
+  // 5) HTTP 路由（客户端 UI 经此读摘要 / 运行中读数 / 执行撤销）。
   ctx.effect(() => {
-    const disposers = buildRoutes(ctx, { dshHome, live: capture.liveState, queue }).map(route => ctx.webServer.register(route))
+    const disposers = buildRoutes(ctx, {
+      dshHome,
+      live: capture.liveState,
+      isTurnPending: capture.isTurnPending,
+      queue,
+    }).map(route => ctx.webServer.register(route))
     return () => {
       for (const dispose of disposers)
         dispose()

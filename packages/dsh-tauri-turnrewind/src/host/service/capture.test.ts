@@ -54,6 +54,60 @@ function faultyQueue(): { queue: WorkspaceQueue, setFailing: (value: boolean) =>
   }
 }
 
+/**
+ * 可闸门队列：闸门关上后 `run` 一律先挂起，用来把「实时读数那次 git 调用正在飞」
+ * 这一刻定住（复现「重置读数」与「在飞刷新」的赛跑）。真实队列照旧执行，串行语义不变；
+ * `waitForCompleted` 让用例等到那次放行后的 git 真正跑完，而不是靠固定 sleep 猜时间。
+ */
+function gatedQueue(): {
+  queue: WorkspaceQueue
+  close: () => void
+  open: () => void
+  waitForRun: () => Promise<void>
+  waitForCompleted: () => Promise<void>
+} {
+  const real = createWorkspaceQueue()
+  let gate: Promise<void> | null = null
+  let openGate: (() => void) | null = null
+  let notifyArrived: (() => void) | null = null
+  let notifyCompleted: (() => void) | null = null
+  let arrived = Promise.resolve()
+  let completed = Promise.resolve()
+  return {
+    queue: {
+      async run<T>(key: string, task: () => Promise<T>): Promise<T> {
+        if (gate === null)
+          return real.run(key, task)
+        notifyArrived?.()
+        await gate
+        const result = await real.run(key, task)
+        notifyCompleted?.()
+        return result
+      },
+      size: () => real.size(),
+    },
+    close: () => {
+      gate = new Promise<void>((resolve) => {
+        openGate = resolve
+      })
+      arrived = new Promise<void>((resolve) => {
+        notifyArrived = resolve
+      })
+      completed = new Promise<void>((resolve) => {
+        notifyCompleted = resolve
+      })
+    },
+    open: () => {
+      const release = openGate
+      gate = null
+      openGate = null
+      release?.()
+    },
+    waitForRun: () => arrived,
+    waitForCompleted: () => completed,
+  }
+}
+
 afterEach(async () => {
   // 卸载捕获编排器：实时轮询的定时器与在飞的 git 子进程都会握着工作区，
   // Windows 上直接 rmdir 会 EBUSY。先停表、再给子进程一点退出时间。
@@ -193,5 +247,99 @@ describe('turn 结算编排', () => {
     const ledger = await readLedger(dshHome, 's8')
     expect(ledger.turns.map(turn => turn.turn)).toEqual([1])
     expect(ledger.turns[0]?.files.map(file => file.path)).toEqual(['a.txt'])
+  })
+})
+
+describe('运行中提示条的读数生命周期', () => {
+  it('新一轮开始时上一轮的读数立刻作废：提示条只反映当前这一轮', async () => {
+    const { dshHome, worktree } = await fixture()
+    const capture = captureFor(dshHome)
+
+    await capture.beginTurn('s9', 1, worktree)
+    expect(capture.liveState('s9')).toMatchObject({ active: true, turn: 1 })
+
+    // 第 1 轮还在后台结算（after 快照排队），用户已经发了新消息：
+    // 此时若还报第 1 轮的读数，客户端提示条就会显示跨轮的累加数字。
+    await capture.beginTurn('s9', 2, worktree)
+    expect(capture.liveState('s9')).toMatchObject({ active: true, turn: 2 })
+  })
+
+  it('会话结束重置读数后，该轮的结算与卡片照常（重置只作用于过程态）', async () => {
+    const { dshHome, worktree } = await fixture()
+    const capture = captureFor(dshHome)
+
+    await capture.beginTurn('s10', 1, worktree)
+    await writeFile(join(worktree, 'a.txt'), 'one\ntwo\nthree\n', 'utf8')
+    // 会话结束：读数归零，客户端提示条立刻消失。
+    capture.resetLive('s10')
+    expect(capture.liveState('s10')).toEqual({ active: false, turn: null, fileCount: 0, insertions: 0, deletions: 0 })
+
+    // 条目没有被丢：turn 尾部的变更卡片仍然照常落账。
+    await capture.settleTurn('s10', 1)
+    const ledger = await readLedger(dshHome, 's10')
+    expect(ledger.turns.map(turn => turn.turn)).toEqual([1])
+    expect(ledger.turns[0]?.files.map(file => file.path)).toEqual(['a.txt'])
+  })
+
+  it('resetLive 按会话与轮次精确作废，不误伤其他会话', async () => {
+    const { dshHome, worktree } = await fixture()
+    const capture = captureFor(dshHome)
+
+    await capture.beginTurn('s11', 1, worktree)
+    await capture.beginTurn('s12', 1, worktree)
+
+    capture.resetLive('s11')
+    expect(capture.liveState('s11').active).toBe(false)
+    expect(capture.liveState('s12')).toMatchObject({ active: true, turn: 1 })
+
+    // 按轮次也会精确命中：清 s12 的第 1 轮后两个会话都不再上报读数。
+    capture.resetLive('s12', 1)
+    expect(capture.liveState('s12').active).toBe(false)
+  })
+
+  it('重置与在飞的实时刷新赛跑时，晚到的读数不会把提示条复活', async () => {
+    const { dshHome, worktree } = await fixture()
+    const gate = gatedQueue()
+    const capture = captureFor(dshHome, [], gate.queue)
+
+    await capture.beginTurn('s13', 1, worktree)
+    expect(capture.liveState('s13')).toMatchObject({ active: true, turn: 1 })
+
+    // 关上闸门后，下一次定时刷新（1.5s）会挂在队列里 —— 等它真的开始。
+    gate.close()
+    try {
+      await gate.waitForRun()
+      // 读数还在飞的时候会话结束：重置必须生效，且在飞结果落地之后依然生效。
+      capture.resetLive('s13')
+    }
+    finally {
+      gate.open()
+    }
+    // 等到那次放行的 git 跑完（不加世代闸门时它会在这里把读数写回来）。
+    await gate.waitForCompleted()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(capture.liveState('s13').active).toBe(false)
+  })
+
+  it('读数归零不等于这一轮已落定：撤销判定仍然看结算状态', async () => {
+    const { dshHome, worktree } = await fixture()
+    const capture = captureFor(dshHome)
+
+    expect(capture.isTurnPending('s14', 1)).toBe(false)
+
+    await capture.beginTurn('s14', 1, worktree)
+    expect(capture.isTurnPending('s14', 1)).toBe(true)
+    expect(capture.isTurnPending('s14')).toBe(true)
+    expect(capture.isTurnPending('s14', 2)).toBe(false)
+    expect(capture.isTurnPending('s15')).toBe(false)
+
+    // 会话结束（读数归零）之后这一轮仍在后台结算：撤销必须继续被拒绝。
+    capture.resetLive('s14')
+    expect(capture.liveState('s14').active).toBe(false)
+    expect(capture.isTurnPending('s14', 1)).toBe(true)
+
+    await capture.settleTurn('s14', 1)
+    expect(capture.isTurnPending('s14', 1)).toBe(false)
+    expect(capture.isTurnPending('s14')).toBe(false)
   })
 })

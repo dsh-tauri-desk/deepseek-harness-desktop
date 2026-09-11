@@ -182,7 +182,10 @@ pub fn get_pet_status(app: AppHandle) -> PetStatus {
     status_from_setting(&config::get_store_dat_setting(&app))
 }
 
-/// 启用/停用桌宠；启用同时显示，停用同时**销毁窗口**并永久落盘。
+/// 永久启用/停用桌宠（点击侧栏入口的「关闭桌宠」）。
+///
+/// 停用 = 收起：销毁窗口实例（见 `desktop::pet::set_pet_window_visible`），
+/// 因此必须走 [`defer_pet_window_op`] 在非主线程执行。
 #[tauri::command]
 pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, String> {
     let updated = config::update_store_dat_setting(&app, |setting| {
@@ -192,9 +195,9 @@ pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, Strin
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = enabled;
-    pet_window::set_pet_window_visible(&app, enabled)?;
-    // 停用即无消费者：停掉宿主会话流订阅（启用时窗口已可见，直接恢复订阅）。
+    // 停用即无消费者：先停掉宿主会话流订阅，窗口销毁随后在后台完成。
     sync_pet_session_stream(&app, enabled);
+    defer_pet_window_op(&app, enabled)?;
     let status = status_from_setting(&updated);
     emit_pet_status(&app, &status);
     Ok(status)
@@ -458,8 +461,8 @@ pub fn move_pet_window(app: AppHandle, delta_x: i32, delta_y: i32) -> Result<(),
 
 /// 显示桌宠窗口；只允许已永久启用的桌宠恢复显示。
 ///
-/// 窗口不存在（首次启用，或上次收起时已被销毁）时在此重建——本命令是 `AppHandle`
-/// 命令，Tauri 在异步运行时执行，不违反「窗口创建不得在主线程」的约束。
+/// 窗口不存在（首次启用，或上次收起时已被销毁）时在此重建；窗口操作统一经
+/// [`defer_pet_window_op`] 丢到非主线程执行。
 #[tauri::command]
 pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
     let setting = config::get_store_dat_setting(&app);
@@ -470,9 +473,9 @@ pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = true;
-    pet_window::set_pet_window_visible(&app, true)?;
     // 恢复显示 = 重新有消费者：重开会话流订阅。
     sync_pet_session_stream(&app, true);
+    defer_pet_window_op(&app, true)?;
     let status = status_from_setting(&setting);
     emit_pet_status(&app, &status);
     Ok(status)
@@ -480,9 +483,9 @@ pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
 
 /// 临时收起桌宠（不改变永久 enabled；重启后已启用宠物重新显示）。
 ///
-/// 「收起」= 销毁窗口实例（`set_pet_window_visible(false)` → `destroy()`），而不是
-/// hide：隐藏窗口里的 `<video>` 仍会播放并持有 Video Wake Lock，屏幕无法息屏
-/// （issue #469）。销毁后 webview 进程消失，视频与锁一并释放，会话流订阅也随即停止。
+/// 「收起」= 销毁窗口实例，而不是 hide：隐藏窗口里的 `<video>` 仍会播放并持有
+/// Video Wake Lock，屏幕无法息屏（issue #469）。销毁后 webview 进程消失，视频与锁
+/// 一并释放，会话流订阅也随即停止。
 #[tauri::command]
 pub fn hide_pet(app: AppHandle) -> Result<PetStatus, String> {
     collapse_pet(&app)?;
@@ -491,18 +494,56 @@ pub fn hide_pet(app: AppHandle) -> Result<PetStatus, String> {
     Ok(status)
 }
 
-/// 收起桌宠窗口：销毁实例、置瞬态不可见、停掉宿主会话流订阅（幂等）。
+/// 收起桌宠窗口：置瞬态不可见、停掉宿主会话流订阅，并**在非主线程**销毁窗口实例。
 ///
-/// 供 `hide_pet` 命令与「桌宠窗口自身收到关闭请求」两条路径共用：后者发生在主线程的
-/// 窗口事件回调里，销毁是异步投递、停流只是 abort 任务句柄，都不阻塞事件循环。
+/// 供 `hide_pet` 命令与「桌宠窗口自身收到关闭请求」两条路径共用（后者发生在主线程的
+/// 窗口事件回调里），两条路径都不会在主线程触碰窗口生命周期 API，见
+/// [`defer_pet_window_op`]。
 pub fn collapse_pet(app: &AppHandle) -> Result<(), String> {
     transient_state()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .visible = false;
-    pet_window::set_pet_window_visible(app, false)?;
     // 收起 = 无人渲染：停掉宿主会话流订阅，宿主侧热路径整条短路。
     sync_pet_session_stream(app, false);
+    defer_pet_window_op(app, false)
+}
+
+/// 串行化桌宠窗口的可见性操作，保证「收起 → 再显示」按调用顺序执行。
+fn pet_window_op_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 把窗口可见性操作丢到异步运行时执行（创建窗口与销毁窗口都**不允许**在主线程调用）。
+///
+/// # 为什么必须离开主线程
+///
+/// Tauri 的 command handler 在主线程执行，而 `tauri-runtime-wry` 对主线程上的窗口
+/// 生命周期消息是**直接 panic**：
+///
+/// - `WindowMessage::Destroy`：`panic!("cannot handle \`WindowMessage::Destroy\` on the
+///   main thread")`（tauri-runtime-wry 2.11.4 lib.rs:3494）；调用点在 `send_user_message`
+///   判定「当前线程 == 主线程」后**同步**派发，因此主线程调 `destroy()` 必崩。
+/// - `create_window`：经 channel 等主线程事件循环回包，主线程调用必然死锁
+///   （同文件 lib.rs:2757 注释）。
+///
+/// 之前的 `hide()` 之所以看起来能用，只是因为 `WindowMessage::Hide` 走了不 panic 的分支；
+/// 换成销毁后就踩中了这条主线程断言（实测表现为：收起宠物后 `show_pet`、
+/// `get_pet_status` 等全部 invoke 超时、主 webview 一起卡住）。
+fn defer_pet_window_op(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // 串行锁：并发/快速连点的收起与显示不会交错，最终态等于最后一次调用。
+        let _guard = pet_window_op_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = pet_window::set_pet_window_visible(&app, visible) {
+            log::error!("PET_WINDOW_VISIBILITY_FAILED: visible={visible}: {error}");
+            let status = status_from_setting(&config::get_store_dat_setting(&app));
+            emit_pet_status(&app, &status);
+        }
+    });
     Ok(())
 }
 

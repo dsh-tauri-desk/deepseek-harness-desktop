@@ -8,6 +8,8 @@
 //! 落进 store 文件（.store.dat/.store.dev.dat）」的约定不一致。因此这里基于已有的
 //! `tauri-plugin-store` 手动读写，几何记录的时机与恢复流程完全可控。
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Runtime, Size, WebviewWindow,
@@ -54,6 +56,41 @@ impl Default for WindowState {
     }
 }
 
+/// 启动期「几何恢复窗口」门闩：置位期间的一切几何采样都不落盘。
+///
+/// 主窗口是程序化创建的（见 `desktop::builder::build_main_window`）：在恢复上次
+/// 几何之前，平台已经先按 builder 默认值（1280×840）建窗并派发 Moved/Resized。
+/// Windows 靠 `visible(false)` 把窗口藏到恢复之后再 show 来规避，但 macOS/Linux
+/// 建窗即可见——这些瞬态几何一旦落盘，就会把用户保存的尺寸/位置覆盖成默认值，
+/// 于是「每次启动都要重新拉伸」（issue #464）。这里按恢复窗口期统一门控所有平台，
+/// 而不是再依赖平台各自的建窗时序。
+static RESTORING_GEOMETRY: AtomicBool = AtomicBool::new(false);
+
+/// 启动几何恢复窗口的 RAII 守卫：`begin()` 进入，drop 退出。
+///
+/// 用守卫而不是裸 `store(false)`：`build_main_window` 中途 `?` 返回、建窗失败等
+/// 异常路径也会正常释放，不会把几何采样永久关掉（那会导致再也不记住窗口大小）。
+pub struct GeometryRestoreGuard;
+
+impl GeometryRestoreGuard {
+    /// 进入恢复窗口；必须在创建主窗口之前调用。
+    pub fn begin() -> Self {
+        RESTORING_GEOMETRY.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for GeometryRestoreGuard {
+    fn drop(&mut self) {
+        RESTORING_GEOMETRY.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 当前是否处于启动几何恢复窗口（采样门控用）。
+fn is_restoring_geometry() -> bool {
+    RESTORING_GEOMETRY.load(Ordering::SeqCst)
+}
+
 /// Store 持久化文件名：debug 构建与生产隔离（各自独立文件），语义同
 /// `config::setting` 的 store 文件选择，保证开发版与发布版窗口几何不互相污染。
 fn store_dat_file_name() -> &'static str {
@@ -91,6 +128,12 @@ fn save_window_state<R: Runtime>(app_handle: &AppHandle<R>, state: &WindowState)
 
 /// 采样当前窗口并保存（主窗口移动/缩放时由 builder 调用）。
 pub fn save_geometry<R: Runtime>(window: &Window<R>) {
+    // 启动期几何恢复尚未完成：此刻采到的多半是 builder 默认尺寸/居中位置，
+    // 落盘会覆盖用户保存值（见 RESTORING_GEOMETRY）。
+    if is_restoring_geometry() {
+        return;
+    }
+
     // 原生全屏切换会触发 Resized，但此时的屏幕尺寸不是可恢复的
     // 普通窗口几何；保留进入全屏前的最后一帧，退出全屏后会再次正常采样。
     if window.is_fullscreen().unwrap_or(false) {
@@ -150,88 +193,178 @@ fn migrate_legacy_outer_size(
 
 /// 保存的尺寸是否退化到最小尺寸（含以下）。
 ///
-/// 启动过渡、瞬态采样或损坏数据被 `resolve_geometry` 夹到最小尺寸后，往往会在
+/// 启动过渡、瞬态采样或损坏数据被夹到最小尺寸后，往往会在
 /// 下一次移动/缩放时被当作「用户真实尺寸」写回 store，导致窗口永久卡在最小尺寸。
-/// 这类记录不该被当作可恢复几何，否则无法自愈；此时应回落到 builder 默认尺寸。
+/// 这类记录不该被当作可恢复几何，否则无法自愈；此时应回落到 builder 默认尺寸
+/// （唯一一处「连尺寸都不恢复」是刻意的）。
 fn is_degenerate_size(saved: &WindowState) -> bool {
     (saved.width as f64) <= MIN_WINDOW_WIDTH && (saved.height as f64) <= MIN_WINDOW_HEIGHT
 }
 
-/// 把保存的几何解析成「实际可用的矩形」，并夹紧到当前可见屏幕。
+/// 屏幕矩形（物理像素，左上角为原点）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl ScreenRect {
+    /// 右边界（x + width）。
+    fn right(&self) -> i32 {
+        self.x.saturating_add(self.width as i32)
+    }
+
+    /// 下边界（y + height）。
+    fn bottom(&self) -> i32 {
+        self.y.saturating_add(self.height as i32)
+    }
+
+    /// 与另一矩形是否有面积交集。
+    fn intersects(&self, other: &ScreenRect) -> bool {
+        self.x < other.right()
+            && self.right() > other.x
+            && self.y < other.bottom()
+            && self.bottom() > other.y
+    }
+}
+
+/// 多个屏幕矩形的并集；无可用屏幕时 `None`。
+fn union_rect<I>(rects: I) -> Option<ScreenRect>
+where
+    I: IntoIterator<Item = ScreenRect>,
+{
+    let mut iter = rects.into_iter();
+    let mut union = iter.next()?;
+    for rect in iter {
+        let left = union.x.min(rect.x);
+        let top = union.y.min(rect.y);
+        let right = union.right().max(rect.right());
+        let bottom = union.bottom().max(rect.bottom());
+        union = ScreenRect {
+            x: left,
+            y: top,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+        };
+    }
+    Some(union)
+}
+
+/// 解析结果：尺寸始终可用；位置不可用时为 `None`（交给 Tauri 默认居中）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedGeometry {
+    size: PhysicalSize<u32>,
+    position: Option<PhysicalPosition<i32>>,
+}
+
+/// 按「尺寸与位置解耦」解析保存的几何（纯函数，便于单测）。
 ///
-/// 返回 `(物理尺寸, 物理坐标)`：
-/// - 无位置记录（首次启动）→ `None`，调用方保持 builder 的默认尺寸（1280×840，
-///   由 Tauri 自动居中）。
-/// - 保存的位置完全不可见（例如保存时的外接屏已被拔出）→ 回落到主屏居中，
-///   尺寸仍按可见屏幕夹紧，避免窗口被放到屏幕外「找不到」。
-fn resolve_geometry<R: Runtime>(
-    app: &AppHandle<R>,
+/// - 退化尺寸（见 `is_degenerate_size`）→ `None`，回落 builder 默认并重新采样；
+/// - 尺寸：不小于最小尺寸；能拿到可见屏幕并集时再夹进并集（防止拔掉外接大屏后
+///   窗口过大）。**位置信息不参与尺寸解析**——拿不到位置不等于没有尺寸可恢复，
+///   否则用户「拉伸过的尺寸」会被整体丢弃、每次启动回到 1280×840（issue #464）；
+/// - 位置：有记录且与可见区相交 → 夹紧到可见区内；有记录但完全不可见（外接屏被
+///   拔出）→ 主屏居中；无记录 / 无可见区 / 无主屏 → `None`，保持系统默认居中。
+fn resolve_geometry_in(
     saved: &WindowState,
-) -> Option<(PhysicalSize<u32>, PhysicalPosition<i32>)> {
-    // 保存的尺寸退化到最小尺寸：大概率是启动过渡/瞬态采样或损坏数据被夹到最小，
-    // 不应当作可恢复几何，否则窗口会永久卡在最小尺寸。回落 builder 默认并重新采样。
+    visible: Option<ScreenRect>,
+    primary: Option<ScreenRect>,
+) -> Option<ResolvedGeometry> {
     if is_degenerate_size(saved) {
         return None;
     }
-    // 取当前所有监视器，计算可见屏幕的并集矩形
-    let monitors = app.available_monitors().ok()?;
-    if monitors.is_empty() {
-        return None;
+
+    let mut width = saved.width.max(MIN_WINDOW_WIDTH as u32);
+    let mut height = saved.height.max(MIN_WINDOW_HEIGHT as u32);
+    if let Some(visible) = visible {
+        width = width.min(visible.width.max(MIN_WINDOW_WIDTH as u32));
+        height = height.min(visible.height.max(MIN_WINDOW_HEIGHT as u32));
     }
-    let min_x = monitors.iter().map(|m| m.position().x).min()?;
-    let min_y = monitors.iter().map(|m| m.position().y).min()?;
-    let max_x = monitors
-        .iter()
-        .map(|m| m.position().x + m.size().width as i32)
-        .max()?;
-    let max_y = monitors
-        .iter()
-        .map(|m| m.position().y + m.size().height as i32)
-        .max()?;
+    let size = PhysicalSize::new(width, height);
 
-    // 尺寸：不小于最小尺寸，且不超过可见屏幕并集（防止拔掉外接大屏后窗口过大）
-    let mut w = saved.width.max(MIN_WINDOW_WIDTH as u32);
-    let mut h = saved.height.max(MIN_WINDOW_HEIGHT as u32);
-    let union_w = (max_x - min_x) as u32;
-    let union_h = (max_y - min_y) as u32;
-    w = w.min(union_w.max(MIN_WINDOW_WIDTH as u32));
-    h = h.min(union_h.max(MIN_WINDOW_HEIGHT as u32));
+    Some(ResolvedGeometry {
+        size,
+        position: resolve_position(saved, size, visible, primary),
+    })
+}
 
-    let (x, y) = match (saved.x, saved.y) {
-        (Some(sx), Some(sy)) => {
-            // 窗口矩形是否与可见屏幕并集有交集
-            let intersects =
-                sx < max_x && sx + w as i32 > min_x && sy < max_y && sy + h as i32 > min_y;
-            if intersects {
-                // 夹紧坐标到并集内，保证窗口至少部分可见
-                let nx =
-                    (sx as i64).clamp(min_x as i64, (max_x as i64 - w as i64).max(min_x as i64));
-                let ny =
-                    (sy as i64).clamp(min_y as i64, (max_y as i64 - h as i64).max(min_y as i64));
-                (nx as i32, ny as i32)
-            } else {
-                // 保存的位置不可见：回落到主屏居中
-                match app.primary_monitor().ok().flatten() {
-                    Some(m) => (
-                        m.position().x + (m.size().width as i32 - w as i32) / 2,
-                        m.position().y + (m.size().height as i32 - h as i32) / 2,
-                    ),
-                    None => return None,
-                }
-            }
-        }
-        _ => return None,
+/// 位置解析（纯函数）：语义见 `resolve_geometry_in`。
+fn resolve_position(
+    saved: &WindowState,
+    size: PhysicalSize<u32>,
+    visible: Option<ScreenRect>,
+    primary: Option<ScreenRect>,
+) -> Option<PhysicalPosition<i32>> {
+    let (Some(sx), Some(sy)) = (saved.x, saved.y) else {
+        return None;
     };
+    // 拿不到可见区就无从判断位置是否可恢复，交给系统居中。
+    let visible = visible?;
 
-    Some((PhysicalSize::new(w, h), PhysicalPosition::new(x, y)))
+    let window = ScreenRect {
+        x: sx,
+        y: sy,
+        width: size.width,
+        height: size.height,
+    };
+    if window.intersects(&visible) {
+        // 夹紧坐标到并集内，保证窗口至少部分可见
+        let max_x = visible.right().saturating_sub(size.width as i32);
+        let max_y = visible.bottom().saturating_sub(size.height as i32);
+        let nx = (sx as i64).clamp(visible.x as i64, (max_x as i64).max(visible.x as i64));
+        let ny = (sy as i64).clamp(visible.y as i64, (max_y as i64).max(visible.y as i64));
+        return Some(PhysicalPosition::new(nx as i32, ny as i32));
+    }
+
+    // 保存的位置不可见（例如保存时的外接屏已被拔出）：回落到主屏居中
+    let primary = primary?;
+    Some(PhysicalPosition::new(
+        primary.x + (primary.width as i32 - size.width as i32) / 2,
+        primary.y + (primary.height as i32 - size.height as i32) / 2,
+    ))
+}
+
+/// 当前所有监视器的可见并集；拿不到（空列表等）时 `None`。
+fn visible_screen_union<R: Runtime>(app: &AppHandle<R>) -> Option<ScreenRect> {
+    let monitors = app.available_monitors().ok()?;
+    union_rect(monitors.iter().map(|monitor| ScreenRect {
+        x: monitor.position().x,
+        y: monitor.position().y,
+        width: monitor.size().width,
+        height: monitor.size().height,
+    }))
+}
+
+/// 主屏矩形（位置不可见时的居中回退目标）。
+fn primary_screen<R: Runtime>(app: &AppHandle<R>) -> Option<ScreenRect> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    Some(ScreenRect {
+        x: monitor.position().x,
+        y: monitor.position().y,
+        width: monitor.size().width,
+        height: monitor.size().height,
+    })
+}
+
+/// 把保存的几何解析成「实际可用的尺寸 + 可选位置」。
+fn resolve_geometry<R: Runtime>(
+    app: &AppHandle<R>,
+    saved: &WindowState,
+) -> Option<ResolvedGeometry> {
+    resolve_geometry_in(saved, visible_screen_union(app), primary_screen(app))
 }
 
 /// 恢复主窗口的大小与位置。在 `build_main_window` 成功 build() 之后调用。
 ///
-/// 内部读取上次保存的 `WindowState`；顺序说明：先设置物理尺寸/位置，再按需
-/// `maximize()`——最大化会覆盖窗口当前尺寸，因此尺寸/位置要在最大化之前设置。
-/// 无历史状态时不改动窗口，由 builder 的默认 `inner_size(1280, 840)`
-/// （逻辑像素，居中）生效。
+/// 内部读取上次保存的 `WindowState`；顺序说明：先设置物理尺寸，再设置位置
+/// （位置可能不可用），最后按需 `maximize()`——最大化会覆盖窗口当前尺寸，
+/// 因此尺寸/位置要在最大化之前设置。
+///
+/// 尺寸与位置解耦：只有「无历史 / 尺寸退化」才整体放弃，其余情况**尺寸照常恢复**，
+/// 位置拿不到时保持系统居中，不再因为位置信息缺失而把用户拉伸过的尺寸一起丢掉
+/// （issue #464）。
 pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
     let mut saved = get_window_state(app);
     if !saved.size_is_inner {
@@ -239,11 +372,13 @@ pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindo
             saved = migrate_legacy_outer_size(&saved, outer, inner);
         }
     }
-    let Some((size, pos)) = resolve_geometry(app, &saved) else {
+    let Some(geometry) = resolve_geometry(app, &saved) else {
         return;
     };
-    let _ = window.set_size(Size::Physical(size));
-    let _ = window.set_position(Position::Physical(pos));
+    let _ = window.set_size(Size::Physical(geometry.size));
+    if let Some(position) = geometry.position {
+        let _ = window.set_position(Position::Physical(position));
+    }
     if saved.maximized {
         let _ = window.maximize();
     }
@@ -365,5 +500,168 @@ mod tests {
             ..WindowState::default()
         };
         assert!(!is_degenerate_size(&half_normal));
+    }
+
+    /// 构造屏幕矩形（测试夹具）。
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> ScreenRect {
+        ScreenRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// 构造带尺寸的保存记录（位置默认给出）。
+    fn saved(x: Option<i32>, y: Option<i32>, width: u32, height: u32) -> WindowState {
+        WindowState {
+            x,
+            y,
+            width,
+            height,
+            size_is_inner: true,
+            ..WindowState::default()
+        }
+    }
+
+    #[test]
+    fn union_rect_spans_every_screen() {
+        // 主屏 + 左上角在 (1920, -200) 的副屏 → 并集覆盖两者
+        let union = union_rect([rect(0, 0, 1920, 1080), rect(1920, -200, 1280, 1024)])
+            .expect("union of two screens");
+        assert_eq!(union, rect(0, -200, 3200, 1280));
+
+        // 单屏 → 自身
+        assert_eq!(
+            union_rect([rect(0, 0, 1920, 1080)]),
+            Some(rect(0, 0, 1920, 1080))
+        );
+
+        // 无显示器信息 → None（而不是退化成 (0,0) 的假屏幕）
+        assert_eq!(union_rect(Vec::<ScreenRect>::new()), None);
+    }
+
+    #[test]
+    fn size_is_restored_even_without_saved_position() {
+        // issue #464：没有位置记录（或位置不可用）时，用户拉伸过的尺寸必须照常恢复，
+        // 不能整体放弃、回退 builder 默认的 1280×840。
+        let resolved = resolve_geometry_in(
+            &saved(None, None, 1500, 1000),
+            Some(rect(0, 0, 1920, 1080)),
+            Some(rect(0, 0, 1920, 1080)),
+        )
+        .expect("geometry resolved without position");
+
+        assert_eq!(resolved.size, PhysicalSize::new(1500, 1000));
+        assert_eq!(resolved.position, None);
+    }
+
+    #[test]
+    fn size_is_restored_even_without_monitor_info() {
+        // 启动早期枚举不到显示器（available_monitors 返回空列表）时：
+        // 跳过夹紧但保留尺寸，位置交给系统居中。
+        let resolved = resolve_geometry_in(&saved(Some(100), Some(100), 1500, 1000), None, None)
+            .expect("geometry resolved without monitors");
+
+        assert_eq!(resolved.size, PhysicalSize::new(1500, 1000));
+        assert_eq!(resolved.position, None);
+    }
+
+    #[test]
+    fn restored_size_never_goes_below_the_minimum() {
+        // 只有宽度低于最小尺寸（高度正常，不构成退化记录）→ 宽度被抬到最小尺寸
+        let resolved = resolve_geometry_in(
+            &saved(Some(0), Some(0), 700, 1000),
+            Some(rect(0, 0, 1920, 1080)),
+            Some(rect(0, 0, 1920, 1080)),
+        )
+        .expect("geometry resolved");
+
+        assert_eq!(
+            resolved.size,
+            PhysicalSize::new(MIN_WINDOW_WIDTH as u32, 1000)
+        );
+    }
+
+    #[test]
+    fn restored_size_is_clamped_into_the_visible_union() {
+        // 拔掉外接大屏后：保存的尺寸不能超过当前可见并集
+        let resolved = resolve_geometry_in(
+            &saved(Some(0), Some(0), 3840, 2160),
+            Some(rect(0, 0, 1920, 1080)),
+            Some(rect(0, 0, 1920, 1080)),
+        )
+        .expect("geometry resolved");
+
+        assert_eq!(resolved.size, PhysicalSize::new(1920, 1080));
+    }
+
+    #[test]
+    fn visible_position_is_clamped_into_the_visible_union() {
+        // 位置部分越界（x=1000 时窗口右边缘超出 1920）→ 夹紧到可见区内
+        let resolved = resolve_geometry_in(
+            &saved(Some(1000), Some(20), 1500, 1000),
+            Some(rect(0, 0, 1920, 1080)),
+            Some(rect(0, 0, 1920, 1080)),
+        )
+        .expect("geometry resolved");
+
+        assert_eq!(resolved.size, PhysicalSize::new(1500, 1000));
+        assert_eq!(resolved.position, Some(PhysicalPosition::new(420, 20)));
+    }
+
+    #[test]
+    fn offscreen_position_falls_back_to_primary_center() {
+        let resolved = resolve_geometry_in(
+            &saved(Some(9000), Some(5000), 1500, 1000),
+            Some(rect(0, 0, 1920, 1080)),
+            Some(rect(0, 0, 1920, 1080)),
+        )
+        .expect("geometry resolved");
+
+        assert_eq!(resolved.size, PhysicalSize::new(1500, 1000));
+        assert_eq!(resolved.position, Some(PhysicalPosition::new(210, 40)));
+    }
+
+    #[test]
+    fn offscreen_position_without_primary_screen_keeps_the_size() {
+        // 位置不可见且拿不到主屏 → 只放弃位置，尺寸照常恢复
+        let resolved = resolve_geometry_in(
+            &saved(Some(9000), Some(5000), 1500, 1000),
+            Some(rect(0, 0, 1920, 1080)),
+            None,
+        )
+        .expect("geometry resolved");
+
+        assert_eq!(resolved.size, PhysicalSize::new(1500, 1000));
+        assert_eq!(resolved.position, None);
+    }
+
+    #[test]
+    fn degenerate_size_still_falls_back_to_builder_defaults() {
+        // 退化尺寸是刻意的自愈路径：整体放弃恢复，回落 builder 默认并重新采样
+        let resolved = resolve_geometry_in(
+            &saved(
+                Some(10),
+                Some(10),
+                MIN_WINDOW_WIDTH as u32,
+                MIN_WINDOW_HEIGHT as u32,
+            ),
+            Some(rect(0, 0, 1920, 1080)),
+            Some(rect(0, 0, 1920, 1080)),
+        );
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn geometry_restore_guard_gates_sampling_until_dropped() {
+        assert!(!is_restoring_geometry());
+        {
+            let _guard = GeometryRestoreGuard::begin();
+            assert!(is_restoring_geometry());
+        }
+        // 守卫 drop（含 build_main_window 中途 `?` 返回的异常路径）后必须恢复采样
+        assert!(!is_restoring_geometry());
     }
 }

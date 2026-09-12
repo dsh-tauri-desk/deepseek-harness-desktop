@@ -342,4 +342,32 @@ describe('运行中提示条的读数生命周期', () => {
     expect(capture.isTurnPending('s14', 1)).toBe(false)
     expect(capture.isTurnPending('s14')).toBe(false)
   })
+
+  it('工作区里的嵌套仓库不会让运行中读数凭空多出文件（提示条假报 +N）', async () => {
+    // 回归背景：`entry.nestedDirs` 此前只用于结算时的 after 快照，没传进 liveDiff ——
+    // 实时读数的 `git add --all` 会把嵌套仓库当 gitlink 写进私有 index，而 before
+    // 快照里没有它们，读数于是报出「2 个文件已更改 +2 -0」这种工作区根本没发生过的
+    // 改动（用户实际反馈）。这里钉的是这条**接线**：本轮的改动只有 a.txt 一行。
+    const { dshHome, worktree } = await fixture()
+    const nested = join(worktree, 'source', 'react-use')
+    await mkdir(nested, { recursive: true })
+    await run('git', ['-c', 'init.defaultBranch=main', 'init', '--quiet', nested], { windowsHide: true })
+    await writeFile(join(nested, 'inner.txt'), 'v1\n', 'utf8')
+    const identity = ['-c', 'user.email=test@example.com', '-c', 'user.name=test']
+    await run('git', ['-C', nested, ...identity, 'add', '--all'], { windowsHide: true })
+    await run('git', ['-C', nested, ...identity, 'commit', '--quiet', '-m', 'init'], { windowsHide: true })
+    // 源仓库登记成 gitlink（被跟踪的嵌套仓库，不是被忽略的参考克隆）。
+    await run('git', ['-C', worktree, ...identity, 'add', 'source/react-use'], { windowsHide: true })
+
+    const capture = captureFor(dshHome)
+    await capture.beginTurn('s16', 1, worktree)
+    await writeFile(join(worktree, 'a.txt'), 'one\ntwo\nthree\n', 'utf8')
+
+    // 等第一次定时刷新（1.5s 起）落地：读数出现就必须正好是 a.txt 这一处改动。
+    const deadline = Date.now() + 15_000
+    while (capture.liveState('s16').fileCount === 0 && Date.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+    expect(capture.liveState('s16')).toMatchObject({ active: true, turn: 1, fileCount: 1, insertions: 1, deletions: 0 })
+  })
 })

@@ -156,7 +156,8 @@ pub fn apply_pet_size<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) else {
         return;
     };
-    let (width, height) = pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
+    let (width, height) =
+        pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
     if window
         .set_size(tauri::LogicalSize::new(width, height))
         .is_ok()
@@ -294,7 +295,8 @@ pub fn ensure_pet_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvie
         return Ok(window);
     }
     let app_handle = app.clone();
-    let (width, height) = pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
+    let (width, height) =
+        pet_window_logical_size(get_pet_size_percent(app), pet_window_aspect(app));
     // 非 Windows 平台在此前加入注入脚本时再赋值，故需要 mut；Windows 下保持只读。
     #[allow(unused_mut)]
     let mut builder =
@@ -449,15 +451,6 @@ pub fn init_pet_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// 重载桌宠窗口页面。
-///
-/// 窗口已被收起（销毁）时无需 reload——下次显示会重新创建 webview，天然加载新资源。
-pub fn reload_pet_window<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
-        let _ = window.eval("location.reload()");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,11 +489,17 @@ mod tests {
                 width,
                 (PET_SPRITE_BASE_WIDTH * scale + PET_WINDOW_PAD_X).max(PET_WINDOW_MIN_WIDTH)
             );
-            assert_eq!(height, PET_SPRITE_BASE_WIDTH * PET_CUSTOM_ASPECT * scale + 82.0);
+            assert_eq!(
+                height,
+                PET_SPRITE_BASE_WIDTH * PET_CUSTOM_ASPECT * scale + 82.0
+            );
         }
         // 内置鲸鱼为 16:9 画布，窗口高度远小于 8x11 图集，避免窗口过高产生大片透明区。
         let (_, builtin_height) = pet_window_logical_size(100.0, PET_BUILTIN_ASPECT);
-        assert_eq!(builtin_height, PET_SPRITE_BASE_WIDTH * PET_BUILTIN_ASPECT + 82.0);
+        assert_eq!(
+            builtin_height,
+            PET_SPRITE_BASE_WIDTH * PET_BUILTIN_ASPECT + 82.0
+        );
     }
 
     #[test]
@@ -511,7 +510,9 @@ mod tests {
         assert_eq!(PET_BUILTIN_ASPECT, 9.0 / 16.0);
         assert_eq!(PET_CUSTOM_ASPECT, 208.0 / 192.0);
         let is_builtin = |active: Option<&str>| {
-            active.map(str::trim).filter(|v| !v.is_empty())
+            active
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
                 .map(|v| !v.contains(':'))
                 .unwrap_or(true)
         };

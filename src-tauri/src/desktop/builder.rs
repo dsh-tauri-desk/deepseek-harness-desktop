@@ -637,8 +637,6 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::set_pet_size,
         crate::bridge::push_pet_session,
         crate::bridge::move_pet_window,
-        crate::bridge::show_pet,
-        crate::bridge::hide_pet,
         crate::bridge::set_pet_ignore_cursor_events,
         crate::bridge::list_pets,
         crate::bridge::import_pet,
@@ -697,10 +695,11 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
                     // 桌宠窗口没有装饰按钮，但 Alt+F4 / 系统关闭仍会走到这里：语义等同
-                    // 「收起宠物」——销毁窗口并同步瞬态可见性与会话流（issue #469）。
+                    // 「关闭宠物」——持久化 enabled=false 并销毁窗口（与会话流一起收口）。
+                    // 走命令本身而不是内部函数：关闭是持久动作，重启后不该再自己起来。
                     api.prevent_close();
                     let handle = window.app_handle().clone();
-                    if let Err(error) = crate::bridge::pet::collapse_pet(&handle) {
+                    if let Err(error) = crate::bridge::pet::set_pet_enabled(handle, false) {
                         log::warn!("[pet] PET_WINDOW_DESTROY_FAILED: {error}");
                     }
                     return;

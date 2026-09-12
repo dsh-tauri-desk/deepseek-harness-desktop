@@ -8,12 +8,10 @@ import {
   fetchPetList,
   fetchPetStatus,
   fetchPresetPets,
-  hidePet,
   importPet,
   setActivePet,
   setPetEnabled,
   setPetSize,
-  showPet,
 } from '../service/pet'
 import { beginPetStatusFetch, commitPetStatusFetch, getPetUiSnapshot, setPetStatus, subscribePetUi } from '../store'
 import petSettingsStyle from './pet-settings.cssr'
@@ -100,7 +98,6 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
   const [size, setSize] = useState(status?.pet_size ?? PET_DEFAULT_SIZE)
   const committedSizeRef = useRef<number | null>(null)
   const enabled = Boolean(status?.enabled)
-  const visible = Boolean(status?.visible)
   const active = status?.active_pet ?? ''
   const statusSize = status?.pet_size ?? PET_DEFAULT_SIZE
 
@@ -178,21 +175,17 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     }
   }
 
-  async function toggleVisibility(): Promise<void> {
+  /** 启用/关闭桌宠：纯持久开关，关闭后重启不再自动拉起。 */
+  async function toggleEnabled(): Promise<void> {
     if (busy)
       return
     setBusy(true)
     setError(null)
     try {
-      const nextStatus = !enabled
-        ? await setPetEnabled(true)
-        : visible
-          ? await hidePet()
-          : await showPet()
-      setPetStatus(nextStatus)
+      setPetStatus(await setPetEnabled(!enabled))
     }
     catch (toggleError) {
-      console.error('[dsh-tauri-pet] visibility failed:', toggleError)
+      console.error('[dsh-tauri-pet] toggle pet failed:', toggleError)
       setError(text('toggleFailed'))
     }
     finally {
@@ -338,8 +331,8 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                     <Icon as={Plus} />
                     {text('create')}
                   </button>
-                  <button type="button" className="dshp-pet__tool-btn" disabled={busy} onClick={() => { void toggleVisibility() }}>
-                    {visible ? text('collapsePet') : text('wakePet')}
+                  <button type="button" className="dshp-pet__tool-btn" disabled={busy} onClick={() => { void toggleEnabled() }}>
+                    {enabled ? text('closePet') : text('enablePet')}
                   </button>
                 </>
               )

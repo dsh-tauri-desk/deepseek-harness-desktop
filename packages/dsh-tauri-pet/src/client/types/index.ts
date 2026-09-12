@@ -80,11 +80,12 @@ export interface ConversationInputLeftProps {
 }
 
 export type LocaleKey
-  = | 'collapsePet'
+  = | 'closePet'
     | 'create'
     | 'createFailed'
     | 'emptyImported'
     | 'enable'
+    | 'enablePet'
     | 'import'
     | 'importFailed'
     | 'listFailed'
@@ -99,4 +100,3 @@ export type LocaleKey
     | 'tabCodexDesc'
     | 'tabInstalledDesc'
     | 'toggleFailed'
-    | 'wakePet'

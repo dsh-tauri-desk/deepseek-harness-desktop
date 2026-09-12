@@ -13,6 +13,7 @@
 use crate::config;
 use crate::desktop::pet as pet_window;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -23,7 +24,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use zip::ZipArchive;
-use futures_util::StreamExt;
 
 /// 宠物大小百分比合法区间（精灵图缩放 50%–200%，与插件设置页滑条一致）。
 pub const PET_SIZE_MIN: f64 = pet_window::PET_SIZE_MIN_PERCENT;
@@ -46,29 +46,16 @@ const PET_SPRITE_ROWS: u8 = 11;
 /// 设置变化推送给 pet 窗口的事件名；会话生命周期使用 `session:*` 事件。
 pub const PET_STATUS_EVENT: &str = "pet://status";
 
-/// 只驻留当前进程的可见性；会话动作和 Toast 完全由 pet WebView 管理。
-#[derive(Debug, Clone)]
-struct PetTransientState {
-    visible: bool,
-}
-
-impl Default for PetTransientState {
-    fn default() -> Self {
-        Self { visible: true }
-    }
-}
-
-fn transient_state() -> &'static Mutex<PetTransientState> {
-    static STATE: OnceLock<Mutex<PetTransientState>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(PetTransientState::default()))
-}
-
 /// 桌宠当前完整状态（设置页、插件与 pet 窗口读取）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetStatus {
-    /// 桌宠能力是否永久启用。
+    /// 桌宠是否启用（持久化）。关闭宠物即写 false，重启后保持关闭。
     pub enabled: bool,
     /// 桌宠窗口当前是否应显示。
+    ///
+    /// 恒等于 `enabled`：窗口的可见性现在完全由持久开关决定 —— 从前的「临时收起」
+    /// （进程内瞬态、重启即恢复）已移除，用户主动关闭就是关闭。字段保留是为了
+    /// 桥接契约稳定（侧栏绿点、pet 窗口渲染都读它）。
     pub visible: bool,
     /// 当前桌宠 id；持久值缺省或空白时返回空串（未选择任何宠物）。
     pub active_pet: String,
@@ -154,15 +141,11 @@ fn normalize_active_pet(active_pet: Option<&str>) -> String {
     }
 }
 
-/// 将持久设置和进程内瞬态状态合并为唯一的对外状态。
+/// 由持久设置推导唯一的对外状态（窗口可见性 = 持久开关，没有额外的进程内状态）。
 fn status_from_setting(setting: &config::Setting) -> PetStatus {
-    let transient = transient_state()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone();
     PetStatus {
         enabled: setting.pet_enabled,
-        visible: setting.pet_enabled && transient.visible,
+        visible: setting.pet_enabled,
         active_pet: normalize_active_pet(setting.active_pet.as_deref()),
         pet_size: setting.pet_size,
     }
@@ -183,20 +166,20 @@ pub fn get_pet_status(app: AppHandle) -> PetStatus {
     status_from_setting(&config::get_store_dat_setting(&app))
 }
 
-/// 永久启用/停用桌宠（点击侧栏入口的「关闭桌宠」）。
+/// 启用/关闭桌宠（持久化）。侧栏入口、设置页与桌宠窗口自身的关闭请求都走这里。
 ///
-/// 停用 = 收起：销毁窗口实例（见 `desktop::pet::set_pet_window_visible`），
-/// 因此必须走 [`defer_pet_window_op`] 在非主线程执行。
+/// 关闭即销毁窗口实例（不是 hide，见 `desktop::pet::set_pet_window_visible`：隐藏窗口里
+/// 的 `<video>` 仍会播放并持有 Video Wake Lock，issue #469），因此必须走
+/// [`defer_pet_window_op`] 在非主线程执行。
+///
+/// **持久化是刻意的**：`enabled=false` 落盘后重启不再自动拉起桌宠。从前「收起」只改
+/// 进程内瞬态，导致用户明明关了宠物、重启又自己出来。
 #[tauri::command]
 pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, String> {
     let updated = config::update_store_dat_setting(&app, |setting| {
         setting.pet_enabled = enabled;
     });
-    transient_state()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .visible = enabled;
-    // 停用即无消费者：先停掉宿主会话流订阅，窗口销毁随后在后台完成。
+    // 关闭即无消费者：先停掉宿主会话流订阅，窗口销毁随后在后台完成。
     sync_pet_session_stream(&app, enabled);
     defer_pet_window_op(&app, enabled)?;
     let status = status_from_setting(&updated);
@@ -239,11 +222,7 @@ pub fn set_pet_size(app: AppHandle, size: f64) -> Result<PetStatus, String> {
 
 /// 将 DSH 会话原始数据推送到独立桌宠 WebView，不在桌面端构造宠物专用结构。
 #[tauri::command]
-pub fn push_pet_session(
-    app: AppHandle,
-    action: String,
-    session: Value,
-) -> Result<(), String> {
+pub fn push_pet_session(app: AppHandle, action: String, session: Value) -> Result<(), String> {
     let action = action.trim();
     if !matches!(action, "create" | "update" | "remove") {
         return Err("PET_SESSION_ACTION_INVALID: action must be create/update/remove".to_string());
@@ -261,12 +240,8 @@ pub fn push_pet_session(
         "remove" => "session:remove",
         _ => unreachable!("session action was validated above"),
     };
-    app.emit_to(
-        pet_window::PET_WINDOW_LABEL,
-        event,
-        session,
-    )
-    .map_err(|error| format!("PET_SESSION_PUSH_FAILED: failed to emit session {id}: {error}"))
+    app.emit_to(pet_window::PET_WINDOW_LABEL, event, session)
+        .map_err(|error| format!("PET_SESSION_PUSH_FAILED: failed to emit session {id}: {error}"))
 }
 
 /// DSH 宿主会话增量 SSE 流路径（与 packages/dsh-tauri-pet/src/index.ts 的
@@ -285,7 +260,9 @@ fn session_event_of(action: &str) -> Option<&'static str> {
 
 /// 直接把「动作 + 展示载荷」推给桌宠窗口（返回是否成功，仅用于 debug 日志）。
 fn emit_pet_session(app: &AppHandle, action: &str, payload: &Value) {
-    let Some(event) = session_event_of(action) else { return; };
+    let Some(event) = session_event_of(action) else {
+        return;
+    };
     let _ = app.emit_to(pet_window::PET_WINDOW_LABEL, event, payload.clone());
 }
 
@@ -321,8 +298,7 @@ async fn consume_pet_session_stream(app: &AppHandle, url: &str) -> Result<(), St
             let trimmed = line.trim();
             if let Some(data) = trimmed.strip_prefix("data:") {
                 pending_data.push(data.trim().to_string());
-            }
-            else if trimmed.is_empty() {
+            } else if trimmed.is_empty() {
                 if !pending_data.is_empty() {
                     let frame: Value = serde_json::from_str(&pending_data.join("\n"))
                         .map_err(|error| error.to_string())?;
@@ -349,10 +325,10 @@ fn pet_stream_handle() -> &'static Mutex<Option<tauri::async_runtime::JoinHandle
     HANDLE.get_or_init(|| Mutex::new(None))
 }
 
-/// 是否需要订阅宿主会话增量流：桌宠已启用且窗口可见。
+/// 是否需要订阅宿主会话增量流：桌宠已启用（窗口存在）。
 ///
-/// 收起桌宠（`hide_pet`）会销毁窗口，同样视为无消费者——窗口不渲染时转发毫无意义，
-/// 停掉订阅即让宿主的热路径与逐会话累计态一并短路。
+/// 关闭桌宠（`set_pet_enabled(false)`）会销毁窗口，同样视为无消费者——窗口不渲染时
+/// 转发毫无意义，停掉订阅即让宿主的热路径与逐会话累计态一并短路。
 pub fn pet_stream_wanted(app: &AppHandle) -> bool {
     let status = status_from_setting(&config::get_store_dat_setting(app));
     status.enabled && status.visible
@@ -404,8 +380,8 @@ impl PetStreamLogThrottle {
 /// [`consume_pet_session_stream`]），幂等：启用且无活动任务才 spawn；停用时
 /// abort 任务，连接立即关闭。
 ///
-/// 调用点：应用 setup、`set_pet_enabled` / `show_pet` / `hide_pet`。桌宠关闭或
-/// 隐藏后 Rust 不再是宿主流的消费者，宿主侧随即不再为桌宠做任何转发。
+/// 调用点：应用 setup、`set_pet_enabled`。桌宠关闭后 Rust 不再是宿主流的消费者，
+/// 宿主侧随即不再为桌宠做任何转发。
 pub fn sync_pet_session_stream(app: &AppHandle, wanted: bool) {
     let slot = pet_stream_handle();
     let mut handle = slot.lock().unwrap_or_else(|error| error.into_inner());
@@ -440,7 +416,9 @@ pub fn sync_pet_session_stream(app: &AppHandle, wanted: bool) {
                 }
                 Err(error) => {
                     if throttle.should_log(&error) {
-                        log::warn!("[pet-stream] host session stream error: {error}; reconnecting in 2s");
+                        log::warn!(
+                            "[pet-stream] host session stream error: {error}; reconnecting in 2s"
+                        );
                     } else {
                         log::debug!("[pet-stream] host session stream error (suppressed): {error}");
                     }
@@ -460,57 +438,7 @@ pub fn move_pet_window(app: AppHandle, delta_x: i32, delta_y: i32) -> Result<(),
     pet_window::move_pet_window(&app, delta_x, delta_y)
 }
 
-/// 显示桌宠窗口；只允许已永久启用的桌宠恢复显示。
-///
-/// 窗口不存在（首次启用，或上次收起时已被销毁）时在此重建；窗口操作统一经
-/// [`defer_pet_window_op`] 丢到非主线程执行。
-#[tauri::command]
-pub fn show_pet(app: AppHandle) -> Result<PetStatus, String> {
-    let setting = config::get_store_dat_setting(&app);
-    if !setting.pet_enabled {
-        return Err("PET_DISABLED: pet window is not enabled".to_string());
-    }
-    transient_state()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .visible = true;
-    // 恢复显示 = 重新有消费者：重开会话流订阅。
-    sync_pet_session_stream(&app, true);
-    defer_pet_window_op(&app, true)?;
-    let status = status_from_setting(&setting);
-    emit_pet_status(&app, &status);
-    Ok(status)
-}
-
-/// 临时收起桌宠（不改变永久 enabled；重启后已启用宠物重新显示）。
-///
-/// 「收起」= 销毁窗口实例，而不是 hide：隐藏窗口里的 `<video>` 仍会播放并持有
-/// Video Wake Lock，屏幕无法息屏（issue #469）。销毁后 webview 进程消失，视频与锁
-/// 一并释放，会话流订阅也随即停止。
-#[tauri::command]
-pub fn hide_pet(app: AppHandle) -> Result<PetStatus, String> {
-    collapse_pet(&app)?;
-    let status = status_from_setting(&config::get_store_dat_setting(&app));
-    emit_pet_status(&app, &status);
-    Ok(status)
-}
-
-/// 收起桌宠窗口：置瞬态不可见、停掉宿主会话流订阅，并**在非主线程**销毁窗口实例。
-///
-/// 供 `hide_pet` 命令与「桌宠窗口自身收到关闭请求」两条路径共用（后者发生在主线程的
-/// 窗口事件回调里），两条路径都不会在主线程触碰窗口生命周期 API，见
-/// [`defer_pet_window_op`]。
-pub fn collapse_pet(app: &AppHandle) -> Result<(), String> {
-    transient_state()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .visible = false;
-    // 收起 = 无人渲染：停掉宿主会话流订阅，宿主侧热路径整条短路。
-    sync_pet_session_stream(app, false);
-    defer_pet_window_op(app, false)
-}
-
-/// 串行化桌宠窗口的可见性操作，保证「收起 → 再显示」按调用顺序执行。
+/// 串行化桌宠窗口的可见性操作，保证「关闭 → 再启用」按调用顺序执行。
 fn pet_window_op_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -530,12 +458,12 @@ fn pet_window_op_lock() -> &'static Mutex<()> {
 ///   （同文件 lib.rs:2757 注释）。
 ///
 /// 之前的 `hide()` 之所以看起来能用，只是因为 `WindowMessage::Hide` 走了不 panic 的分支；
-/// 换成销毁后就踩中了这条主线程断言（实测表现为：收起宠物后 `show_pet`、
-/// `get_pet_status` 等全部 invoke 超时、主 webview 一起卡住）。
+/// 换成销毁后就踩中了这条主线程断言（实测表现为：关闭宠物后 `get_pet_status` 等
+/// 全部 invoke 超时、主 webview 一起卡住）。
 fn defer_pet_window_op(app: &AppHandle, visible: bool) -> Result<(), String> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // 串行锁：并发/快速连点的收起与显示不会交错，最终态等于最后一次调用。
+        // 串行锁：并发/快速连点的关闭与启用不会交错，最终态等于最后一次调用。
         let _guard = pet_window_op_lock()
             .lock()
             .unwrap_or_else(|error| error.into_inner());

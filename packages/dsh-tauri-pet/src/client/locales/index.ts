@@ -8,11 +8,12 @@ import { PET_CLIENT_NS as NS } from '../constants'
 export { PET_CLIENT_NS as NS } from '../constants'
 
 const DICT_ZH: Record<LocaleKey, string> = {
-  collapsePet: '收起宠物',
+  closePet: '关闭宠物',
   create: '创建',
   createFailed: '创建宠物会话失败',
   emptyImported: '尚未导入宠物，点击右上角「导入」添加 .zip 资源包',
   enable: '启用',
+  enablePet: '启用宠物',
   import: '导入',
   importFailed: '导入宠物失败',
   listFailed: '读取宠物列表失败',
@@ -26,16 +27,16 @@ const DICT_ZH: Record<LocaleKey, string> = {
   sizeLabel: '大小',
   tabCodexDesc: '从 Codex 或压缩包中导入 Codex 宠物（支持 .zip 文件）',
   tabInstalledDesc: '宠物会管理对话串，并突出显示需要关注的事项',
-  toggleFailed: '切换桌宠窗口失败',
-  wakePet: '唤醒宠物',
+  toggleFailed: '切换桌宠开关失败',
 }
 
 const DICT_EN: Record<LocaleKey, string> = {
-  collapsePet: 'Collapse pet',
+  closePet: 'Close pet',
   create: 'Create',
   createFailed: 'Failed to create a pet session',
   emptyImported: 'No pets imported yet. Click “Import” to add a .zip package',
   enable: 'Enable',
+  enablePet: 'Enable pet',
   import: 'Import',
   importFailed: 'Failed to import pet',
   listFailed: 'Failed to load pet list',
@@ -49,8 +50,7 @@ const DICT_EN: Record<LocaleKey, string> = {
   sizeLabel: 'Size',
   tabCodexDesc: 'Import Codex pets from Codex or archives (.zip files supported)',
   tabInstalledDesc: 'Pets manage your conversation threads and highlight items that need attention',
-  toggleFailed: 'Failed to toggle the pet window',
-  wakePet: 'Wake pet',
+  toggleFailed: 'Failed to toggle the pet',
 }
 
 let activeLocale = 'en'

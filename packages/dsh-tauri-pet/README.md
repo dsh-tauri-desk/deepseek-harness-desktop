@@ -50,9 +50,8 @@ skill provider 或默认根目录。
 
 | command | 说明 |
 | --- | --- |
-| `get_pet_status` | 查询 `enabled`、`visible`、`active_pet`、`pet_size` 与瞬态 activity |
-| `set_pet_enabled` | 持久化首次启用；启用时显示窗口 |
-| `show_pet` / `hide_pet` | 只改变窗口可见性，不改变持久化 enabled |
+| `get_pet_status` | 查询 `enabled`、`visible`、`active_pet`、`pet_size`（`visible` 恒等于 `enabled`） |
+| `set_pet_enabled` | 启用/关闭桌宠（**持久化**）：关闭即销毁窗口，重启后保持关闭 |
 | `set_active_pet` | 持久化选择的宠物 id |
 | `set_pet_size` | 持久化 50–200% 的大小 |
 | `list_pets` | 按 `source` 列出 Chat 或 Codex 宠物 |

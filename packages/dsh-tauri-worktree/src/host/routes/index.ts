@@ -116,7 +116,9 @@ export function buildRoutes(ctx: HostContext, config: PluginConfig): any[] {
         // 会话工作目录不在 git 仓库内时禁止工作树：isGit 供客户端隐藏模式选择器并强制本地模式。
         // 会话未知（新建/启动竞态，尚无 cwd）时不猜测：isGit 置 null，客户端保持默认并稍后
         // 重试，避免把 git 目录误判成非 git 而隐藏工作树模式选择器。
-        const isGit = projectPath ? Boolean(await gitToplevel(projectPath)) : null
+        // 已绑定工作树的会话必然位于 Git 仓库内（工作树由 git worktree add 创建）：直接置 true，
+        // 省掉每次 status 都 fork 一个 git 子进程——status 会被客户端 hydration 反复复核。
+        const isGit = activeBinding ? true : projectPath ? Boolean(await gitToplevel(projectPath)) : null
         return [200, activeBinding
           ? {
               mode: 'worktree',

@@ -7,6 +7,11 @@
  * 启动/新建会话存在竞态（客户端列表先于宿主会话就绪）：/status 失败或返回未知
  * （isGit: null）时按固定间隔重试，直到拿到确定答案，保证「刷新才有」的工作树 UI 自愈。
  *
+ * 复核触发源有两个：会话事件流（流式输出期间每秒上百次通知）与会话列表快照。二者都经
+ * `SESSION_RECONCILE_MIN_INTERVAL_MS` 的 per-session 节流器合并，避免把只读 /status
+ * 放大成每秒上百次请求（宿主每次还要 fork 一个 git 子进程）；窗口内最后一次请求由拖尾
+ * 执行兜底，状态变化不会丢失。
+ *
  * create_worktree 自动交接只允许发生在「本次运行期间新出现」的工作树会话首次复核时，
  * 且每个来源只交接一次、有时效窗口——历史遗留工作树、用户事后回到源会话、点击新建
  * 会话等场景绝不抢焦点（否则「新建会话」会被误跳到工作树会话）。
@@ -14,10 +19,11 @@
 import type { ClientContext } from 'dsh-tauri/client'
 import type { SessionListSnapshot, WorkspaceListSnapshot, WorktreeHydrationSessionsRuntime } from '../types'
 import { createLifecycleController } from 'dsh-tauri/client'
-import { DISCARD_MAX_POLLS, DISCARD_POLL_DELAY_MS, HANDOFF_WINDOW_MS, HYDRATION_MAX_RETRIES, HYDRATION_RETRY_DELAY_MS } from '../constants'
+import { DISCARD_MAX_POLLS, DISCARD_POLL_DELAY_MS, HANDOFF_WINDOW_MS, HYDRATION_MAX_RETRIES, HYDRATION_RETRY_DELAY_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
 import { attachWorktreeSession, discardWorktree, fetchStatus } from '../service/actions'
 import { openWorktreeSession } from '../service/handoff'
 import { patchSession, selectSessionState, worktreeStore } from '../store'
+import { createKeyedThrottle } from '../utils/throttle'
 
 export function registerWorktreeHydration(ctx: ClientContext): () => void {
   // HARDCODE: SessionRuntime.binding() is an internal DSH 0.1.1-rc.2 API.
@@ -49,6 +55,12 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   // 已绑定过 Session source 的会话（bindSessionEvents 去重）。
   const subscribedSessions = new Set<string>()
   const discardPolls = new Map<string, { jobId: string, attempts: number }>()
+  // 复核节流器：定时器登记进 controller，卸载时随 dispose 一并清理。
+  const reconcileThrottle = createKeyedThrottle({
+    intervalMs: SESSION_RECONCILE_MIN_INTERVAL_MS,
+    schedule: (fn, ms) => controller.timeout(fn, ms),
+  })
+  controller.add(() => reconcileThrottle.clear())
   controller.add(() => {
     retryAttempts.clear()
     discardPolls.clear()
@@ -73,7 +85,8 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
             return
           }
           discardPolls.delete(sessionId)
-          reconcileSession(sessionId, true)
+          // 删除任务刚结束：立即复核，不等节流窗口（一次性收敛，不参与高频路径）。
+          reconcileSession(sessionId)
         })
         .catch(() => scheduleDiscardPoll(sessionId, jobId, attempts + 1))
     }, DISCARD_POLL_DELAY_MS)
@@ -122,21 +135,44 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     controller.timeout(() => {
       if (controller.isDisposed())
         return
-      reconcileSession(sessionId, true)
+      requestReconcile(sessionId)
     }, HYDRATION_RETRY_DELAY_MS)
   }
 
-  function reconcileSession(sessionId: string, force = false): void {
+  /**
+   * 该会话是否需要向宿主复核状态：
+   *   - 尚未解析成功（首次 hydrate，或失败/未知后从 seen 移除待重试）；
+   *   - 处于工作树模式：Agent 可能刚调用 checkout_worktree / discard_worktree，
+   *     需要在其事件流变化时对齐回本地状态。
+   * 其余会话（已解析的本地/待创建会话）不再发请求。
+   */
+  function needsReconcile(sessionId: string): boolean {
+    if (!seen.has(sessionId))
+      return true
+    return selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree'
+  }
+
+  /**
+   * 复核请求的唯一入口：事件流/列表快照/重试都经节流器合并，每个会话每个窗口至多
+   * 一次 /status；窗口内的最后一次请求由拖尾执行兜底。
+   * 执行前重新判定 needsReconcile：排队期间会话可能已解析为本地模式（例如 Agent 刚
+   * 完成 checkout 并由别的路径收敛），此时拖尾请求直接跳过，不再多发一次。
+   */
+  function requestReconcile(sessionId: string): void {
+    if (!needsReconcile(sessionId))
+      return
+    reconcileThrottle.request(sessionId, () => {
+      if (needsReconcile(sessionId))
+        reconcileSession(sessionId)
+    })
+  }
+
+  function reconcileSession(sessionId: string): void {
     if (inFlight.has(sessionId)) {
-      if (force)
-        queued.add(sessionId)
+      queued.add(sessionId)
       return
     }
     const previous = selectSessionState(worktreeStore.getSnapshot(), sessionId)
-    // 普通 hydration 每个会话只做一次；已绑定会话则在其事件流变化时强制复核，
-    // 以便 Agent 调用 checkout_worktree / discard_worktree 后无刷新切回本地状态。
-    if (!force && seen.has(sessionId))
-      return
     seen.add(sessionId)
     inFlight.add(sessionId)
     void fetchStatus(sessionId)
@@ -253,14 +289,18 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       })
       .finally(() => {
         inFlight.delete(sessionId)
+        // 请求在途期间又到达复核请求：立即补一次（不经节流器，避免丢掉在途期间的变更）；
+        // 该路径被 inFlight 串行化，稳态下每个窗口至多补一次。
         if (queued.delete(sessionId) && !controller.isDisposed())
-          reconcileSession(sessionId, true)
+          reconcileSession(sessionId)
       })
   }
 
+  // 列表快照驱动的复核同样经节流器：快照在流式输出期间持续变化，逐次请求会放大成风暴；
+  // 首次 hydrate 仍由节流器的前沿立即执行保证（不引入启动延迟）。
   const hydrate = (): void => {
     const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
-    for (const sessionId of snapshot.ids) reconcileSession(sessionId)
+    for (const sessionId of snapshot.ids) requestReconcile(sessionId)
   }
 
   const pollArchivedDiscard = (sessionId: string, jobId: string, attempts = 0): void => {
@@ -323,11 +363,9 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       if (!session?.subscribe)
         continue
       subscribedSessions.add(sessionId)
-      controller.add(session.subscribe(() => {
-        const state = selectSessionState(worktreeStore.getSnapshot(), sessionId)
-        if (state.mode === 'worktree')
-          reconcileSession(sessionId, true)
-      }))
+      // 会话事件流在流式输出期间每秒可通知上百次：复核必须经节流器合并，
+      // 否则每个事件都会打一次 /status（宿主还会 fork 一个 git 子进程）。
+      controller.add(session.subscribe(() => requestReconcile(sessionId)))
     }
   }
   const unsubscribeSessions = sessionsRuntime.list.subscribe(() => {

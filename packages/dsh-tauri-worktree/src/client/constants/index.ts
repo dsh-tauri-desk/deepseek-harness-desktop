@@ -27,6 +27,15 @@ export const SESSION_SWITCH_MAX_ATTEMPTS = 30
 /** hydration 失败/未知状态的重试间隔与上限（1.5s × 30 ≈ 45s，成功后立即停止）。 */
 export const HYDRATION_RETRY_DELAY_MS = 1500
 export const HYDRATION_MAX_RETRIES = 30
+/**
+ * 会话事件流/列表快照触发的状态复核最小间隔。
+ *
+ * 会话事件流在流式输出期间每秒可通知上百次，列表快照同样随事件更新；不节流时每个
+ * 通知都会打一次 `GET /status`（宿主还要为每次请求 fork 一个 git 子进程），把只读
+ * 状态查询放大成持续请求风暴。窗口内合并为一次拖尾执行：Agent 调用
+ * `checkout_worktree` / `discard_worktree` 后 UI 最迟在该间隔内收敛，不丢状态变化。
+ */
+export const SESSION_RECONCILE_MIN_INTERVAL_MS = 1200
 /** Discard job polling cadence and retry limit. */
 export const DISCARD_POLL_DELAY_MS = 500
 export const DISCARD_MAX_POLLS = 120

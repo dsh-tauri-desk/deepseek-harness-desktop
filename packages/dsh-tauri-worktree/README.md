@@ -87,6 +87,18 @@ checkout_worktree({ worktree_hash_dirname: '[hash]/[dirname]', branch_name: 'dsh
 - 客户端乐观标记 `deleting` 并轮询直至收敛；归档会话的清理在请求失败/任务失败时清除
   去重标记，等待下次快照重试。
 
+## 状态复核节流
+
+`GET /status` 由客户端 hydration 驱动，触发源是**会话事件流**与**会话列表快照**——二者在
+流式输出期间每秒可通知上百次。逐次复核会把只读状态查询放大成持续请求风暴，因此：
+
+- 每个会话的复核经 `SESSION_RECONCILE_MIN_INTERVAL_MS`（默认 1200ms）节流：窗口内首次
+  请求立即执行（不引入启动延迟），窗口内后续请求合并为窗口末尾的一次拖尾执行（状态变化
+  不丢失）；空闲（无事件、无快照变化）时完全不发请求。
+- 只有「尚未解析成功」或「处于工作树模式」的会话参与复核：已解析的本地会话不再轮询。
+- 宿主侧 `/status` 对已绑定工作树的会话直接判定 `isGit: true`（工作树由 `git worktree add`
+  创建，必然在 Git 仓库内），不再为每次复核 fork 一个 `git rev-parse` 子进程。
+
 ## 用户流程
 
 1. 用户明确要求使用 worktree 后，Agent 调用 `create_worktree`。

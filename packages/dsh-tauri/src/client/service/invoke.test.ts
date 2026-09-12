@@ -6,7 +6,7 @@ import {
   SRC_INVOKE_REPLY,
   TYPE_INVOKE_REPLY,
 } from '../constants'
-import { invokeBridgedTauri } from './invoke'
+import { invoke } from './invoke'
 
 /**
  * 构造一个最小的 window 替身：parent 作为宿主接收 postMessage，按类型独立收集
@@ -37,7 +37,7 @@ function makeWindow() {
   return { win, parent, dispatchReply: win.dispatchReply }
 }
 
-describe('dsh-tauri invokeBridgedTauri', () => {
+describe('dsh-tauri invoke', () => {
   let win: ReturnType<typeof makeWindow>['win']
   let parent: ReturnType<typeof makeWindow>['parent']
   let dispatchReply: ReturnType<typeof makeWindow>['dispatchReply']
@@ -61,7 +61,7 @@ describe('dsh-tauri invokeBridgedTauri', () => {
   }
 
   it('成功应答时 resolve，并立刻清理超时计时器', async () => {
-    const promise = invokeBridgedTauri<{ enabled: boolean }>('get_pet_status', { a: 1 })
+    const promise = invoke<{ enabled: boolean }>('get_pet_status', { a: 1 })
     // postMessage 发出请求，且只留有这一个超时计时器（正是要清理的目标）
     expect(vi.getTimerCount()).toBe(1)
     const request = postedRequest()
@@ -79,7 +79,7 @@ describe('dsh-tauri invokeBridgedTauri', () => {
   })
 
   it('错误应答时 reject，并清理超时计时器与监听器', async () => {
-    const promise = invokeBridgedTauri('set_pet_enabled', { enabled: true })
+    const promise = invoke('set_pet_enabled', { enabled: true })
     const request = postedRequest()
     expect(vi.getTimerCount()).toBe(1)
 
@@ -93,7 +93,7 @@ describe('dsh-tauri invokeBridgedTauri', () => {
   })
 
   it('宿主 15s 未应答时超时 reject，且无残留计时器', async () => {
-    const promise = invokeBridgedTauri('get_pet_status')
+    const promise = invoke('get_pet_status')
     postedRequest()
     expect(vi.getTimerCount()).toBe(1)
 
@@ -107,7 +107,7 @@ describe('dsh-tauri invokeBridgedTauri', () => {
     parent.postMessage.mockImplementation(() => {
       throw new Error('DataCloneError: stored value cannot be cloned')
     })
-    const promise = invokeBridgedTauri('get_pet_status', { session: { loop: true } })
+    const promise = invoke('get_pet_status', { session: { loop: true } })
     // postMessage 抛错时不应发出任何东西，计时器也必须被清除
     await expect(promise).rejects.toThrow('DataCloneError')
     expect(vi.getTimerCount()).toBe(0)

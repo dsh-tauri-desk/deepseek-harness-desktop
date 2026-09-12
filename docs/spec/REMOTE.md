@@ -135,7 +135,7 @@ flowchart LR
 - **Tauri 命令注册**：`src-tauri/src/bridge/`（如 `core.rs`）新增 `mobile_*` 命令，并在
   `src-tauri/src/desktop/builder.rs` 的 `generate_handler!` 注册。
 - **前端入口**：
-  - 导航栏/设置：`src/layout/components/navbar.tsx` 与 `src/components/config-*.tsx` 加入口。
+  - 导航栏/设置：`src/layout/components/navbar.tsx` 与 `src/ui/config/*.tsx` 加入口。
   - 若是独立配对窗口，复用现有 `layout/components/webview.tsx`（WebView 加载 `http://127.0.0.1:<桥端口>/desktop`）。
   - 向 DSH 页面注入按钮：已有 `src-tauri/src/desktop/style.rs`、`desktop/nav.rs` 的先例可复用。
 - **i18n**：新增键写入 `src/i18n/locales/zh-CN.json` 与 `en-US.json`（扁平点分键，如

@@ -124,6 +124,8 @@
   "buttons.copy_logs": "复制日志",
   "buttons.safe_mode": "安全模式",
   "hints.safe_mode": "仅加载核心组件与内置插件重启，并卸载该档案中的其它插件以隔离启动失败。在侧边栏切回原档案即可退出安全模式。",
+  "messages.clipboard_copied": "已复制到剪贴板",
+  "messages.clipboard_failed": "复制失败",
   "messages.copy_success": "地址已复制到剪贴板",
   "messages.log_copied": "日志已复制到剪贴板",
   "messages.copy_failed": "复制地址失败",

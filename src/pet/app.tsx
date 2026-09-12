@@ -1,14 +1,14 @@
 import type { PetRef, PetRenderMotion } from 'dsh-pet-component'
-import { useEventListener } from '@reause/core'
+import { useEventListener, useWakeLock, useWatch } from '@reause/core'
 import { Pet } from 'dsh-pet-component'
 import { useRef } from 'react'
 import { If } from 'react-if-lite'
 import { ToastProvider } from '@/components/toast-provider'
-import { PetHint } from './components/pet-hint'
+import { useOmitIgnoreCursorEvents } from '@/hooks/use-omit-ignore-cursor-events'
+import { useWindowDraggable } from '@/hooks/use-window-draggable'
+import { Hint } from '@/ui/pet/hint'
 import { PET_BASE_WIDTH, PET_DSH_ASPECT } from './constants'
 import { useBubble } from './hooks/use-bubble'
-import { useDrag } from './hooks/use-drag'
-import { useOmitIgnoreCursorEvents } from './hooks/use-omit-ignore-cursor-events'
 import { usePetSource } from './hooks/use-pet-source'
 import { normalizeSizePercent, usePetStatus } from './hooks/use-pet-status'
 import { usePetWindowSize } from './hooks/use-pet-window'
@@ -19,7 +19,7 @@ import { usePetWindowSize } from './hooks/use-pet-window'
  * 三条输入各管一段，互不越界：
  * - 设置状态（`usePetStatus`）→ 选哪个宠物、多大、是否可见；
  * - 会话气泡（`useBubble`）→ 聚合出的动作档位；
- * - 手势（`useDrag`）→ 拖动期间的方向动作。
+ * - 手势（`useWindowDraggable`）→ 拖动期间的方向动作。
  *
  * 动作全部经 `pet.motion(...)` / `pet.clear()` 下发到 `<Pet>` 的命令面（优先级高于
  * 声明式 `motion` prop），渲染细节（动画池解析、双视频缓冲、雪碧图、缓存、双击回应）
@@ -28,11 +28,19 @@ import { usePetWindowSize } from './hooks/use-pet-window'
 export function App() {
   const petRef = useRef<PetRef>(null)
   const status = usePetStatus()
+
+  // issue #469：桌宠动画是常驻播放的 <video>，Chromium 会因此持有 Video Wake Lock
+  // 让系统无法息屏；本窗口没有常亮的正当需求，唤醒锁一旦生效就立刻释放。
+  const wakelock = useWakeLock()
+  useWatch(wakelock.isActive, () => {
+    void wakelock.release()
+  }, { immediate: true })
+
   const activePet = status?.active_pet ?? ''
   const { source, error } = usePetSource(activePet)
   const hitboxRef = useRef<HTMLDivElement>(null)
   const bubble = useBubble()
-  const { dragging, direction } = useDrag()
+  const { dragging, direction } = useWindowDraggable()
 
   const visible = status === null || (status.enabled !== false && status.visible !== false)
   const width = (source?.width ?? PET_BASE_WIDTH) * normalizeSizePercent(status?.pet_size) / 100
@@ -69,7 +77,7 @@ export function App() {
         )}
         {/* 选中了宠物但资源解析不出来（导入的宠物被删除、清单里没有该 id）：必须给出
             可见提示 —— 透明窗口里「空」与「在加载」观感相同，静默留空等于让用户以为坏了。 */}
-        <If cond={error !== null} then={<PetHint petId={activePet} />} />
+        <If cond={error !== null} then={<Hint petId={activePet} />} />
       </main>
     </ToastProvider>
   )

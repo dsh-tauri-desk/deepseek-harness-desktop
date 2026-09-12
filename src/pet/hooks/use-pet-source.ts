@@ -1,6 +1,7 @@
 import type { CodexPetConfig, PetConfig } from 'dsh-pet-component'
+import { useWatch } from '@reause/core'
 import { invoke } from '@tauri-apps/api/core'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { PET_CODEX_ASPECT, PET_DSH_ASPECT } from '../constants'
 import { reportPetIssue } from '../utils/log'
 
@@ -112,34 +113,28 @@ export function usePetSource(activePet: string): PetSourceState {
     error: string | null
   } | null>(null)
 
-  useEffect(() => {
-    if (activePet === '')
-      return undefined
-    let disposed = false
-    const task = activePet.includes(':')
-      ? invoke<PetAsset>('get_pet_asset', { id: activePet }).then(assetSource)
+  // 宠物切换即重新解析来源（`immediate` 覆盖挂载首帧）；异步结果晚到不影响新状态
+  useWatch(activePet, (id) => {
+    if (id === '')
+      return
+    const task = id.includes(':')
+      ? invoke<PetAsset>('get_pet_asset', { id }).then(assetSource)
       : invoke<PresetPetItem[]>('list_preset_pets')
-          .then(catalog => catalog.find(item => item.id === activePet))
+          .then(catalog => catalog.find(item => item.id === id))
           .then(item => (item === undefined ? null : presetSource(item)))
     void task
       .then((value) => {
-        if (disposed)
-          return
         setResolved({
-          id: activePet,
+          id,
           value,
-          error: value === null ? `PET_NOT_FOUND: ${activePet}` : null,
+          error: value === null ? `PET_NOT_FOUND: ${id}` : null,
         })
       })
       .catch((error) => {
-        reportPetIssue(`resolve ${activePet}`, error)
-        if (!disposed)
-          setResolved({ id: activePet, value: null, error: String(error) })
+        reportPetIssue(`resolve ${id}`, error)
+        setResolved({ id, value: null, error: String(error) })
       })
-    return () => {
-      disposed = true
-    }
-  }, [activePet])
+  }, { immediate: true })
 
   // 尚未拿到当前 id 的结果（加载中）时不报错：避免切换宠物瞬间闪一帧「不可用」。
   const current = resolved !== null && resolved.id === activePet ? resolved : null

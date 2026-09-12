@@ -1,9 +1,3 @@
-/** 宿主 → iframe 命令的 source。 */
-export const SRC_HOST = 'dsh-desktop'
-
-/** iframe → 宿主事件的 source。 */
-export const SRC_BRIDGE = 'dsh-nav-bridge'
-
 // ── dsh-tauri invoke 桥（iframe → 宿主 → invoke() → 回传）─────────────
 // iframe 内的 dsh 界面 / 插件无法直接访问 `@tauri-apps/api`（`__TAURI_INTERNALS__`
 // 只在顶层 webview）。本桥让客户端经 postMessage 把 command 上报到宿主（主
@@ -19,30 +13,33 @@ export const TYPE_INVOKE_REPLY = 'dsh://tauri:reply'
 /** 单次 invoke 等待宿主应答的最长毫秒数（超时按失败处理）。 */
 export const INVOKE_TIMEOUT_MS = 15000
 
-/** 宿主命令类型。 */
+/**
+ * 宿主 → iframe：Tauri 事件转发的消息类型（`listen()` 消费）。
+ *
+ * 与桌面端 `useListenIframe` 的 `forward()` 返回的 `type` 必须逐字一致；
+ * 配对关系：宿主 `useListenIframe(iframeRef, event, payload => ({ type: TYPE_EVENT, event, payload }))`
+ * ↔ 客户端 `listen(event, handler)`。
+ */
+export const TYPE_EVENT = 'dsh://tauri:event'
+
+/** 宿主 → iframe：侧边栏切换命令（`register/sidebar.ts` 消费）。 */
 export const CMD_TOGGLE = 'dsh://sidebar:toggle'
-export const CMD_PREV = 'dsh://page:prev'
-export const CMD_NEXT = 'dsh://page:next'
 
-/** iframe → 宿主状态事件类型。 */
+/** iframe → 宿主：侧边栏折叠状态回报（`register/sidebar.ts` 发送）。 */
 export const EVENT_SIDEBAR_COLLAPSED = 'dsh://sidebar:collapsed'
-export const EVENT_PAGE_FIRSTED = 'dsh://page:firsted'
-export const EVENT_PAGE_LASTED = 'dsh://page:lasted'
 
-/** 应用晚挂载时的导航桥探测参数。 */
-export const TRACK_MAX_TRIES = 30
-export const TRACK_INTERVAL_MS = 500
+/** iframe → 宿主：缩放快捷键动作（`register/zoom-shortcut.ts` 发送；宿主据此更新缩放真值）。 */
+export const TYPE_ZOOM_SHORTCUT = 'dsh://zoom-shortcut'
 
-/** 会话行菜单按钮的 aria-label 模板（zh/en），用于提取标题与按标题找行。 */
-export const SESSION_LABEL_PATTERNS = [
-  /^会话“(.+)”的操作$/,
-  /^Session actions for (.+)$/,
-] as const
+/** dsh 应用布局根（AppFrame）：`data-shell-overlay` 的父节点，带侧边栏折叠属性。 */
+export const SIDEBAR_FRAME_SELECTOR = '[data-shell-overlay]'
+export const SIDEBAR_COLLAPSED_ATTRIBUTE = 'data-sidebar-collapsed'
 
-/** 上报消息的 source key（宿主校验：`source === 'dsh-plugin-error-bridge'`）。 */
-export const ERROR_SRC = 'dsh-plugin-error-bridge'
+/** 应用晚挂载时补报一次侧边栏折叠状态的轮询参数（拿到 AppFrame 即停）。 */
+export const SIDEBAR_TRACK_MAX_TRIES = 30
+export const SIDEBAR_TRACK_INTERVAL_MS = 500
 
-/** 上报消息的 type key（宿主校验：`type === 'dsh://plugin-error'`）。 */
+/** 上报消息的 type key（宿主按 `type` 分发：`dsh://plugin-error`）。 */
 export const ERROR_TYPE = 'dsh://plugin-error'
 
 /** 插件 id（npm 包名）：宿主错误注册表与插件列表的主键。 */
@@ -52,7 +49,8 @@ export const PLUGIN_ID = 'dsh-tauri'
 export const PLUGIN_INJECT = ['layout']
 export const SIDEBAR_TWEAKS_STYLE_ID = 'dsh-tauri:sidebar-tweaks'
 export const SIDEBAR_TWEAKS_EFFECT_ID = 'dsh-tauri: sidebar tweaks (hide collapse toggle, center brand)'
-export const NAV_BRIDGE_EFFECT_ID = 'dsh-tauri: nav bridge'
+export const SIDEBAR_TOGGLE_EFFECT_ID = 'dsh-tauri: sidebar (toggle command + collapsed report)'
+export const ZOOM_SHORTCUT_EFFECT_ID = 'dsh-tauri: zoom shortcuts (ctrl/cmd +/-/0)'
 
 /** 侧边栏稳定 ARIA 选择器。 */
 export const COLLAPSE_SIDEBAR_SELECTOR = 'button[aria-label="收起侧边栏"],button[aria-label="Collapse sidebar"]'

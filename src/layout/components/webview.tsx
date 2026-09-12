@@ -1,49 +1,45 @@
-/* eslint-disable react/dom-no-unsafe-iframe-sandbox */
-import { CircleExclamation } from '@gravity-ui/icons'
-import { useRef } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useRef, useState } from 'react'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-import { PluginRecovery } from '@/components/plugin-recovery'
-import { useDesktopZoom } from '@/hooks/use-desktop-zoom'
-import { useIframeInvoke } from '@/hooks/use-iframe-invoke'
-import { useIframeShim } from '@/hooks/use-iframe-shim'
+import { useIframeMessage } from '@/hooks/use-iframe-message'
+import { useIframePost } from '@/hooks/use-iframe-post'
 import { store } from '@/store'
-import { Loadable } from './loadable'
+import { Recovery } from '@/ui/plugin/recovery'
+import { Iframe } from './iframe'
 import { Navbar } from './navbar'
-import { PreinstallSetup } from './preinstall-setup'
 import { Setup } from './setup'
+import { PreinstallSetup } from './setup-preinstall'
 
-const STARTUP_STATUS_KEYS = {
-  'plugin-install': 'status.loading_internal',
-  'process-boot': 'status.loading_process',
-  'client-modules': 'status.loading_client_modules',
-} as const
+/** 导航桥回报（iframe → 宿主）：侧边栏折叠状态 */
+interface NavBridgeMessage {
+  type?: string
+  collapsed?: boolean
+}
 
 /**
- * 主区域视图：壳层导航栏（Navbar）常驻顶部，
- * 安装/错误态渲染 Setup，就绪态渲染 iframe
- * （挂载后加载职责交给 dsh 应用内官方 boot 页，避免两套 loading 叠加）。
- * 状态与方法全部来自 harness store，不再接收 props。
+ * 主区域视图：壳层导航栏（Navbar）常驻顶部，按 harness 状态切换内容——
+ * 错误态 Setup / 插件恢复页，预装引导 PreinstallSetup，其余未就绪态 Setup，
+ * 就绪态渲染 iframe。
+ *
+ * 分工：
+ * - iframe 元素及 iframe 自身的桥在 `iframe.tsx`（通知 / 插件异常 / 剪贴板图片 / boot / 可见性）；
+ * - 导航桥属于导航栏的状态，留在这里：用同一份 `useIframeMessage` / `useIframePost`
+ *   接收 `dsh://sidebar:collapsed` 回报、发送 `dsh://sidebar:toggle` 命令。
  */
 export function Webview() {
-  const { t } = useTranslation()
-  const {
-    status,
-    serviceHealthy,
-    startupPhase,
-    iframeError,
-    iframeKey,
-    iframeSrc,
-    serviceUrl,
-    recovery,
-  } = useStore(store.harness)
+  // iframe 内 dsh 侧边栏是否折叠（由导航桥回报）
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  const { status } = useStore(store.harness)
+  const { recovery } = useStore(store.recovery)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const post = useIframePost(iframeRef)
 
-  useDesktopZoom(iframeRef)
-  useIframeShim(iframeRef)
-  useIframeInvoke(iframeRef)
+  useIframeMessage<NavBridgeMessage>(iframeRef, (data) => {
+    if (data.type === 'dsh://sidebar:collapsed')
+      setSidebarCollapsed(Boolean(data.collapsed))
+  })
 
   if (status === 'error') {
     return (
@@ -52,7 +48,7 @@ export function Webview() {
         <div className="min-h-0 flex-1">
           {/* 能定位到问题插件时展示全屏恢复页（卸除此插件并继续检测）；否则普通错误页 */}
           <If cond={recovery.required} else={<Setup />}>
-            <PluginRecovery fullScreen />
+            <Recovery fullScreen />
           </If>
         </div>
       </main>
@@ -84,38 +80,11 @@ export function Webview() {
 
   return (
     <main className="relative flex min-h-0 flex-1 flex-col bg-canvas">
-      <Navbar iframeRef={iframeRef} />
-
-      {/* iframe 区域：加载失败时用覆盖层展示重试（iframe 保持挂载，重试复用） */}
-      <div className="relative min-h-0 flex-1">
-        <If
-          cond={serviceHealthy}
-          else={<Loadable subtitle={t(STARTUP_STATUS_KEYS[startupPhase])} />}
-        >
-          <iframe
-            key={iframeKey}
-            ref={iframeRef}
-            className="block h-full w-full border-none bg-load-bg"
-            src={iframeSrc}
-            allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; clipboard-read; clipboard-write; display-capture; document-domain; encrypted-media; fullscreen; gamepad; geolocation; gyroscope; hid; idle-detection; keyboard-map; magnetometer; microphone; midi; payment; picture-in-picture; publickey-credentials-get; screen-wake-lock; serial; speaker-selection; usb; web-share; xr-spatial-tracking"
-            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
-            onLoad={store.harness.markIframeLoaded}
-            onError={store.harness.markIframeError}
-            title={t('app.open_editor')}
-          />
-        </If>
-
-        <If cond={serviceHealthy && iframeError}>
-          <div className="absolute inset-0 z-[1]">
-            <Loadable
-              icon={CircleExclamation}
-              title={t('ui.iframe_error')}
-              errorMsg={t('ui.ensure_running', { url: serviceUrl })}
-              onRetry={store.harness.refreshIframe}
-            />
-          </div>
-        </If>
-      </div>
+      <Navbar
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => post({ type: 'dsh://sidebar:toggle' })}
+      />
+      <Iframe iframeRef={iframeRef} />
     </main>
   )
 }

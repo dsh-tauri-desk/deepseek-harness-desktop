@@ -1,5 +1,5 @@
 import type { PetAsset, PetListItem, PetSource, PetStatus, PresetPetItem } from '../types'
-import { invokeBridgedTauri } from 'dsh-tauri/client'
+import { invoke } from 'dsh-tauri/client'
 import {
   CMD_GET_PET_ASSET,
   CMD_GET_PET_STATUS,
@@ -12,35 +12,35 @@ import {
 } from '../constants'
 
 export function fetchPetStatus(): Promise<PetStatus> {
-  return invokeBridgedTauri<PetStatus>(CMD_GET_PET_STATUS)
+  return invoke<PetStatus>(CMD_GET_PET_STATUS)
 }
 
 /** 启用/关闭桌宠（持久化：关闭后重启不再自动拉起）。 */
 export function setPetEnabled(enabled: boolean): Promise<PetStatus> {
-  return invokeBridgedTauri<PetStatus>(CMD_SET_PET_ENABLED, { enabled })
+  return invoke<PetStatus>(CMD_SET_PET_ENABLED, { enabled })
 }
 
 export function setActivePet(id: string): Promise<PetStatus> {
-  return invokeBridgedTauri<PetStatus>(CMD_SET_ACTIVE_PET, { id })
+  return invoke<PetStatus>(CMD_SET_ACTIVE_PET, { id })
 }
 
 export function setPetSize(size: number): Promise<PetStatus> {
-  return invokeBridgedTauri<PetStatus>(CMD_SET_PET_SIZE, { size })
+  return invoke<PetStatus>(CMD_SET_PET_SIZE, { size })
 }
 
 export function fetchPetList(source: PetSource): Promise<PetListItem[]> {
-  return invokeBridgedTauri<PetListItem[]>(CMD_LIST_PETS, { source })
+  return invoke<PetListItem[]>(CMD_LIST_PETS, { source })
 }
 
 export function fetchPetAsset(id: string): Promise<PetAsset> {
-  return invokeBridgedTauri<PetAsset>(CMD_GET_PET_ASSET, { id })
+  return invoke<PetAsset>(CMD_GET_PET_ASSET, { id })
 }
 
 export function importPet(name: string, data: string): Promise<PetListItem> {
-  return invokeBridgedTauri<PetListItem>(CMD_IMPORT_PET, { name, data })
+  return invoke<PetListItem>(CMD_IMPORT_PET, { name, data })
 }
 
 /** 预设宠物清单（`resources/preset-pets.json`；条目直连远端素材，无安装态）。 */
 export function fetchPresetPets(): Promise<PresetPetItem[]> {
-  return invokeBridgedTauri<PresetPetItem[]>(CMD_LIST_PRESET_PETS)
+  return invoke<PresetPetItem[]>(CMD_LIST_PRESET_PETS)
 }

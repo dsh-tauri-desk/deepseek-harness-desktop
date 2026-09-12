@@ -9,7 +9,7 @@ import { cn } from 'tailwind-variants'
  *
  * - left：行左侧主内容（min-w-0，允许截断）
  * - right：行右侧操作区（shrink-0，勾选框 / 按钮 / 状态 chip 等）
- * - footer：主行之后的附加内容（如 config-core 的「本地核心更新」入口）
+ * - footer：主行之后的附加内容（如 ui/config/core 的「本地核心更新」入口）
  * - onClick：传入则整行可点击并显示手型光标
  */
 export interface ItemProps {

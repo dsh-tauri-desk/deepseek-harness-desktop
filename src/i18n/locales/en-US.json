@@ -124,6 +124,8 @@
   "buttons.copy_logs": "Copy Logs",
   "buttons.safe_mode": "Safe Mode",
   "hints.safe_mode": "Restart with only the core bundles and built-in plugins, uninstalling any other plugin from that profile to isolate the ones that fail to start. Switch back to your profile in the sidebar to exit safe mode.",
+  "messages.clipboard_copied": "Copied to clipboard",
+  "messages.clipboard_failed": "Copy failed",
   "messages.copy_success": "URL copied to clipboard",
   "messages.log_copied": "Logs copied to clipboard",
   "messages.copy_failed": "Failed to copy URL",

@@ -31,17 +31,28 @@ describe('close action normalization', () => {
 })
 
 describe('config close action control contract', () => {
-  it('invokes update_app_config once with a camelCase closeAction payload', () => {
-    const source = readFileSync(new URL('../src/components/config-close-action.tsx', import.meta.url), 'utf8')
+  it('reads closeAction from the setting store and writes it through the backend command', () => {
+    const source = readFileSync(new URL('../src/ui/config/components/close-action.tsx', import.meta.url), 'utf8')
 
     expect(source).toContain('export function ConfigCloseAction')
-    expect(source).toContain('invoke<AppConfig>(\'update_app_config\', { closeAction')
+    // 读走 setting store（与 Rust 共享 .store.dat，后端改动经 setting_updated 回流）
+    expect(source).toContain('useStore(store.setting)')
+    // 写仍走命令：后端归一化并在锁内落盘，避免与 Rust 的整对象写入互相覆盖
+    expect(source).toContain('invoke(\'update_app_config\', { closeAction')
     // 受控值始终经归一化，未加载到配置时回落 tray 而不是给 HeroUI 传 undefined
     expect(source).toContain('selectedKey={normalizeCloseAction(')
   })
 
+  it('no longer carries its own config query cache', () => {
+    const source = readFileSync(new URL('../src/ui/config/components/close-action.tsx', import.meta.url), 'utf8')
+
+    expect(source).not.toContain('useQueryClient')
+    expect(source).not.toContain('useAppConfig')
+    expect(source).not.toContain('setQueryData')
+  })
+
   it('surfaces failures as a danger toast without a success toast', () => {
-    const source = readFileSync(new URL('../src/components/config-close-action.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/components/close-action.tsx', import.meta.url), 'utf8')
 
     expect(source).toContain('messages.close_action_failed')
     expect(source).toContain('variant: \'danger\'')
@@ -49,7 +60,7 @@ describe('config close action control contract', () => {
   })
 
   it('stays within the shell conventions', () => {
-    const source = readFileSync(new URL('../src/components/config-close-action.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/components/close-action.tsx', import.meta.url), 'utf8')
 
     expect(source).not.toContain('useCallback')
     expect(source).not.toContain('useMemo')

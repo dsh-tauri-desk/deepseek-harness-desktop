@@ -1,11 +1,15 @@
-import type { InvokeBridgeReply, InvokeBridgeRequest } from '../types'
+import type { InvokeArgs, InvokeBridgeReply, InvokeBridgeRequest, InvokeOptions } from '../types'
+import { INVOKE_TIMEOUT_MS, PLUGIN_ID, SRC_INVOKE, TYPE_INVOKE, TYPE_INVOKE_REPLY } from '../constants'
+import { invokeParent } from './invoke-parent'
+import { listenParent } from './listen-parent'
+
 /**
  * dsh-tauri invoke 桥（iframe 侧客户端）。
  *
  * iframe 内的 dsh 界面 / 插件没有 `__TAURI_INTERNALS__`（只有顶层 webview 有），
  * 因此无法直接 `import { invoke } from '@tauri-apps/api/core'`。本桥把这些调用
  * 经 postMessage 转发到宿主（主 webview）的监听器（见桌面端
- * `src/hooks/use-iframe-invoke.ts`），由宿主调用 Tauri `invoke` 并把结果回传。
+ * `src/hooks/use-invoke-iframe.ts`），由宿主调用 Tauri `invoke` 并把结果回传。
  *
  * 协议（与宿主监听器逐字一致）：
  *   iframe → 宿主：{ source: 'dsh-tauri-invoke', type: 'dsh://tauri:invoke',
@@ -13,10 +17,9 @@ import type { InvokeBridgeReply, InvokeBridgeRequest } from '../types'
  *   宿主 → iframe：{ source: 'dsh-desktop-invoke', type: 'dsh://tauri:reply',
  *                     nonce, ok, value | error }
  *
- * 可靠性：每条请求带唯一 nonce，应答按 nonce 精确匹配避免串线；等待超时
- * （INVOKE_TIMEOUT_MS）或局部失败统一 reject，并登记进宿主错误注册表便于排查。
+ * 收发都走父窗口桥原语（`invokeParent` / `listenParent`），本文件只负责
+ * nonce 匹配、超时与错误归一。
  */
-import { INVOKE_TIMEOUT_MS, PLUGIN_ID, SRC_INVOKE, SRC_INVOKE_REPLY, TYPE_INVOKE, TYPE_INVOKE_REPLY } from '../constants'
 
 let nonceSeq = 0
 
@@ -29,13 +32,18 @@ function nextNonce(): string {
 /**
  * 经宿主桥调用一个 Tauri command，返回其成功值；command 抛错或超时时 reject。
  *
- * @param cmd  Tauri command 名（如 `get_pet_status`）
- * @param args command 参数对象（可选）
+ * 签名与 `@tauri-apps/api/core` 的 `invoke` 保持一致（`cmd` / `args` / `options`），
+ * 便于把 `import { invoke } from '@tauri-apps/api/core'` 原地换成此实现；
+ * `options.headers` 不被桥转发（宿主直接调用 command），仅为签名一致而保留。
+ *
+ * @param cmd Tauri command 名（如 `get_pet_status`）
+ * @param args command 参数（对象 / 数字数组 / ArrayBuffer / Uint8Array）
  * @typeParam T command 成功返回值的类型
  */
-export function invokeBridgedTauri<T>(
+export function invoke<T>(
   cmd: string,
-  args?: Record<string, unknown>,
+  args?: InvokeArgs,
+  _options?: InvokeOptions,
 ): Promise<T> {
   const nonce = nextNonce()
 
@@ -45,17 +53,12 @@ export function invokeBridgedTauri<T>(
     // 成功调用留下一 15s 的休眠超时闭包（见 issue #396 前端延迟根因之一）。
     let timer: ReturnType<typeof setTimeout> | undefined
 
-    function onMessage(event: MessageEvent<unknown>): void {
-      // 只接受宿主（顶层）直接发回的应答，且 nonce 必须命中本次请求
-      if (event.source !== window.parent)
+    // 只接受宿主回传且 nonce 命中本次请求的应答（来源由 listenParent 校验）
+    const unlisten = listenParent<InvokeBridgeReply>((reply) => {
+      if (reply.type !== TYPE_INVOKE_REPLY || reply.nonce !== nonce)
         return
-      const data = event.data as InvokeBridgeReply | null
-      if (!data || typeof data !== 'object' || data.source !== SRC_INVOKE_REPLY)
-        return
-      if (data.type !== TYPE_INVOKE_REPLY || data.nonce !== nonce)
-        return
-      settle(data)
-    }
+      settle(reply)
+    })
 
     function settle(reply: InvokeBridgeReply): void {
       if (settled)
@@ -64,7 +67,7 @@ export function invokeBridgedTauri<T>(
       if (timer !== undefined)
         clearTimeout(timer)
       // issue #396 修复：完成路径（成功/失败）都必须清理超时计时器，避免高频成功调用遗留「休眠超时闭包」。
-      window.removeEventListener('message', onMessage)
+      unlisten()
       if (reply.ok) {
         resolve(reply.value as T)
       }
@@ -73,12 +76,11 @@ export function invokeBridgedTauri<T>(
       }
     }
 
-    window.addEventListener('message', onMessage)
     // 超时保护：宿主未应答（监听器未挂载/iframe 非 dsh 环境等）时按失败处理
     timer = setTimeout(() => {
       if (settled)
         return
-      window.removeEventListener('message', onMessage)
+      unlisten()
       settled = true
       reject(new Error(`NODE_NOT_ANSWERED: invoke ${cmd} timed out`))
     }, INVOKE_TIMEOUT_MS)
@@ -90,17 +92,16 @@ export function invokeBridgedTauri<T>(
       args,
       nonce,
     }
-    try {
-      window.parent.postMessage(request, '*')
-    }
-    catch (error) {
+    // 未送达（无宿主 / payload 不可克隆）时立即失败，不等超时
+    const sent = invokeParent(request)
+    if (!sent.ok) {
       if (timer !== undefined)
         clearTimeout(timer)
       if (settled)
         return
       settled = true
-      window.removeEventListener('message', onMessage)
-      reject(error)
+      unlisten()
+      reject(sent.error ?? new Error(`NODE_NOT_ANSWERED: invoke ${cmd} not delivered`))
     }
   })
 }

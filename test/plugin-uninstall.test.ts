@@ -33,12 +33,12 @@ describe('plugin preset chip i18n keys', () => {
 // ── Suite B — component references the preset key + condition ────────────────
 describe('configPlugin preset chip', () => {
   it('renders the plugins.preset key', () => {
-    const source = readFileSync(new URL('../src/components/config-plugin.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
     expect(source).toContain('plugins.preset')
   })
 
   it('guards the chip on recommended (preset, non-internal)', () => {
-    const source = readFileSync(new URL('../src/components/config-plugin.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
     expect(source).toContain('!plugin.internal && plugin.recommended')
   })
 })
@@ -46,17 +46,17 @@ describe('configPlugin preset chip', () => {
 // ── Suite C — uninstall flow wires to remove_dsh_plugin + restart ────────────
 describe('configPlugin uninstall flow', () => {
   it('calls remove_dsh_plugin', () => {
-    const source = readFileSync(new URL('../src/components/config-plugin.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
     expect(source).toContain('remove_dsh_plugin')
   })
 
   it('restarts the service after uninstall', () => {
-    const source = readFileSync(new URL('../src/components/config-plugin.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
     expect(source).toContain('store.harness.restart()')
   })
 
   it('shows a confirm dialog before uninstall', () => {
-    const source = readFileSync(new URL('../src/components/config-plugin.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
     expect(source).toContain('remove_confirm_title')
   })
 })

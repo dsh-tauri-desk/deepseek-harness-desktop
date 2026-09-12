@@ -22,7 +22,7 @@ describe('preinstall can-uncheck hint i18n keys', () => {
 // ── Suite B — component references the hint key (source assertion) ───────────
 describe('preinstallSetup hint text', () => {
   it('renders the can_uncheck_hint key', () => {
-    const source = readFileSync(new URL('../src/layout/components/preinstall-setup.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/layout/components/setup-preinstall.tsx', import.meta.url), 'utf8')
     expect(source).toContain('preinstall.can_uncheck_hint')
   })
 })
@@ -30,12 +30,12 @@ describe('preinstallSetup hint text', () => {
 // ── Suite C — component has dynamic button label (source assertion) ──────────
 describe('preinstallSetup primary button morph', () => {
   it('guards the label switch on hasChanges', () => {
-    const source = readFileSync(new URL('../src/layout/components/preinstall-setup.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/layout/components/setup-preinstall.tsx', import.meta.url), 'utf8')
     expect(source).toContain('hasChanges')
   })
 
   it('can render the Skip label', () => {
-    const source = readFileSync(new URL('../src/layout/components/preinstall-setup.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/layout/components/setup-preinstall.tsx', import.meta.url), 'utf8')
     expect(source).toContain('preinstall.skip')
   })
 })
@@ -55,13 +55,12 @@ vi.mock('@tauri-apps/api/event', () => ({
     return vi.fn()
   }),
 }))
-vi.mock('@hairy/react-lib', () => ({ emitter: { emit: vi.fn() } }))
 vi.mock('@/config/client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('../src/store/modules/harness-updater', () => ({
   harnessUpdater: { checkForUpdate: vi.fn() },
 }))
 
-const { harness } = await import('../src/store/modules/harness/store')
+const { preinstall } = await import('../src/store/modules/preinstall')
 
 beforeEach(() => {
   eventListeners.clear()
@@ -70,7 +69,7 @@ beforeEach(() => {
 
 describe('confirmPreinstall empty-selection guard', () => {
   it('does not invoke the backend when ids is empty', async () => {
-    await harness.confirmPreinstall([])
+    await preinstall.confirm([])
     expect(invoke).not.toHaveBeenCalled()
   })
 })

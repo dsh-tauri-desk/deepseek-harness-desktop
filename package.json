@@ -24,7 +24,6 @@
   },
   "dependencies": {
     "@gravity-ui/icons": "catalog:runtime",
-    "@hairy/react-lib": "catalog:runtime",
     "@hairy/utils": "catalog:utils",
     "@heroui/react": "catalog:runtime",
     "@heroui/styles": "catalog:runtime",
@@ -33,15 +32,17 @@
     "@tanstack/react-query": "catalog:runtime",
     "@tauri-apps/api": "catalog:tauri",
     "@tauri-apps/plugin-http": "catalog:tauri",
+    "@tauri-apps/plugin-os": "catalog:",
+    "@tauri-apps/plugin-store": "catalog:",
     "dsh-pet-component": "catalog:runtime",
     "i18next": "catalog:runtime",
     "react": "catalog:runtime",
     "react-dom": "catalog:runtime",
     "react-i18next": "catalog:runtime",
     "react-if-lite": "catalog:runtime",
-    "react-use": "catalog:runtime",
     "semver": "catalog:runtime",
     "tailwind-variants": "catalog:runtime",
+    "unstorage": "catalog:utils",
     "valtio-define": "catalog:runtime"
   },
   "devDependencies": {

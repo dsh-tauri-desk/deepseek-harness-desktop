@@ -434,17 +434,16 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     });
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
-    // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、导航桥、
-    // 样式桥与缩放快捷键桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
+    // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、
+    // 剪贴板图片桥与 boot 探测桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
+    // 导航桥（侧边栏）、缩放快捷键与 iframe 全局样式已分别由 dsh-tauri /
+    // dsh-tauri-ui 插件在 iframe 内实现，不再注入对应脚本。
     #[cfg(not(windows))]
     let webview_builder = webview_builder
         .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS)
         .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS)
-        .initialization_script_for_all_frames(crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS);
+        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS);
 
     let webview_window = webview_builder.build()?;
     let zoom_factor = crate::config::get_store_dat_setting(app).zoom_factor;
@@ -608,8 +607,6 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::update_app_config,
         crate::bridge::get_launch_on_login,
         crate::bridge::set_launch_on_login,
-        crate::bridge::set_webview_zoom,
-        crate::bridge::adjust_webview_zoom,
         crate::bridge::get_cli_link_status,
         crate::bridge::open_in_browser,
         crate::bridge::copy_service_url,
@@ -801,4 +798,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .plugin(tauri_plugin_http::init())
         // Simple Store plugin
         .plugin(tauri_plugin_store::Builder::new().build())
+        // OS plugin：前端据此判断系统版本（macOS 10.15 没有 `WKWebView.pageZoom`，
+        // 不能把缩放应用到 WebView），见 `hooks/use-zoom-factor.ts`。
+        .plugin(tauri_plugin_os::init())
 }

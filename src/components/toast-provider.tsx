@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
-import type { ToastUpdateEvent } from '@/utils/toast'
-import { useEventBus } from '@hairy/react-lib'
+import type { ToastUpdateEvent } from '@/config/hooks'
 import { Spinner, Toast } from '@heroui/react'
+import { useListener } from '@reause/core'
 import { useState } from 'react'
 import { If } from 'react-if-lite'
+import { hooks } from '@/config/hooks'
 import { activeQueues, placements } from '@/utils/toast'
 
 interface ToastProviderProps {
@@ -18,7 +19,8 @@ interface ToastProviderProps {
 export function ToastProvider(props: ToastProviderProps) {
   const [updates, setUpdates] = useState(() => new Map<string, ToastUpdateEvent['options']>())
 
-  useEventBus<ToastUpdateEvent>('toast.update').on((event) => {
+  // 订阅 toast 原地更新事件；useListener 负责在卸载时注销
+  useListener(hooks['toast.updated'].on, (event) => {
     if (event === undefined || typeof event.key !== 'string')
       return
     setUpdates((current) => {

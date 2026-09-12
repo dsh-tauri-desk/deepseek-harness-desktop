@@ -322,13 +322,10 @@ pub fn ensure_pet_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvie
             .initialization_script_for_all_frames(
                 crate::desktop::notification::NOTIFICATION_SHIM_JS,
             )
-            .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS)
-            .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS)
             .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
             .initialization_script_for_all_frames(
                 crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS,
-            )
-            .initialization_script_for_all_frames(crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS);
+            );
     }
 
     let window = builder.build()?;

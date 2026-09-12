@@ -306,12 +306,6 @@ where
     setting
 }
 
-pub fn set_store_dat_zoom_factor(app_handle: &AppHandle, zoom_factor: f64) -> Setting {
-    update_store_dat_setting(app_handle, |setting| {
-        setting.zoom_factor = zoom_factor;
-    })
-}
-
 /// 泛型 `Runtime`：允许从非 Wry 具体化的窗口句柄（如工具函数的
 /// `WebviewWindow<R>`）读取设置；具体类型调用方不受影响。
 pub fn get_store_dat_setting<R: Runtime>(app_handle: &AppHandle<R>) -> Setting {

@@ -1,7 +1,7 @@
 //! bridge/pet.rs — 桌宠（外置透明宠物窗口）的 Tauri 命令出口。
 //!
 //! 这些命令被 dsh 容器（iframe 内的 dsh 界面 / dsh-tauri-pet 插件）经 invoke
-//! 桥调用（壳层桥监听模块 `src/hooks/use-iframe-invoke.ts` 把 iframe 的
+//! 桥调用（壳层桥监听模块 `src/hooks/use-invoke-iframe.ts` 把 iframe 的
 //! postMessage invoke 转发到 `@tauri-apps/api/core` 的 `invoke`）。所有状态
 //! 读写统一落在 `config::setting`（持久化）与 `desktop::pet`（窗口）。
 //! 错误遵循仓库约定：`Result<_, String>`，Err 以大写协议前缀开头（如

@@ -1,6 +1,6 @@
 //! 已安装插件监控：轮询 profile 插件文件（`package.json` + `node_modules` 下
 //! 各直接依赖清单），内容变化时解析为结构化列表并通过 `dsh-plugins-updated`
-//! 事件实时推送给前端（`use-dsh-plugins` hook 消费）。
+//! 事件实时推送给前端（由根布局写入插件列表查询缓存）。
 //!
 //! 采用与主题轮询（`config/theme.rs`）一致的「秒级 tick + 指纹比对」方案，
 //! 不引入 notify 等文件监听依赖：插件数量少（个位数到十几个），每次读取的

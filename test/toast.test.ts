@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { activeQueues as queues, toast } from '../src/utils/toast'
 
-// @hairy/react-lib 会经 react-use（CJS）引入 useMount，Node 互操作下无法静态解析命名导出；
-// toast 模块只用 emitter.emit，测试统一 mock 掉（与 runtime-exit-store / preinstall-uncheck 一致）。
-vi.mock('@hairy/react-lib', () => ({ emitter: { emit: vi.fn() } }))
-
 afterEach(() => {
   toast.clear()
   vi.useRealTimers()

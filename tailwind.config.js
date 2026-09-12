@@ -4,7 +4,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 主题色通过 CSS 变量定义（见 src/style/main.css），
+        // 主题色通过 CSS 变量定义（见 src/styles/main.css），
         // 由 <html data-theme="light"> 在浅色/深色之间切换
         'canvas': 'var(--color-canvas)',
         'panel': 'var(--color-panel)',

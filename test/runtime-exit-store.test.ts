@@ -11,13 +11,13 @@ vi.mock('@tauri-apps/api/event', () => ({
     return vi.fn()
   }),
 }))
-vi.mock('@hairy/react-lib', () => ({ emitter: { emit: vi.fn() } }))
 vi.mock('@/config/client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('../src/store/modules/harness-updater', () => ({
   harnessUpdater: { checkForUpdate: vi.fn() },
 }))
 
-const { harness } = await import('../src/store/modules/harness/store')
+const { harness } = await import('../src/store/modules/harness')
+const { recovery } = await import('../src/store/modules/recovery')
 
 beforeEach(() => {
   eventListeners.clear()
@@ -33,8 +33,8 @@ beforeEach(() => {
     iframeLoaded: true,
     iframeError: true,
     busyAction: null,
-    recovery: { required: false, info: null, attempts: 0, busy: false },
   })
+  recovery.reset()
 })
 
 describe('runtime exit store', () => {

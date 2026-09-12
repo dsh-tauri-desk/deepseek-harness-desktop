@@ -95,8 +95,9 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
             return
           }
           discardPolls.delete(sessionId)
-          // 删除任务刚结束：立即复核，不等节流窗口（一次性收敛，不参与高频路径）。
-          reconcileSession(sessionId)
+          // 删除任务刚结束：复核仍经节流器（同一会话的复核入口只有 requestEventReconcile
+          // / requestHydrateReconcile 两个，保证「每次 /status 都在节流窗口内」这一不变量）。
+          requestEventReconcile(sessionId)
         })
         .catch(() => scheduleDiscardPoll(sessionId, jobId, attempts + 1))
     }, DISCARD_POLL_DELAY_MS)
@@ -139,23 +140,28 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
    *   2. 全局每秒配额（会话可能有几十上百个，不能让它们各自独立重试）；
    *   3. 单会话次数上限。
    * 任一约束耗尽即标记 exhausted，永久退出复核（用户打开该会话时再重新校准一次）。
+   *
+   * 关键：重试链必须**可终止**。配额不足时的顺延同样消耗一次重试次数（见下），因此
+   * 即使配额被长期抢光，链也会先撞上次数上限；窗口是第二道终止条件。绝不允许
+   * 「配额不足 → 无条件再排一个 timeout」这种自我续命写法。
    */
   function scheduleRetry(sessionId: string): void {
     if (controller.isDisposed())
       return
     if (!retryWindowStart.has(sessionId))
       retryWindowStart.set(sessionId, Date.now())
-    if (!withinRetryWindow(sessionId) || (retryAttempts.get(sessionId) ?? 0) >= HYDRATION_MAX_RETRIES) {
+    const attempts = retryAttempts.get(sessionId) ?? 0
+    if (!withinRetryWindow(sessionId) || attempts >= HYDRATION_MAX_RETRIES) {
       retryAttempts.delete(sessionId)
       exhausted.add(sessionId)
       return
     }
-    // 全局配额不足时只顺延、不消耗次数：配额由所有未解析会话共享，聚合速率因此有上界。
+    // 顺延也计入次数：配额由所有未解析会话共享，聚合速率因此有上界，且链一定终止。
+    retryAttempts.set(sessionId, attempts + 1)
     if (!takeRetrySlot()) {
       controller.timeout(() => scheduleRetry(sessionId), HYDRATION_RETRY_DELAY_MS)
       return
     }
-    retryAttempts.set(sessionId, (retryAttempts.get(sessionId) ?? 0) + 1)
     controller.timeout(() => {
       if (controller.isDisposed())
         return
@@ -348,10 +354,11 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       })
       .finally(() => {
         inFlight.delete(sessionId)
-        // 请求在途期间又到达复核请求：立即补一次（不经节流器，避免丢掉在途期间的变更）；
-        // 该路径被 inFlight 串行化，稳态下每个窗口至多补一次。
+        // 请求在途期间又到达复核请求：**仍然经节流器**再补一次。
+        // 绝不能在这里直接递归 reconcileSession：那会绕过节流窗口，变成「上一次刚结束、
+        // 下一次立刻发」的串行无缝拉取。经节流器后，窗口内会被合并成一次拖尾执行。
         if (queued.delete(sessionId) && !controller.isDisposed())
-          reconcileSession(sessionId)
+          requestEventReconcile(sessionId)
       })
   }
 

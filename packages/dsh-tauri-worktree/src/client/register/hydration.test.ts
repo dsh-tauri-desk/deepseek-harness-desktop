@@ -10,7 +10,7 @@
  * fetch（HTTP 边界）与定时器收敛成可观察的替身。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HYDRATION_RETRY_BUDGET_PER_SECOND, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
+import { HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
 import { registerWorktreeHydration } from './hydration'
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn() }))
@@ -109,44 +109,64 @@ interface Harness {
   setCurrent: (sessionId: string) => void
   statusCalls: () => number
   callsFor: (sessionId: string) => number
+  subscribeCount: (sessionId: string) => number
+  releaseStatus: () => void
 }
 
 /**
  * 装配「多会话 + 可手动触发事件流/列表快照」的 hydration 环境。
  * @param statusFor 每个会话的 /status 返回体
  * @param sessionIds 客户端列表里的会话（模拟真实 profile：大量宿主解析不出的历史会话）
+ * @param holdStatus true 时 /status 会挂起，直到 releaseStatus() 才返回（模拟慢请求/在途竞态）
  */
-function harness(statusFor: (sessionId: string) => Record<string, unknown>, sessionIds: string[] = ['s-1']): Harness {
+function harness(
+  statusFor: (sessionId: string) => Record<string, unknown>,
+  sessionIds: string[] = ['s-1'],
+  holdStatus = false,
+): Harness {
   const listenersBySession = new Map<string, Set<() => void>>()
+  const subscribeCalls = new Map<string, number>()
+  let releaseHeld: (() => void) | null = null
   let current: string | undefined = sessionIds[0]
   const list = snapshotSource<{ ids: string[], current?: string }>({ ids: [...sessionIds], current })
   const workspaces = snapshotSource({ archivedSessionIds: [] as string[] })
 
   mocks.fetch.mockImplementation(async (url: string) => {
     const matched = /sessionId=([^&]+)/.exec(String(url))
-    if (String(url).includes('/status') && matched)
-      return statusFor(decodeURIComponent(matched[1]))
-    return { ok: true }
+    if (!String(url).includes('/status') || !matched)
+      return { ok: true }
+    const payload = statusFor(decodeURIComponent(matched[1]))
+    if (holdStatus)
+      await new Promise<void>((resolve) => { releaseHeld = resolve })
+    return payload
   })
 
-  const sessionSource = (id: string) => {
+  const listenersOf = (id: string): Set<() => void> => {
     let listeners = listenersBySession.get(id)
     if (!listeners) {
       listeners = new Set()
       listenersBySession.set(id, listeners)
     }
-    return {
-      subscribe: (listener: () => void) => {
-        listeners!.add(listener)
-        return () => listeners!.delete(listener)
-      },
-    }
+    return listeners
   }
 
   const ctx = {
     sessions: {
       list,
-      binding: (id: string) => sessionIds.includes(id) ? { session: sessionSource(id) } : undefined,
+      // 每次都返回**新的** session 包装对象（真实实现下 binding() 不保证同一实例），
+      // 用于验证防重绑靠的是 sessionId 而非对象身份。
+      binding: (id: string) => sessionIds.includes(id)
+        ? {
+            session: {
+              subscribe: (listener: () => void) => {
+                subscribeCalls.set(id, (subscribeCalls.get(id) ?? 0) + 1)
+                const listeners = listenersOf(id)
+                listeners.add(listener)
+                return () => listeners.delete(listener)
+              },
+            },
+          }
+        : undefined,
       open: () => {},
       refresh: async () => {},
     },
@@ -158,7 +178,7 @@ function harness(statusFor: (sessionId: string) => Record<string, unknown>, sess
   return {
     dispose,
     emitSessionEvent: (sessionId = sessionIds[0]) => {
-      for (const listener of [...(listenersBySession.get(sessionId) ?? [])])
+      for (const listener of [...listenersOf(sessionId)])
         listener()
     },
     publishList: () => list.publish({ ids: [...sessionIds], current }),
@@ -171,6 +191,12 @@ function harness(statusFor: (sessionId: string) => Record<string, unknown>, sess
       const urls = mocks.fetch.mock.calls.map(call => String(call[0]))
       const pattern = new RegExp(`sessionId=${sessionId}(?:&|$)`)
       return urls.filter(url => url.includes('/status') && pattern.test(url)).length
+    },
+    subscribeCount: (sessionId: string) => subscribeCalls.get(sessionId) ?? 0,
+    releaseStatus: () => {
+      const release = releaseHeld
+      releaseHeld = null
+      release?.()
     },
   }
 }
@@ -305,6 +331,77 @@ describe('registerWorktreeHydration /status 请求频率', () => {
       await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
     }
     expect(h.statusCalls()).toBe(1)
+    h.dispose()
+  })
+
+  it('重试链必然终止：配额被抢光时不留任何定时器（无自我续命循环）', async () => {
+    // 30 个会话同时抢 8 次/秒的配额：配额长期不足，顺延分支会被反复走到。
+    const ids = Array.from({ length: 30 }, (_, i) => `s-${i}`)
+    const h = harness(() => ({ mode: 'local', projectPath: '', isGit: null }), ids)
+    await flushMicrotasks()
+    // 窗口内：存在待触发的顺延定时器是正常的。
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    // 越过 10s 重试窗口后，所有会话都 exhausted：定时器必须全部消失（否则就是定时器风暴）。
+    await vi.advanceTimersByTimeAsync(HYDRATION_RETRY_WINDOW_MS + 5_000)
+    expect(vi.getTimerCount()).toBe(0)
+
+    // 再打 20s 快照 + 从未解析会话的事件，也不得再排任何定时器或请求。
+    const calls = h.statusCalls()
+    for (let i = 0; i < 20; i++) {
+      for (let n = 0; n < 100; n++) {
+        h.publishList()
+        h.emitSessionEvent(ids[i % ids.length])
+      }
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    expect(h.statusCalls()).toBe(calls)
+    expect(vi.getTimerCount()).toBe(0)
+    h.dispose()
+  })
+
+  it('同一会话只绑定一次事件订阅（binding() 每次返回新实例也不重复绑定）', async () => {
+    const ids = ['s-1', 's-2', 's-3']
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }), ids)
+    await flushMicrotasks()
+    // 列表快照持续变化会反复执行 bindSessionEvents()，但每个会话只应订阅一次。
+    for (let i = 0; i < 200; i++) {
+      h.publishList()
+      await vi.advanceTimersByTimeAsync(10)
+    }
+    for (const id of ids)
+      expect(h.subscribeCount(id)).toBe(1)
+
+    // 订阅只有一个，因此 500 次事件只产生「1 次前沿 + 1 次拖尾」，而不是成百上千次。
+    const before = h.statusCalls()
+    for (let i = 0; i < 500; i++) h.emitSessionEvent('s-1')
+    expect(h.statusCalls()).toBe(before + 1)
+    await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
+    expect(h.statusCalls()).toBe(before + 2)
+    h.dispose()
+  })
+
+  it('在途期间到达的复核经节流器：不会出现「上一次刚结束下一次立刻发」', async () => {
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }), ['s-1'], true)
+    // 首次 hydrate 的请求一直挂在途（未 release）。
+    expect(h.statusCalls()).toBe(1)
+
+    // 在途期间事件不断 + 拖尾定时器到期：节流器把复核排入 queued，而不是并发/紧邻发起。
+    h.emitSessionEvent()
+    await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
+    expect(h.statusCalls()).toBe(1)
+
+    // 放行首个请求：finally 里的补跑必须仍然经节流器 —— 此刻窗口刚被拖尾执行占用，
+    // 因此不得立刻发第二个请求（修复前这里会直接递归 reconcileSession）。
+    h.releaseStatus()
+    await flushMicrotasks()
+    expect(h.statusCalls()).toBe(1)
+
+    // 只有等到下一个节流窗口才允许补跑。
+    await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
+    expect(h.statusCalls()).toBe(2)
+    h.releaseStatus()
+    await flushMicrotasks()
     h.dispose()
   })
 

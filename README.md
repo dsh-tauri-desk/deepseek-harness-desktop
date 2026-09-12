@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <samp><a href="./README.en.md">English</a> · <a href="https://dshtauri.mintlifysite.com">文档</a> · <strong>中文</strong></samp>
+  <samp><a href="./README.en.md">English</a> · <a href="./README.es.md">Español</a> · <a href="https://dshtauri.mintlifysite.com">文档</a> · <strong>中文</strong></samp>
 </p>
 
 <p align="center">

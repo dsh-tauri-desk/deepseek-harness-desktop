@@ -45,7 +45,7 @@
 
 ## Características
 
-- ⚡️ **Cero configuración** — El primer arranque no necesita runtime de Node ni núcleo Harness; por defecto usa el entorno local y no modifica tu entorno actual del sistema.
+- ⚡️ **Cero configuración** — No tenés que instalar Node ni el núcleo Harness manualmente: el primer arranque descarga solo lo que falte (necesita conexión en ese momento) y reutiliza tu entorno local sin modificarlo.
 - 🔄 **Actualización del núcleo** — Sincroniza la última versión del Harness oficial dentro de la app, los cambios surgen efecto sin reinstalar; permite gestionar múltiples versiones del núcleo.
 - 🖥️ **Configuración** — Un solo diálogo para Debug / Perfiles / Plugins / Núcleo, con etiquetas bilingües (zh/en) y soporte de modo oscuro.
 - 🗂️ **Aislamiento por perfiles** — Los perfiles están aislados entre sí en la configuración; plugins, parches y ajustes se mantienen independientes sin interferirse.

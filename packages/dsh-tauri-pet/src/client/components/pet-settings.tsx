@@ -84,6 +84,9 @@ function readAsBase64(file: File): Promise<string> {
   })
 }
 
+/**
+ * 桌宠设置页：预设 / Chat / Codex 三类宠物卡片（选择、启用、取消选择）、开关、大小滑条与导入。
+ */
 export function PetSettings(props: PetSettingsProps): ReactElement {
   useMountStyle(petSettingsStyle, 'dsh-tauri-pet-settings-styles')
   usePetLocale()
@@ -175,6 +178,37 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     }
   }
 
+  /**
+   * 取消选择：清空已选宠物；仍在启用时一并关闭桌宠（无内容可渲染，不留空窗口）。
+   *
+   * 先关闭再清空：若第二步失败，最坏情况也只是保留选择但窗口已销毁，
+   * 不会留下一个空窗口。任一步失败都从后端重拉状态，避免界面与持久层不一致。
+   */
+  async function clearSelection(): Promise<void> {
+    if (busy || active === '')
+      return
+    setBusy(true)
+    setError(null)
+    try {
+      if (enabled)
+        setPetStatus(await setPetEnabled(false))
+      setPetStatus(await setActivePet(''))
+    }
+    catch (clearError) {
+      console.error('[dsh-tauri-pet] clear selection failed:', clearError)
+      setError(text('clearFailed'))
+      try {
+        setPetStatus(await fetchPetStatus())
+      }
+      catch {
+        // 后端不可达时保留最后已知状态，下次成功请求会自动同步。
+      }
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
   /** 启用/关闭桌宠：纯持久开关，关闭后重启不再自动拉起。 */
   async function toggleEnabled(): Promise<void> {
     if (busy)
@@ -257,9 +291,9 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                   name={item.name}
                   desc={item.desc ?? ''}
                   active={active === item.id}
-                  disabled={busy || active === item.id}
-                  actionLabel={active === item.id ? text('selected') : text('enable')}
-                  onAction={() => { void enablePreset(item.id) }}
+                  disabled={busy}
+                  actionLabel={text(active === item.id ? 'clear' : 'enable')}
+                  onAction={() => { void (active === item.id ? clearSelection() : enablePreset(item.id)) }}
                 />
               ))}
               {chatPets.map(item => (
@@ -270,9 +304,9 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                   name={item.name}
                   desc={item.description ?? ''}
                   active={active === item.id}
-                  disabled={busy || active === item.id}
-                  actionLabel={text(active === item.id ? 'selected' : 'select')}
-                  onAction={() => { void choose(item.id) }}
+                  disabled={busy}
+                  actionLabel={text(active === item.id ? 'clear' : 'select')}
+                  onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
                 />
               ))}
             </div>
@@ -292,9 +326,9 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
               name={item.name}
               desc={item.description ?? ''}
               active={active === item.id}
-              disabled={busy || active === item.id}
-              actionLabel={text(active === item.id ? 'selected' : 'select')}
-              onAction={() => { void choose(item.id) }}
+              disabled={busy}
+              actionLabel={text(active === item.id ? 'clear' : 'select')}
+              onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
             />
           ))}
     </div>

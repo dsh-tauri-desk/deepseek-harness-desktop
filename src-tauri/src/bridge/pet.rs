@@ -188,16 +188,29 @@ pub fn set_pet_enabled(app: AppHandle, enabled: bool) -> Result<PetStatus, Strin
 }
 
 /// 选择桌宠模型包并持久化 active_pet。
+///
+/// 空串表示清除选择（存 `None`，与全新安装一致）：设置页已选卡片可再次点击取消，
+/// 而不是一旦选中就无法撤销。清空后桌宠窗口无内容可渲染，调用方应同时关闭窗口。
 #[tauri::command]
 pub fn set_active_pet(app: AppHandle, id: String) -> Result<PetStatus, String> {
-    let id = id.trim().to_string();
-    validate_active_pet_id(&id)?;
+    let cleared = normalize_set_active_pet_id(&id)?;
     let updated = config::update_store_dat_setting(&app, |setting| {
-        setting.active_pet = Some(id);
+        setting.active_pet = cleared;
     });
     let status = status_from_setting(&updated);
     emit_pet_status(&app, &status);
     Ok(status)
+}
+
+/// 选择 id 归一化：空串（去除首尾空白后）表示清除选择；非空沿用既有合法性校验
+///（预设安全字符集或来源限定 id），非法 id 保持报错而不静默清空。
+fn normalize_set_active_pet_id(id: &str) -> Result<Option<String>, String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    validate_active_pet_id(trimmed)?;
+    Ok(Some(trimmed.to_string()))
 }
 
 /// 设置宠物大小百分比（设置页滑条，50–200），并实时同步窗口尺寸。
@@ -1212,6 +1225,26 @@ mod tests {
                 "旧版或非法 id {legacy_or_invalid} 应归一为空串（未选择宠物）"
             );
         }
+    }
+
+    #[test]
+    fn set_active_pet_accepts_empty_as_clear() {
+        // 空串/纯空白表示清除选择：存 None（与全新安装一致），而不是非法 id 报错。
+        assert_eq!(normalize_set_active_pet_id(""), Ok(None));
+        assert_eq!(normalize_set_active_pet_id("   "), Ok(None));
+        // 非空保持既有校验：合法 id 原样存（去空白），非法 id 仍然报错。
+        assert_eq!(
+            normalize_set_active_pet_id("  maid-deepseek-whale  "),
+            Ok(Some("maid-deepseek-whale".to_string()))
+        );
+        assert_eq!(
+            normalize_set_active_pet_id("chat:custom-pet"),
+            Ok(Some("chat:custom-pet".to_string()))
+        );
+        assert!(
+            normalize_set_active_pet_id("bad id").is_err(),
+            "非法 id 不应被静默当作清除"
+        );
     }
 
     #[test]

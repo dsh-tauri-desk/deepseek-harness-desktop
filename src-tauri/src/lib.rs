@@ -6,13 +6,14 @@ mod service;
 mod task;
 mod utils;
 
+/// 应用入口：先做 Wayland 环境兼容（见 `should_apply_wayland_egl_workaround`），
+/// 再初始化日志、装配桌面端并进入事件循环。
 pub fn run() {
-    // Wayland EGL workaround: AppImage bundles WebKitGTK may fail with
-    // "Could not create default EGL display: EGL_BAD_PARAMETER" on Wayland
-    // compositors (PikaOS/GNOME Wayland, Ubuntu 22.04+). Host WebKit (deb)
-    // works, but AppImage needs compositing disabled. Auto-set when on Wayland
-    // if user hasn't already set it — fixes hairyf#??? (PikaOS report).
-    if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {
+    // Wayland EGL workaround：仅 AppImage 需要（见 `should_apply_wayland_egl_workaround`）。
+    if should_apply_wayland_egl_workaround(
+        &std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
+        std::env::var_os("APPIMAGE").is_some(),
+    ) {
         // 与 README 文档一致地同时关闭 compositing 与 DMABUF renderer：只关前者在部分
         // 发行版/驱动上仍会 SIGSEGV（issue #116 的 WebKitGTK 崩溃）。两个参数互相独立，
         // 用户已手动设置其中一个时只补齐另一个。
@@ -65,4 +66,34 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+/// Wayland EGL workaround 是否生效：仅 AppImage 需要。
+///
+/// AppImage 自带旧 WebKitGTK，打包库与宿主 Wayland 合成器 EGL 不兼容
+/// （"Could not create default EGL display: EGL_BAD_PARAMETER"，PikaOS/GNOME
+/// Wayland、Ubuntu 22.04+），必须关闭合成与 DMABUF renderer 才能建窗。
+/// 宿主安装包（deb/rpm/…）用系统 WebKit，可正常创建 EGL 显示；且强制关闭合成
+/// 会破坏透明窗口（桌宠）与视频渲染，因此非 AppImage 运行时不再强制。
+/// AppImage 运行时必带 `APPIMAGE` 环境变量（runtime 规范），以此判定打包形态。
+fn should_apply_wayland_egl_workaround(session_type: &str, appimage_present: bool) -> bool {
+    session_type == "wayland" && appimage_present
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wayland_workaround_only_inside_appimage() {
+        // AppImage + Wayland：保留旧行为，窗口能建起来。
+        assert!(should_apply_wayland_egl_workaround("wayland", true));
+        // 宿主安装包 + Wayland：系统 WebKit 可建 EGL 显示，不再强制关闭合成
+        //（否则透明桌宠窗口全黑、视频无法渲染）。
+        assert!(!should_apply_wayland_egl_workaround("wayland", false));
+        // 非 Wayland 会话：两种形态都不需要。
+        assert!(!should_apply_wayland_egl_workaround("x11", true));
+        assert!(!should_apply_wayland_egl_workaround("", true));
+        assert!(!should_apply_wayland_egl_workaround("", false));
+    }
 }

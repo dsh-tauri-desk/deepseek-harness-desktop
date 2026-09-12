@@ -80,7 +80,9 @@ export interface ConversationInputLeftProps {
 }
 
 export type LocaleKey
-  = | 'closePet'
+  = | 'clear'
+    | 'clearFailed'
+    | 'closePet'
     | 'create'
     | 'createFailed'
     | 'emptyImported'
@@ -92,7 +94,6 @@ export type LocaleKey
     | 'loading'
     | 'name'
     | 'select'
-    | 'selected'
     | 'setPetFailed'
     | 'setSizeFailed'
     | 'sizeHint'

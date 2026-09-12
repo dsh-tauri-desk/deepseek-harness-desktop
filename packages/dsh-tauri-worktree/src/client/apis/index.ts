@@ -4,6 +4,11 @@ import { WORKTREE_API_PREFIX } from '../../shared/constants'
 
 export const baseURL = WORKTREE_API_PREFIX
 
+/** @method get 批量查询全部工作树绑定与未收敛删除任务（hydration 的一次性入口）。 */
+export function getBindings(): Promise<Types.WorktreeBindings> {
+  return fetch(`${baseURL}/bindings`)
+}
+
 /** @method get 查询某会话的工作树状态。 */
 export function getStatus(query: Types.GetStatusQuery): Promise<Types.WorktreeStatus> {
   const jobId = query.jobId ? `&jobId=${encodeURIComponent(query.jobId)}` : ''

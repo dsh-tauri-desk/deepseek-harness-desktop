@@ -28,6 +28,21 @@ export const SESSION_SWITCH_MAX_ATTEMPTS = 30
 export const HYDRATION_RETRY_DELAY_MS = 1500
 export const HYDRATION_MAX_RETRIES = 30
 /**
+ * 未解析会话的重试窗口：会话出现在列表后的这段时间内才重试。
+ *
+ * 宿主返回 `isGit: null` 既可能是启动/新建竞态（数秒内自愈），也可能是**永久**的——
+ * 会话列表里长期存在宿主已不再持有的历史会话（实测某个 profile：83 个会话中 77 个永远
+ * 解析不出）。窗口外不再重试，避免这批会话把 `/status` 变成永久轮询。
+ */
+export const HYDRATION_RETRY_WINDOW_MS = 10_000
+/**
+ * 未解析会话的全局重试配额（次/秒）。
+ *
+ * 会话可能有几十上百个；若它们各自独立重试，聚合请求量会随会话数线性增长。配额由所有
+ * 未解析会话共享，使聚合速率与会话数解耦。
+ */
+export const HYDRATION_RETRY_BUDGET_PER_SECOND = 8
+/**
  * 会话事件流/列表快照触发的状态复核最小间隔。
  *
  * 会话事件流在流式输出期间每秒可通知上百次，列表快照同样随事件更新；不节流时每个

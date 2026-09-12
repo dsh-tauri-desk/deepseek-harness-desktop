@@ -33,7 +33,9 @@ tauri-plugin-store = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 # 桌宠素材直连远端：插件版 HTTP 从 Rust 发起请求，绕开 githubusercontent 的 CORS。
-tauri-plugin-http = "2"
+# 版本须与 package.json 的 @tauri-apps/plugin-http（catalog:tauri，^2.6.0）保持同一 minor：
+# tauri CLI 会在构建前校验 NPM 包与 Rust crate 的 major/minor 是否一致，不一致直接退出。
+tauri-plugin-http = "2.6"
 image = { version = "0.25", default-features = false, features = [ "png" ] }
 arboard = { version = "3", features = [ "wayland-data-control" ] }
 base64 = "0.22"

@@ -190,7 +190,8 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     setBusy(true)
     setError(null)
     try {
-      setPetStatus(await setPetEnabled(false))
+      if (enabled)
+        setPetStatus(await setPetEnabled(false))
       setPetStatus(await setActivePet(''))
     }
     catch (clearError) {

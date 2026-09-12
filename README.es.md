@@ -46,7 +46,7 @@
 ## Características
 
 - ⚡️ **Cero configuración** — No tenés que instalar Node ni el núcleo Harness manualmente: el primer arranque descarga solo lo que falte (necesita conexión en ese momento) y reutiliza tu entorno local sin modificarlo.
-- 🔄 **Actualización del núcleo** — Sincroniza la última versión del Harness oficial dentro de la app, los cambios surgen efecto sin reinstalar; permite gestionar múltiples versiones del núcleo.
+- 🔄 **Actualización del núcleo** — Sincroniza la última versión del Harness oficial dentro de la app, los cambios surten efecto sin reinstalar; permite gestionar múltiples versiones del núcleo.
 - 🖥️ **Configuración** — Un solo diálogo para Debug / Perfiles / Plugins / Núcleo, con etiquetas bilingües (zh/en) y soporte de modo oscuro.
 - 🗂️ **Aislamiento por perfiles** — Los perfiles están aislados entre sí en la configuración; plugins, parches y ajustes se mantienen independientes sin interferirse.
 - 🧩 **Gestión de plugins** — El panel de plugins administra los instalados; ante un problema ofrece entradas de actualización / desinstalación más detalles del error.

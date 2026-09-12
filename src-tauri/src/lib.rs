@@ -6,6 +6,8 @@ mod service;
 mod task;
 mod utils;
 
+/// 应用入口：先做 Wayland 环境兼容（见 `should_apply_wayland_egl_workaround`），
+/// 再初始化日志、装配桌面端并进入事件循环。
 pub fn run() {
     // Wayland EGL workaround：仅 AppImage 需要（见 `should_apply_wayland_egl_workaround`）。
     if should_apply_wayland_egl_workaround(

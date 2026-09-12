@@ -279,7 +279,9 @@ describe('liveDiff（运行中实时读数）', () => {
 
     const store = snapshotStoreFor(dshHome, worktree)
     const nestedDirs = scanNestedRepos(worktree)
-    expect(nestedDirs).toEqual(['source/react-use', 'source/vueuse'])
+    // `scanNestedRepos` 按 `readdirSync` 的顺序追加（不排序），枚举顺序随文件系统而变
+    // （Linux 上就不是字典序），断言前先排序，别把文件系统行为钉进期望值。
+    expect([...nestedDirs].sort()).toEqual(['source/react-use', 'source/vueuse'])
     const before = await captureSnapshot(store, turnRef('s16', 1, 'before'), 'before', { nestedDirs })
     expect(before.ok).toBe(true)
     if (!before.ok)

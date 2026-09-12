@@ -14,7 +14,7 @@
  */
 import type { WorktreeBindings } from '../types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
+import { DISCARD_POLL_DELAY_MS, HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
 import { registerWorktreeHydration } from './hydration'
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn() }))
@@ -123,6 +123,7 @@ interface Harness {
   setRunning: (sessionId: string, running: boolean) => void
   publishList: () => void
   publishWorkspaces: () => void
+  setArchived: (ids: string[]) => void
   setCurrent: (sessionId: string) => void
   setSessionIds: (ids: string[]) => void
   statusCalls: () => number
@@ -228,6 +229,7 @@ function harness(
     bindingsCalls: () => urls().filter(url => url.includes('/bindings')).length,
     discardCalls: () => urls().filter(url => url.includes('/discard')).length,
     publishWorkspaces: () => workspaces.publish({ archivedSessionIds: [...(workspaces.getSnapshot().archivedSessionIds)] }),
+    setArchived: (next: string[]) => workspaces.publish({ archivedSessionIds: [...next] }),
     callsFor: (sessionId: string) => {
       const pattern = new RegExp(`sessionId=${sessionId}(?:&|$)`)
       return urls().filter(url => url.includes('/status') && pattern.test(url)).length
@@ -461,33 +463,37 @@ describe('registerWorktreeHydration 请求量', () => {
     h.dispose()
   })
 
-  it('归档会话：没有工作树绑定时零请求（不再逐个打 /status）', async () => {
-    // 现场形态：归档集合很大，而其中的历史会话宿主往往已不再持有（/status 永久 isGit: null）。
+  it('归档会话完全不参与检测：即使批量绑定里持有工作树，也零请求', async () => {
+    // 现场形态：归档集合很大，其中历史会话宿主往往已不再持有（/status 永久 isGit: null）。
     const archived = Array.from({ length: 30 }, (_, i) => `archived-${i}`)
-    const h = harness(() => LOCAL_STATUS, ['s-0'], { bindings: EMPTY_BINDINGS, archived })
+    const ids = ['s-0', ...archived]
+    const h = harness(() => LOCAL_STATUS, ids, { bindings: bindingsFor(archived), archived })
     await flushMicrotasks()
-    h.publishWorkspaces()
-    await flushMicrotasks()
+    for (let i = 0; i < 20; i++) h.publishWorkspaces()
+    await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS * 3)
 
+    expect(h.statusCalls()).toBe(1) // 只有当前会话 s-0 的 isGit 校准
+    expect(h.discardCalls()).toBe(0) // 归档会话一次 discard 都没有
     expect(h.bindingsCalls()).toBe(1)
-    expect(h.statusCalls()).toBe(1) // 仅当前会话校准
-    expect(h.discardCalls()).toBe(0)
     h.dispose()
   })
 
-  it('归档且仍持有工作树：只发 discard，一次 /status 都不打；重复快照不重复发', async () => {
-    const archived = ['s-a', 's-b']
-    const h = harness(() => LOCAL_STATUS, ['s-0'], { bindings: bindingsFor(archived), archived })
+  it('仅「本次归档且本端已知是工作树」发一次 discard，不轮询不重放', async () => {
+    const h = harness(() => LOCAL_STATUS, ['s-0', 's-a'], { bindings: bindingsFor(['s-a']) })
     await flushMicrotasks()
+    expect(h.discardCalls()).toBe(0)
 
-    expect(h.discardCalls()).toBe(2)
-    expect(h.statusCalls()).toBe(1) // 仅当前会话 s-0；归档会话零 /status
+    // 用户点击归档 s-a：本端 store 已知它是工作树会话 → 一次 fire-and-forget discard。
+    h.setArchived(['s-a'])
+    await flushMicrotasks()
+    expect(h.discardCalls()).toBe(1)
+    const statusAfterArchive = h.statusCalls()
 
-    // 工作区快照在流式输出期间会不断触发：已清理的归档会话不再重复 discard。
+    // 归档集合反复快照：不重放、不轮询（历史实现对归档会话按 500ms 轮询最多 120 次）。
     for (let i = 0; i < 20; i++) h.publishWorkspaces()
-    await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS * 3)
-    expect(h.discardCalls()).toBe(2)
-    expect(h.statusCalls()).toBe(1)
+    await vi.advanceTimersByTimeAsync(DISCARD_POLL_DELAY_MS * 10)
+    expect(h.discardCalls()).toBe(1)
+    expect(h.statusCalls()).toBe(statusAfterArchive)
     h.dispose()
   })
 

@@ -41,7 +41,13 @@ interface WorkspaceRuntimeMock {
 /** 统一管理会话水合状态及重试机制 */
 class HydrationTracker {
   switching = new Map<string, string>()
-  cleanedArchives = new Set<string>()
+  /**
+   * 归档会话集合（本次运行观察到的最后一次快照）。
+   *
+   * 归档会话**不参与任何检测**：不查 `/status`、不扫绑定、不挂事件订阅。这里只保留集合本身，
+   * 用于识别「刚刚被归档」这一个动作边沿（见 handleArchivedSessions）。
+   */
+  archivedIds = new Set<string>()
   inFlight = new Set<string>()
   queued = new Set<string>()
   gitResolved = new Set<string>()
@@ -52,6 +58,11 @@ class HydrationTracker {
   worktreeReconciled = new Set<string>()
   handedOff = new Set<string>()
   subscribedSessions = new Set<string>()
+
+  /** 该会话是否已归档（归档会话一律退出检测）。 */
+  isArchived(sessionId: string): boolean {
+    return this.archivedIds.has(sessionId)
+  }
 
   // 重试与轮询相关
   retryAttempts = new Map<string, number>()
@@ -97,9 +108,6 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   let bindingsInFlight = false
   let knownIds = new Set<string>()
   let lastCurrent: string | undefined
-  // 最近一次批量绑定结果（归档清理据此判断「归档会话是否仍持有工作树」，无需逐会话查询）。
-  let lastBindings: WorktreeBindings = { bindings: [], jobs: [] }
-  let bindingsApplied = false
 
   // 节流器初始化
   const reconcileThrottle = createKeyedThrottle({
@@ -238,12 +246,13 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     if (controller.isDisposed())
       return
 
-    lastBindings = snapshot
-    bindingsApplied = true
     const bound = new Map(snapshot.bindings.map(b => [b.sessionId, b]))
     const jobs = new Map(snapshot.jobs.map(j => [j.sessionId, j]))
 
     for (const sessionId of getSessionSnapshot().ids) {
+      // 归档会话不参与检测：不写状态、不触发自动交接、也不做 isGit 校准。
+      if (state.isArchived(sessionId))
+        continue
       const binding = bound.get(sessionId)
       if (binding) {
         patchSession(sessionId, {
@@ -285,16 +294,12 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     }
 
     const { current } = getSessionSnapshot()
-    if (current)
+    if (current && !state.isArchived(current))
       requestGitCalibration(current)
-
-    // 绑定到位后才知道哪些归档会话真的还持有工作树，此时再做归档清理：
-    // 不依赖 store（归档会话通常不在客户端列表里，store 里没有它们的状态）。
-    cleanupArchivedWorktrees()
   }
 
   function requestGitCalibration(sessionId: string): void {
-    if (state.gitResolved.has(sessionId) || state.exhausted.has(sessionId))
+    if (state.isArchived(sessionId) || state.gitResolved.has(sessionId) || state.exhausted.has(sessionId))
       return
     reconcileThrottle.request(sessionId, () => {
       if (!state.gitResolved.has(sessionId) && !state.exhausted.has(sessionId)) {
@@ -304,7 +309,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   }
 
   function requestSessionReconcile(sessionId: string): void {
-    if (state.exhausted.has(sessionId))
+    if (state.isArchived(sessionId) || state.exhausted.has(sessionId))
       return
     reconcileThrottle.request(sessionId, () => {
       if (!state.exhausted.has(sessionId) && !controller.isDisposed()) {
@@ -314,7 +319,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   }
 
   function requestTurnEndReconcile(sessionId: string): void {
-    if (state.exhausted.has(sessionId))
+    if (state.isArchived(sessionId) || state.exhausted.has(sessionId))
       return
     const isWorktree = selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree'
     if (!isWorktree)
@@ -460,82 +465,41 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     requestBindingsSync()
   }
 
-  const pollArchivedDiscard = (sessionId: string, jobId: string, attempts = 0): void => {
-    if (controller.isDisposed())
-      return
-    if (attempts >= DISCARD_MAX_POLLS) {
-      state.cleanedArchives.delete(sessionId)
-      return
-    }
-    controller.timeout(async () => {
-      try {
-        const status = await fetchStatus(sessionId, jobId)
-        if (controller.isDisposed())
-          return
-        if (status.mode === 'deleting' && status.jobId) {
-          pollArchivedDiscard(sessionId, status.jobId, attempts + 1)
-          return
-        }
-        if (status.mode !== 'local')
-          state.cleanedArchives.delete(sessionId)
-      }
-      catch {
-        state.cleanedArchives.delete(sessionId)
-      }
-    }, DISCARD_POLL_DELAY_MS)
-  }
-
   /**
-   * 归档会话的工作树清理。
+   * 同步归档集合，并只在「刚刚被归档」这一动作边沿做一次收尾。
    *
-   * **只用已经拿到的批量绑定判断，绝不逐归档会话打 `/status`**：归档集合可能很大，而其中
-   * 的历史会话宿主往往已不再持有（`/status` 永久返回 `isGit: null`），逐会话查询会在每次
-   * 工作区快照时放大成几十上百次请求——这就是「归档也被纳入检测」的来源。
+   * **归档会话不参与任何检测**：不查 `/status`（含删除任务的进度轮询）、不扫绑定、不挂事件
+   * 订阅、也不因为归档集合反复快照而重放。历史实现对本函数看到的每个归档会话都打一次
+   * `/status`（挂载时 + 每次工作区快照），归档集合里那些宿主已不再持有的历史会话会把它放大成
+   * 几十上百次请求——这正是「归档也被纳入检测」的来源；清理后又用 `pollArchivedDiscard`
+   * 以 500ms 间隔轮询最多 120 次，同属对归档会话的检测。
    *
-   * 只有「归档 **且** 仍持有工作树绑定」的会话才需要一次 discard POST，其余（绝大多数）
-   * 归档会话是零请求。
+   * 现在唯一的请求是：用户**本次点击归档**的会话、且本端 store 已知它是工作树会话时，
+   * 发一次 fire-and-forget 的 discard（删除由宿主后台完成，归档会话没有 UI 需要收敛，
+   * 因此不轮询、不重试）。绝大多数归档会话（无工作树）连这一次请求都没有。
    */
-  function cleanupArchivedWorktrees(): void {
-    // 尚未拿到绑定快照时不判定「无需清理」：否则会先把归档会话标记为已清理，
-    // 等绑定到达时又跳过它们，导致工作树永久残留。
-    if (!bindingsApplied)
-      return
-    const bound = new Map(lastBindings.bindings.map(binding => [binding.sessionId, binding]))
-    for (const sessionId of getWorkspaceSnapshot().archivedSessionIds) {
-      if (state.cleanedArchives.has(sessionId))
+  function handleArchivedSessions(): void {
+    const nextArchived = new Set(getWorkspaceSnapshot().archivedSessionIds)
+    for (const sessionId of nextArchived) {
+      // 早就在归档集合里：不重放、不检测。
+      if (state.archivedIds.has(sessionId))
         continue
-
-      // 本端 store 优先（覆盖刚创建/刚检出还没来得及同步绑定的情形），否则回退批量绑定。
       const local = selectSessionState(worktreeStore.getSnapshot(), sessionId)
-      const worktreeKey = local.mode === 'worktree' && local.worktreeKey
-        ? local.worktreeKey
-        : bound.get(sessionId)?.worktreeKey
-      // 无工作树绑定：没有任何东西要清理，且**不发任何请求**。
-      if (!worktreeKey) {
-        state.cleanedArchives.add(sessionId)
+      if (local.mode !== 'worktree' || !local.worktreeKey)
         continue
-      }
-
-      state.cleanedArchives.add(sessionId)
-      void discardWorktree(sessionId, worktreeKey)
-        .then((result) => {
-          if (controller.isDisposed())
-            return
-          if (!result.ok) {
-            // 允许下次绑定同步时重试（绑定同步只在会话集合变化时发生，天然有界）。
-            state.cleanedArchives.delete(sessionId)
-            return
-          }
-          if (result.jobId)
-            pollArchivedDiscard(sessionId, result.jobId)
-        })
-        .catch(() => state.cleanedArchives.delete(sessionId))
+      void discardWorktree(sessionId, local.worktreeKey).catch(() => {
+        // 收尾失败不重放：工作树保留在磁盘上，用户可再次归档或显式放弃。
+      })
     }
+    state.archivedIds = nextArchived
   }
 
   const bindSessionEvents = (): void => {
     const { ids } = getSessionSnapshot()
     for (const sessionId of ids) {
+      // 归档会话不订阅：它们不产生需要收敛的工作树变化，订阅只会白跑回调。
+      if (state.isArchived(sessionId))
+        continue
       if (state.subscribedSessions.has(sessionId))
         continue
       const session = sessionsRuntime.binding(sessionId)?.session
@@ -574,22 +538,24 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       state.exhausted.delete(current)
       state.retryAttempts.delete(current)
       state.retryWindowStart.set(current, Date.now())
-      requestGitCalibration(current)
+      if (!state.isArchived(current))
+        requestGitCalibration(current)
     }
   })
 
-  const unsubscribeWorkspaces = workspacesRuntime.list.subscribe(cleanupArchivedWorktrees)
+  const unsubscribeWorkspaces = workspacesRuntime.list.subscribe(handleArchivedSessions)
   controller.add(unsubscribeSessions)
   controller.add(unsubscribeWorkspaces)
 
   // 挂载时初始化数据
   noteListBaseline()
   noteAppearances()
+  // 只登记当前归档集合（此刻 store 尚未由 /bindings 填充，不会对既有归档会话发任何请求）；
+  // 之后只有「用户新归档的会话」才可能触发一次收尾 discard。
+  handleArchivedSessions()
   lastCurrent = getSessionSnapshot().current
   hydrate()
   bindSessionEvents()
-  // 归档清理不在挂载时执行：此刻还没有批量绑定结果，无法区分「归档且持有工作树」与
-  // 「归档但无工作树」，会把前者误标记为已清理。applyBindings 拿到绑定后会自行调用。
 
   return () => controller.dispose()
 }

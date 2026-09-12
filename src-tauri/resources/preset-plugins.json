@@ -15,15 +15,5 @@
     "description": "A VSCode-like right sidebar (explorer / editor / terminal / git / browser), isolated per conversation session. Exposes a service for other plugins to register sidebar tabs and file viewers.",
     "repoUrl": "https://github.com/omdsh-dev/DSH-better-sidebar",
     "recommended": true
-  },
-  {
-    "id": "dsh-session-context-menu",
-    "spec": "github:baihejiangnan/dsh-session-context-menu",
-    "package": "@baihejiangnan/dsh-session-context-menu",
-    "name": "DSH Session Context Menu",
-    "description": "Right-click context menu for the DSH app shell — quick actions for conversations, workspaces, inputs, and links.",
-    "repoUrl": "https://github.com/baihejiangnan/dsh-session-context-menu",
-    "recommended": false,
-    "defaultChecked": true
   }
 ]

@@ -45,7 +45,7 @@ pub struct PreinstallPluginInfo {
     /// 黄色「修复」chip，默认勾选（Windows 极简模式修复项）
     #[serde(default)]
     pub fix: bool,
-    /// 无 chip 但默认勾选（如 dsh-notification：不标「推荐」，首次引导仍直接勾上）
+    /// 无 chip 但默认勾选（不标「推荐」，首次引导仍直接勾上）
     #[serde(default)]
     pub default_checked: bool,
     /// 仅 Windows 平台列出

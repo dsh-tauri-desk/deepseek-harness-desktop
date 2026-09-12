@@ -49,14 +49,10 @@
 
 首次启动引导中提供的插件，按需勾选安装：
 
-- [DSH Win Terminal Inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows 极简模式修复
 - [DSH Market](https://github.com/dsh-market/dsh-market) — 浏览、搜索并一键安装社区插件（推荐）
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — 类 VSCode 右侧栏，按会话隔离（推荐）
-- [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时的桌面通知
 
 > 预设插件清单由桌面端维护。为避免不稳定的预设插件导致软件异常，如需新增或更新预设，请在 [deepseek-harness-desktop/issues](https://github.com/dsh-tauri-desk/deepseek-harness-desktop/issues) 提起请求。
->
-> 当前清单还包含 [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu)，用于会话、工作区、输入框和链接的右键操作。
 
 ## 内置插件
 

@@ -1,17 +1,12 @@
 import type { ToastContentValue } from '@heroui/react/toast'
 import type { ToastVariants } from '@heroui/styles'
 import type { ReactNode } from 'react'
-import { emitter } from '@hairy/react-lib'
 import { ToastQueue } from '@heroui/react'
+import { hooks } from '@/config/hooks'
 
 /** toast() 可选项：库内未暴露的 HeroUIToastOptions（toast-queue 收敛的 content + 超时回调），这里用公开的 ToastContentValue 组合 */
 export type ToastOptions = Partial<ToastContentValue & { timeout?: number, onClose?: () => void }> & { placement?: Placement }
 export type ToastUpdateOptions = Partial<ToastContentValue>
-
-export interface ToastUpdateEvent {
-  key: string
-  options: ToastUpdateOptions
-}
 
 export type Placement = NonNullable<ToastVariants['placement']>
 export const placements = [
@@ -69,7 +64,7 @@ function forgetKey(key: string): void {
 
 /**
  * 统一 toast API：直接调用创建，toast.update/close/clear 通过 key 管理。
- * update 触发 emitter 'toast.update'，由 ToastProvider 经 useEventBus 消费后
+ * update 触发 `hooks['toast.updated']` 事件（见 config/hooks），由 ToastProvider 消费后
  * 原地更新对应 queue 的 content（HeroUI ToastQueue 没有 update 方法）。
  */
 export const toast = Object.assign(
@@ -103,7 +98,7 @@ export const toast = Object.assign(
       if (!placementsKeys.has(key))
         return
       toastContents.set(key, { ...(toastContents.get(key) ?? {}), ...options })
-      emitter.emit('toast.update', { key, options })
+      void hooks['toast.updated'].trigger({ key, options })
     },
 
     close(key: string): void {

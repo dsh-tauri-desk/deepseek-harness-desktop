@@ -1,4 +1,4 @@
-import type { RefObject } from 'react'
+import type { DshPlugin } from '@/types'
 import {
   LayoutSideContent,
   LayoutSideContentLeft,
@@ -8,6 +8,7 @@ import {
 } from '@gravity-ui/icons'
 import { Button, Chip, Description, Dropdown, Label } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
+import { useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect, useState } from 'react'
@@ -15,15 +16,14 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
 import { useStore } from 'valtio-define'
-import { ConfigDialog } from '@/components/config-dialog'
-import { DesktopAboutDialog } from '@/components/desktop-about-dialog'
-import { DesktopUpdateDialog } from '@/components/desktop-update-dialog'
-import { useDshPlugins } from '@/hooks/use-dsh-plugins'
-import { useIframeTauri } from '@/hooks/use-iframe-tauri'
+import { queryKeys } from '@/config/query-keys'
+import { useListen } from '@/hooks/use-listen'
 import { store } from '@/store'
+import { DesktopAboutDialog } from '@/ui/dialog/about'
+import { ConfigDialog } from '@/ui/dialog/config'
+import { DesktopUpdateDialog } from '@/ui/dialog/update'
 import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
-import { useMacOSAppMenu } from './use-macos-app-menu'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -32,8 +32,10 @@ import { useMacOSAppMenu } from './use-macos-app-menu'
  *
  * - 侧边栏：经 postMessage 操控 iframe 内的 dsh 应用
  *   （`dsh://sidebar:toggle`，由 dsh-tauri 插件或桌面端注入的导航桥脚本
- *   NAV_SHIM_JS 执行）；折叠图标由 iframe 回报的 `dsh://sidebar:collapsed` 同步。
- *   左侧控件只在「dsh-tauri 插件已启用（已安装）」且存在 iframe 时渲染：
+ *   dsh-tauri 插件的 `client/register/sidebar.ts`（`ctx.layout.toggleSidebar`）执行）；
+ *   折叠图标由 iframe 回报的 `dsh://sidebar:collapsed` 同步。
+ *   导航桥（收回报 + 发命令）在 `iframe.tsx`，本组件只接收状态与回调：
+ *   左侧控件只在「dsh-tauri 插件已启用（已安装）」且传入 `onToggleSidebar` 时渲染，
  *   原生桥缺席时控件没有可靠接收方，避免出现点了没反应的死按钮。
  * - 空白拖拽区：Tauri 原生 `data-tauri-drag-region`（顶层文档直接生效），
  *   Windows/Linux 上双击切换最大化，macOS 上交由系统标题栏偏好。
@@ -42,13 +44,14 @@ import { useMacOSAppMenu } from './use-macos-app-menu'
  * - Windows/Linux：右侧窗口按钮直接调用 Tauri API；
  *   后台化 = 隐藏到托盘（服务保持运行）。
  *
- * 未传入 iframeRef（安装/错误/预装引导页，无 iframe 可操控）时
+ * 未传入 onToggleSidebar（安装/错误/预装引导页，无 iframe 可操控）时
  * 只渲染窗口控制，不渲染左侧导航控制。
  */
 
 /**
- * dsh-tauri 插件 id：安装后 iframe 内提供 `window.__dsh_tauri_bridge__`
- *  原生导航桥（`useDshPlugins` 实时同步其安装状态，插件增删即时生效）
+ * dsh-tauri 插件 id：安装后 iframe 内提供侧边栏切换与折叠状态回报
+ *  （`client/register/sidebar.ts`；插件增删即时生效：与「插件」面板共用同一份
+ *  查询缓存，缓存由根布局订阅 `dsh-plugins-updated` 写入）
  */
 const TAURI_PLUGIN_ID = 'dsh-tauri'
 
@@ -109,15 +112,21 @@ function useMacOSFullscreen() {
 }
 
 export interface NavbarProps {
-  /** 就绪态 iframe；传入时启用左侧导航控制 */
-  iframeRef?: RefObject<HTMLIFrameElement | null>
+  /** iframe 回报的 dsh 侧边栏折叠状态（导航桥逻辑在 `iframe.tsx`） */
+  sidebarCollapsed?: boolean
+  /** 切换 iframe 内 dsh 侧边栏（向 iframe 发 `dsh://sidebar:toggle`）；传入时启用左侧导航控制 */
+  onToggleSidebar?: () => void
 }
 
-export function Navbar({ iframeRef }: NavbarProps) {
+export function Navbar({ sidebarCollapsed = false, onToggleSidebar }: NavbarProps) {
   const { t } = useTranslation()
   const isFullscreen = useMacOSFullscreen()
-  const { plugins } = useDshPlugins()
-  const { sidebarCollapsed, sendNav } = useIframeTauri(iframeRef)
+  // 只读取「dsh-tauri 插件是否已安装」；查询键与「插件」面板共用（同一份缓存），
+  // 挂载时自动拉取，服务重启 / 插件操作后的失效由 store 与该缓存同步共同保证。
+  const { data: plugins = [] } = useQuery({
+    queryKey: queryKeys.plugins,
+    queryFn: () => invoke<DshPlugin[]>('get_dsh_plugins'),
+  })
   const { updateInfo } = useStore(store.desktopUpdater)
 
   const openConfigDialog = useOverlay(ConfigDialog)
@@ -198,22 +207,36 @@ export function Navbar({ iframeRef }: NavbarProps) {
   async function copyRunLogs() {
     try {
       const logs = await invoke<string>('read_run_logs')
-      await writeClipboardText(logs)
-      toast(t('messages.logs_copied'), {})
+      // 成功/失败提示由 writeClipboardText 统一给出，这里只记录日志
+      await writeClipboardText(logs, t('messages.logs_copied'))
     }
     catch (err) {
       console.error('[Navbar] failed to copy run logs:', err)
-      toast(t('messages.logs_copy_failed'), { variant: 'danger' })
     }
   }
 
-  useMacOSAppMenu({
-    enabled: IS_MACOS,
-    openConfig: handleOpenConfig,
-    openAbout: handleOpenAbout,
-    copyRunLogs: () => { void copyRunLogs() },
-    checkUpdate: () => { void handleCheckUpdate() },
-    restartHarness: () => { void store.harness.restart() },
+  // macOS 原生菜单 → 复用壳层已有操作；非 macOS 无原生菜单，直接忽略事件。
+  // （useListen 内部把回调放在 ref 转发，这里读到的始终是最新的处理函数。）
+  useListen<string>('macos-menu-action', (event) => {
+    if (!IS_MACOS)
+      return
+    switch (event.payload) {
+      case 'desktop-config':
+        handleOpenConfig()
+        break
+      case 'desktop-about':
+        handleOpenAbout()
+        break
+      case 'desktop-copy-run-logs':
+        void copyRunLogs()
+        break
+      case 'desktop-check-update':
+        void handleCheckUpdate()
+        break
+      case 'desktop-restart':
+        void store.harness.restart()
+        break
+    }
   })
 
   return (
@@ -227,14 +250,14 @@ export function Navbar({ iframeRef }: NavbarProps) {
         },
       )}
     >
-      <If cond={iframeRef != null && tauriEnabled}>
+      <If cond={onToggleSidebar != null && tauriEnabled}>
         <Button
           className="rounded-lg size-7"
           isIconOnly
           size="sm"
           variant="ghost"
           aria-label={t(sidebarCollapsed ? 'nav.sidebar_expand' : 'nav.sidebar_collapse')}
-          onPress={() => { sendNav('sidebar:toggle') }}
+          onPress={() => { onToggleSidebar?.() }}
         >
           <If
             cond={sidebarCollapsed}

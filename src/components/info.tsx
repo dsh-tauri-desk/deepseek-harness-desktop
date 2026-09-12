@@ -3,7 +3,7 @@ import { cn } from 'tailwind-variants'
 
 /**
  * 信息键值行（term|value）：两侧对齐的「项目名 + 值」行。
- * 供 config-debug 的运行时信息与「关于 / 检查更新」对话框共用，
+ * 供 ui/config/debug 的运行时信息与「关于 / 检查更新」对话框共用，
  * 值默认用等宽字体（版本号/路径等类代码内容）。
  */
 export interface InfoProps {

@@ -102,7 +102,7 @@ import type { SelectorHook, SettingsSidebarProps } from '../types'
 仅在为了兼容既有公开 API 时，才允许从原文件 re-export 类型：
 
 ```ts
-export type { NavBridgeHandlers } from '../types'
+export type { ClientContext } from '../types'
 ```
 
 纯组件内部且绝不跨文件使用的极小类型可以保留在组件文件中，但新增类型默认应先考虑放入 `types/`。
@@ -128,6 +128,36 @@ export const PANEL_STYLE_ID = 'dsh-tauri-panel-styles'
 
 组件文件只消费常量，不重复写共享字符串或数字。真正只使用一次且不表达协议的局部值可以保留在实现文件中。
 跨 half 共享的协议常量（插件名 / API 前缀 / 分区顺序）放 `src/shared/constants.ts`，host/constants/ 与 client/constants/ 从那里 re-export，不再各自硬编码。
+
+## 父窗口桥（iframe ↔ 桌面宿主）规则
+
+iframe 内的插件没有 `__TAURI_INTERNALS__`，与桌面宿主只能经 postMessage 通信。
+**所有自定义桥必须经 `dsh-tauri/client` 暴露的这一组方法**，禁止自行
+`window.parent.postMessage(…)` / `window.addEventListener('message', …)`：
+
+| 方法 | 方向 | 用途 |
+| --- | --- | --- |
+| `invoke(cmd, args?, options?)` | iframe → 宿主 → Tauri `invoke` | 调宿主侧 command（签名同 `@tauri-apps/api/core`） |
+| `listen(event, handler, options?)` | 宿主 → iframe | 订阅宿主转发进来的 Tauri 事件（签名同 `@tauri-apps/api/event`） |
+| `invokeParent(message)` | iframe → 宿主 | 自定义协议的裸发送（fire-and-forget；返回值表达是否送达） |
+| `listenParent(handler, types?)` | 宿主 → iframe | 自定义协议的裸接收，返回取消函数 |
+| `useInvoke(cmd, args?)` | — | `invoke` 的 React「读一次」版本（`{ data, loading, error }`） |
+| `useListen(event, handler)` | — | `listen` 的 React 版本（挂载订阅、卸载注销） |
+| `useListenParent(types, handler)` | — | `listenParent` 的 React 版本 |
+
+- **来源校验只做一次**：客户端只信 `event.source === window.parent`（`listenParent` 内完成），
+  宿主侧只信 `event.source === iframe.contentWindow` + origin 匹配；两端都**不再比对 `data.source`**，
+  协议分支一律按 `data.type` 分发（`source` 字段可保留兼容，不参与判断）。
+- **协议常量集中在 `client/constants/`**（如 `TYPE_INVOKE` / `TYPE_EVENT`），与桌面宿主侧的字面量逐字一致；
+  宿主侧对应实现为 `src/layout/components/iframe.tsx`（`useIframePost` / `useIframeMessage`）。
+- **Tauri 事件转发链路**：宿主 `useListenIframe(iframeRef, event, payload => ({ type: TYPE_EVENT, event, payload }))`
+  ↔ 客户端 `listen(event, handler)`；新增「宿主事件 → 插件 UI」通道按此配对，不要另写 postMessage。
+- **错误上报**：一律经 `reportPluginError`（内部走 `invokeParent`），不要自己拼消息体。
+- **桌面集成能力放 `client/register/*`**：侧边栏切换与折叠回报（`dsh://sidebar:toggle` / `dsh://sidebar:collapsed`）、
+  缩放快捷键（`dsh://zoom-shortcut`）都由插件在 iframe 内实现（`register/sidebar.ts`、`register/zoom-shortcut.ts`），
+  桌面端**不再注入**对应的通讯 shim（Rust 侧只保留无法在插件加载前/插件期实现的桥：通知 API 垫片、
+  剪贴板图片回退、boot 探测、WebKit 兼容；iframe 全局样式统一由 `dsh-tauri-ui` 的
+  `client/styles/global.cssr.ts` 经 `mountStyle` 挂载）。新增同类能力时同样放 `register/*` 或 `styles/*`，不要回到注入脚本。
 
 ## 样式与 css-render 规则
 

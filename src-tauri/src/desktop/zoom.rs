@@ -55,34 +55,9 @@ pub fn apply_native_zoom<R: Runtime>(
         .map_err(|error| format!("ZOOM_APPLY_FAILED: {error}"))
 }
 
-pub const ZOOM_SHORTCUT_BRIDGE_JS: &str = r#"
-(() => {
-  if (window.parent === window || window.parent !== window.top) return;
-  if (window.__dsh_zoom_shortcut_bridge__) return;
-  window.__dsh_zoom_shortcut_bridge__ = true;
-
-  window.addEventListener('keydown', (event) => {
-    if ((!event.ctrlKey && !event.metaKey) || event.altKey) return;
-
-    let action = null;
-    if (event.key === '+' || event.key === '=') action = 'increase';
-    else if (event.key === '-' || event.key === '_') action = 'decrease';
-    else if (event.key === '0') action = 'reset';
-    if (!action) return;
-
-    event.preventDefault();
-    window.parent.postMessage({
-      source: 'dsh-zoom-shortcut-bridge',
-      type: 'dsh://zoom-shortcut',
-      action,
-    }, '*');
-  }, { capture: true });
-})();
-"#;
-
 #[cfg(test)]
 mod tests {
-    use super::{macos_zoom_support_error, MINIMUM_MACOS_ZOOM_MAJOR, ZOOM_SHORTCUT_BRIDGE_JS};
+    use super::{macos_zoom_support_error, MINIMUM_MACOS_ZOOM_MAJOR};
 
     #[test]
     fn native_zoom_requires_macos_11_or_newer() {
@@ -93,24 +68,5 @@ mod tests {
         assert!(macos_zoom_support_error(true, 11, 0).is_none());
         assert!(macos_zoom_support_error(true, 15, 4).is_none());
         assert!(macos_zoom_support_error(true, 10, 16).is_none());
-    }
-
-    #[test]
-    fn bridge_is_idempotent_and_limited_to_direct_child_frames() {
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("window.__dsh_zoom_shortcut_bridge__"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("window.parent === window"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("window.parent !== window.top"));
-    }
-
-    #[test]
-    fn bridge_filters_modifiers_and_known_zoom_keys() {
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.ctrlKey"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.metaKey"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.altKey"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.key === '+'"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.key === '-'"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.key === '0'"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("event.preventDefault()"));
-        assert!(ZOOM_SHORTCUT_BRIDGE_JS.contains("dsh://zoom-shortcut"));
     }
 }

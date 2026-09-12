@@ -1,19 +1,22 @@
 /**
  * 错误上报桥（iframe 内 → 桌面宿主）。
  *
- * 与桌面端 `use-iframe-shim.ts` 的协议逐字一致 —— 宿主只接受完全匹配的 key，
- * 任何一处不一致都会被静默丢弃：
+ * 与桌面端入站桥（`src/layout/components/iframe.tsx`）的协议逐字一致 —— 宿主按
+ * `type` 分发，任何一处不一致都会被静默丢弃：
  *
- *   { source: 'dsh-plugin-error-bridge', type: 'dsh://plugin-error', id, error, action }
+ *   { type: 'dsh://plugin-error', id, error, action }
  *
  * 宿主收到后经 `report_plugin_error` 持久化到插件错误注册表
  * （plugin-errors.json，按插件 id 幂等覆盖并推送新列表），「插件」面板据此
  * 给本插件显示 danger 标记与更新/卸载入口。
+ *
+ * 发送统一走 `invokeParent`（父窗口桥唯一出口），不再自己 `postMessage`。
  */
 import type { ErrorAction } from '../types'
-import { ERROR_SRC, ERROR_TYPE, PLUGIN_ID } from '../constants'
+import { ERROR_TYPE, PLUGIN_ID } from '../constants'
+import { invokeParent } from '../service/invoke-parent'
 
-export { ERROR_SRC, ERROR_TYPE, PLUGIN_ID } from '../constants'
+export { ERROR_TYPE, PLUGIN_ID } from '../constants'
 export type { ErrorAction } from '../types'
 
 /**
@@ -27,13 +30,7 @@ export function reportPluginError(error: unknown, action: ErrorAction = 'runtime
     .slice(0, 2000)
   if (!message)
     return
-  const payload = { source: ERROR_SRC, type: ERROR_TYPE, id: PLUGIN_ID, error: message, action }
-  try {
-    window.parent.postMessage(payload, '*')
-  }
-  catch {
-    // 宿主已销毁等场景静默（与导航桥 post 的行为一致）
-  }
+  invokeParent({ type: ERROR_TYPE, id: PLUGIN_ID, error: message, action })
 }
 
 /**

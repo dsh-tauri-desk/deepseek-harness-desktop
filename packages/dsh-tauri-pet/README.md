@@ -61,7 +61,7 @@ skill provider 或默认根目录。
 | `set_pet_activity` | 更新 `idle`、`turn`、`moving-left`、`moving-right`、`waving`、`waiting`、`running`、`review` 或 `failed` |
 
 完整客户端桥实现见 `src/client/service/pet.ts`；它调用
-`dsh-tauri/client` 的 `invokeBridgedTauri`。设置卡片直接使用预设清单的浏览图
+`dsh-tauri/client` 的 `invoke`（签名与 `@tauri-apps/api/core` 一致）。设置卡片直接使用预设清单的浏览图
 URL 作为缩略图。
 
 > 桌宠窗口渲染全部交给 `dsh-pet-component`（`src/pet`）：远端素材经

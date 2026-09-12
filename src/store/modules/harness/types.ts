@@ -1,3 +1,5 @@
+import type { StartupPhase } from './readiness'
+
 /** 安装/启动流程阶段状态 */
 export type SetupStatus = 'checking' | 'installing' | 'starting' | 'preinstall' | 'ready' | 'error'
 
@@ -8,25 +10,6 @@ export type SidebarBusyAction = 'restart' | 'shutdown' | 'start' | 'openBrowser'
 export interface HarnessProcessExitedPayload {
   pid: number
   exitCode: number | null
-}
-
-/** 预装插件列表项（与 Rust service::plugin::PreinstallPlugin 对齐） */
-export interface PreinstallPlugin {
-  id: string
-  name: string
-  description: string
-  repo_url: string
-  recommended: boolean
-  /** “修复”类项（Windows 极简模式修复）：黄色 chip，默认勾选 */
-  fix: boolean
-  /** 无 chip 但默认勾选（首次引导直接勾上，不标「推荐」） */
-  defaultChecked: boolean
-  installed: boolean
-}
-
-/** Rust 侧 preinstall-log 事件载荷（dsh plugin 进程输出行） */
-export interface PreinstallLogPayload {
-  line: string
 }
 
 /** Rust 侧 internal-plugins-phase 事件载荷（内置插件核对/安装进度与 heartbeat） */
@@ -67,26 +50,17 @@ export interface InstallProgress {
   progress: number
 }
 
-/** Rust 侧 service::plugin::recovery::PluginRecoveryInfo 的序列化形态（camelCase） */
-export interface PluginRecoveryInfo {
-  /** 定位到的问题插件（npm 包名）；未定位到时为空 */
-  plugins: string[]
-  /** 失败原因判别键：duplicate_route / duplicate_loader_entry / cannot_resolve_bundle / no_dsh_bundle / slot_conflict / load_failed / runtime / unknown */
-  reason: string
-  /** 动态详情（冲突路由 / 槽位 / 服务组件 id），用于 I18n 插值 */
-  detail: string
-  /** 原始错误信息（技术详情查看） */
-  raw_error: string
-}
-
-/** 插件异常修复界面状态 */
-export interface RecoveryState {
-  /** 是否弹出修复界面 */
-  required: boolean
-  /** 定位到的恢复信息 */
-  info: PluginRecoveryInfo | null
-  /** 已触发修复的次数（用于防死循环） */
-  attempts: number
-  /** 修复动作进行中 */
-  busy: boolean
+/**
+ * 启动失败错误：附带从 dsh 服务日志中读取的真实错误行与可选的冲突提示。
+ * 由 `utils.startupError` 构造，`utils.attachStartupDiagnostics` 补齐诊断字段。
+ */
+export interface StartupError extends Error {
+  logs?: string[]
+  /** 完整清洗后的日志尾（供插件异常定位使用，非仅错误行） */
+  logLines?: string[]
+  pluginConflictHint?: string
+  /** Linux inotify 文件监视上限（ENOSPC）导致服务启动即崩溃时的针对性提示 */
+  inotifyLimitHint?: string
+  phase?: StartupPhase
+  lastReason?: string
 }

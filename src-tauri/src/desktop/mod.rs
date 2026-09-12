@@ -2,14 +2,12 @@ pub mod activation;
 pub mod autostart;
 pub mod builder;
 pub mod compat;
-pub mod nav;
 pub mod notification;
 pub mod paste;
 pub mod payload;
 pub mod pet;
 pub mod pet_mouse;
 pub mod plugin_boot;
-pub mod style;
 pub mod window;
 pub mod zoom;
 

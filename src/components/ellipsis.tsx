@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { VariantProps } from 'tailwind-variants'
 import { Tooltip } from '@heroui/react'
+import { useElementOverflow } from '@reause/core'
 import { useRef, useState } from 'react'
 import { cn, tv } from 'tailwind-variants'
 
@@ -20,33 +21,30 @@ const ellipsis = tv({
   },
 })
 
+/**
+ * 单行/多行截断文本：仅在真的溢出时才弹 Tooltip。
+ *
+ * 溢出判定交给 reause `useElementOverflow`（ResizeObserver + MutationObserver 观测
+ * 容器与子元素的尺寸/内容变化），不再自建 ref + hover 时手量：
+ * - 多行（`lineClamp`）看纵向溢出（scrollHeight > offsetHeight）；
+ * - 单行（truncate）看横向溢出（scrollWidth > offsetWidth）。
+ *
+ * `forceTooltip` 跳过溢出判定，始终允许弹出（内容异步渲染等观测不到的场合）。
+ */
 export function Ellipsis(props: EllipsisProps & VariantProps<typeof ellipsis>) {
   const [open, setOpen] = useState(false)
   const { container, tooltip } = ellipsis(props)
   const triggerRef = useRef<HTMLDivElement>(null)
-  const triggerInnerRef = useRef<HTMLSpanElement>(null)
+  const { isXOverflowed, isYOverflowed } = useElementOverflow(triggerRef, { observeMutation: true })
+  const overflowed = props.lineClamp === undefined ? isXOverflowed : isYOverflowed
 
-  function getDisabled() {
-    if (!triggerRef.current)
-      return true
-    let tooltipDisabled = false
-    const { current: trigger } = triggerRef
-    const { current: triggerInner } = triggerInnerRef
-    if (props.lineClamp !== undefined) {
-      tooltipDisabled = trigger.scrollHeight <= trigger.offsetHeight
-    }
-    else if (triggerInner) {
-      tooltipDisabled = triggerInner.getBoundingClientRect().width <= trigger.getBoundingClientRect().width
-    }
-    return tooltipDisabled
-  }
-
-  function onOpenChange(open: boolean) {
-    if (getDisabled() && !props.forceTooltip)
+  function onOpenChange(next: boolean) {
+    if (!overflowed && !props.forceTooltip)
       return
 
-    setOpen(open)
+    setOpen(next)
   }
+
   return (
     <Tooltip isOpen={open} onOpenChange={onOpenChange}>
       <div
@@ -61,7 +59,7 @@ export function Ellipsis(props: EllipsisProps & VariantProps<typeof ellipsis>) {
           } as React.CSSProperties
         }
       >
-        {props.lineClamp ? props.children : <span ref={triggerInnerRef}>{props.children}</span>}
+        {props.lineClamp ? props.children : <span>{props.children}</span>}
       </div>
       <Tooltip.Content className={cn(tooltip(), props.tooltipClassName)}>
         {props.tooltip || props.children}

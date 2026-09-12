@@ -120,7 +120,7 @@ pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(
         .map_err(|e| e.to_string())
 }
 
-/// 当前 profile 已安装插件列表（含解析后的元信息），`use-dsh-plugins` 首次加载用；
+/// 当前 profile 已安装插件列表（含解析后的元信息），插件面板首次加载用；
 /// 之后 Rust 侧监控插件文件，变化时通过 `dsh-plugins-updated` 事件实时推送。
 /// 这里会并入 `updates` 模块的已知更新判定缓存（未判定时 `update_available=false`）。
 #[tauri::command]

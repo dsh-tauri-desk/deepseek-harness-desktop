@@ -8,7 +8,7 @@
 //! 构造 File 并重发一次合成 `paste` 事件给当前焦点元素，让 dsh 聊天框按普通
 //! 贴图路径处理，从而与浏览器行为一致。
 //!
-//! 与 [`crate::desktop::notification::NOTIFICATION_SHIM_JS`] / [`crate::desktop::nav::NAV_SHIM_JS`]
+//! 与 [`crate::desktop::notification::NOTIFICATION_SHIM_JS`] / [`crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS`]
 //! 走同一套注入通道（Windows 在 FrameCreated → ContentLoading 时 ExecuteScript，
 //! 其余平台 `initialization_script_for_all_frames`）。脚本带 `__dsh_clipboard_image_bridge__`
 //! 幂等守卫，重复注入安全；只处理「直接 iframe」发来的剪贴板请求，避免多层 iframe 误转发。

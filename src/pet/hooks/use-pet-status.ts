@@ -1,6 +1,7 @@
+import { useMount } from '@reause/core'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useListen } from '@/hooks/use-listen'
 import { PET_SIZE_DEFAULT_PERCENT, PET_SIZE_MAX_PERCENT, PET_SIZE_MIN_PERCENT } from '../constants'
 
 /** Rust `PetStatus`（`get_pet_status` 返回值 / `pet://status` 事件载荷）。 */
@@ -25,31 +26,16 @@ export interface PetStatus {
 export function usePetStatus(): PetStatus | null {
   const [status, setStatus] = useState<PetStatus | null>(null)
 
-  useEffect(() => {
-    let disposed = false
-    let unlisten: (() => void) | undefined
-    void listen<PetStatus>('pet://status', (event) => {
-      if (!disposed)
-        setStatus(event.payload)
-    }).then((dispose) => {
-      if (disposed)
-        dispose()
-      else
-        unlisten = dispose
-    }).catch(() => {})
+  // 挂载时拉一次初值，此后跟随 `pet://status` 推送（订阅随卸载自动注销）
+  useMount(() => {
     void invoke<PetStatus>('get_pet_status')
-      .then((value) => {
-        if (!disposed)
-          setStatus(value)
-      })
+      .then(setStatus)
       .catch((error) => {
         console.warn('[pet] PET_STATUS_LOAD_FAILED:', error)
       })
-    return () => {
-      disposed = true
-      unlisten?.()
-    }
-  }, [])
+  })
+
+  useListen<PetStatus>('pet://status', event => setStatus(event.payload))
 
   return status
 }

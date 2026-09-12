@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
-import { PanelProgress } from '@/components/panel-progress'
+import { Panel } from '@/components/panel'
 import { button } from '@/components/primitives'
 
 /** 图标组件类型（@gravity-ui/icons 均为 SVG 组件） */
@@ -90,7 +90,7 @@ export function Loadable({
 
         <If cond={showPanel}>
           <div className="flex w-full flex-col gap-4">
-            <PanelProgress percentage={percentage} logs={logs} />
+            <Panel.Progress percentage={percentage} logs={logs} />
           </div>
         </If>
 

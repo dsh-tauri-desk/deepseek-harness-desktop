@@ -8,7 +8,6 @@ import { useStore } from 'valtio-define'
 import { button } from '@/components/primitives'
 import { store } from '@/store'
 import { writeClipboardText } from '@/utils/clipboard'
-import { toast } from '@/utils/toast'
 import { Loadable } from './loadable'
 
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调
@@ -24,12 +23,11 @@ const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
 async function copyLogsHandler(t: (key: string) => string) {
   try {
     const logs = await invoke<string>('read_run_logs')
-    await writeClipboardText(logs)
-    toast(t('messages.logs_copied'), {})
+    // 成功/失败提示由 writeClipboardText 统一给出，这里只记录日志
+    await writeClipboardText(logs, t('messages.logs_copied'))
   }
   catch (err) {
     console.error('[Setup] failed to copy logs:', err)
-    toast(t('messages.logs_copy_failed'), { variant: 'danger' })
   }
 }
 

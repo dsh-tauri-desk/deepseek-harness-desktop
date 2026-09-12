@@ -7,7 +7,7 @@
 //! WebKitGTK（Linux）上不存在，导致桌面 WebView 抛出
 //! `AbortSignal.any is not a function. (In '...', 'AbortSignal.any' is undefined)`。
 //!
-//! 本脚本与 [`crate::desktop::nav::NAV_SHIM_JS`] / [`crate::desktop::style::IFRAME_STYLES_JS`]
+//! 本脚本与 [`crate::desktop::notification::NOTIFICATION_SHIM_JS`] / [`crate::desktop::paste::PASTE_SHIM_JS`]
 //! 走同一套注入通道（Windows 在 FrameCreated → ContentLoading 时 ExecuteScript，
 //! 其余平台 `initialization_script_for_all_frames`），在 dsh 页面脚本执行之前
 //! 就位，因此主机框架与 iframe 每次重新加载都会自动重建。

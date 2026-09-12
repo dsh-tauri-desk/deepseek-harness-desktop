@@ -1,7 +1,6 @@
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { disableWakeLock } from '@/utils/disable-wake-lock'
 import { App } from './app'
 import { reportPetIssue } from './utils/log'
 import './main.css'
@@ -42,10 +41,6 @@ globalThis.addEventListener('unhandledrejection', (event) => {
 
 const root = document.getElementById('root') as HTMLElement
 root.className = 'h-full w-full'
-
-// 桌宠动画是常驻播放的 <video>：Chromium 会因此持有 Video Wake Lock，让系统无法息屏
-// （issue #469）。渲染前禁用屏幕唤醒锁，收起宠物/窗口隐藏时都不会再阻止息屏。
-disableWakeLock()
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>

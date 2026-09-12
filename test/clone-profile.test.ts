@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
  */
 describe('cloneProfile mutation shape', () => {
   it('invokes clone_profile with sourceId + name and invalidates queries', () => {
-    const source = readFileSync(new URL('../src/hooks/use-dsh-profiles.ts', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toContain('clone_profile')
     expect(source).toContain('sourceId')
@@ -19,25 +19,24 @@ describe('cloneProfile mutation shape', () => {
     expect(source).toMatch(/onSuccess:\s*invalidate/)
   })
 
-  it('exposes cloneProfile in the return type and object', () => {
-    const source = readFileSync(new URL('../src/hooks/use-dsh-profiles.ts', import.meta.url), 'utf8')
+  it('wires the cloneProfile helper to the clone mutation', () => {
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
-    expect(source).toMatch(/cloneProfile\s*[:(]/)
-    expect(source).toMatch(/UseDshProfilesResult/)
-    expect(source).toMatch(/cloneProfile\s*:\s*\(sourceId\s*:\s*string,\s*name\s*:\s*string\)\s*=>\s*Promise\s*<\s*Profile\s*>/)
+    expect(source).toMatch(/cloneProfile\s*\(sourceId\s*:\s*string,\s*name\s*:\s*string\)/)
+    expect(source).toMatch(/clone\.mutateAsync\(\{\s*sourceId,\s*name\s*\}\)/)
   })
 
   it('extends busy to include clone.isPending', () => {
-    const source = readFileSync(new URL('../src/hooks/use-dsh-profiles.ts', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toMatch(/clone\.isPending/)
-    expect(source).toMatch(/busy:\s*create\.isPending\s*\|\|\s*activate\.isPending\s*\|\|\s*remove\.isPending\s*\|\|\s*clone\.isPending/)
+    expect(source).toMatch(/busy\s*=\s*create\.isPending\s*\|\|\s*activate\.isPending\s*\|\|\s*remove\.isPending\s*\|\|\s*clone\.isPending/)
   })
 })
 
 describe('clone Chip + naming dialog in ConfigProfile', () => {
   it('renders a Clone Chip on non-default rows with profiles.clone label', () => {
-    const source = readFileSync(new URL('../src/components/config-profile.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toMatch(/profiles\.clone['"]/)
     expect(source).toMatch(/cond=\{!profile\.default\}/)
@@ -50,13 +49,13 @@ describe('clone Chip + naming dialog in ConfigProfile', () => {
   })
 
   it('disables the Clone Chip while busy', () => {
-    const source = readFileSync(new URL('../src/components/config-profile.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toMatch(/cursor-not-allowed opacity-50/)
   })
 
   it('provides a naming dialog with description, editable Input, and confirm button', () => {
-    const source = readFileSync(new URL('../src/components/config-profile.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toMatch(/profiles\.clone_dialog_desc/)
     expect(source).toMatch(/profiles\.clone_confirm/)
@@ -66,7 +65,7 @@ describe('clone Chip + naming dialog in ConfigProfile', () => {
   })
 
   it('shows accent success toast with NO restart action', () => {
-    const source = readFileSync(new URL('../src/components/config-profile.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toMatch(/profiles\.clone_success/)
     expect(source).toMatch(/variant:\s*['"]accent['"]/)
@@ -79,7 +78,7 @@ describe('clone Chip + naming dialog in ConfigProfile', () => {
   })
 
   it('keeps dialog open on failure with an error toast', () => {
-    const source = readFileSync(new URL('../src/components/config-profile.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).toMatch(/profiles\.clone_failed/)
   })
@@ -114,7 +113,7 @@ describe('i18n parity', () => {
 
 describe('shell conventions', () => {
   it('does not use useCallback / useMemo / hardcoded user-facing strings', () => {
-    const source = readFileSync(new URL('../src/components/config-profile.tsx', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/ui/config/profile.tsx', import.meta.url), 'utf8')
 
     expect(source).not.toContain('useCallback')
     expect(source).not.toContain('useMemo')

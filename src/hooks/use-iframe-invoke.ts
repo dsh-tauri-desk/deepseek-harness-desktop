@@ -46,9 +46,6 @@ const ALLOWED_INVOKE_CMDS = new Set([
   'import_pet',
   'get_pet_asset',
   'list_preset_pets',
-  'download_preset_pet',
-  'update_preset_pet',
-  'get_preset_download_progress',
 ])
 
 export function useIframeInvoke(iframeRef: RefObject<HTMLIFrameElement | null>): void {

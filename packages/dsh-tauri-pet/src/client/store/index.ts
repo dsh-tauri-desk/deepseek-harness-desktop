@@ -13,12 +13,10 @@ import { createExternalStore } from 'dsh-tauri/client'
 export interface PetShared {
   /** 最近一次从桌面端读回的桌宠状态缓存（图标绿点与设置页共用）。 */
   status: PetStatus | null
-  /** 是否存在可用宠物（已安装预设或本地 chat/codex）；无可用宠物时侧栏入口图标隐藏。 */
-  petsAvailable: boolean
 }
 
 /** dsh-tauri 外部 store（getSnapshot 稳定，uSES 安全）。 */
-export const petUiStore = createExternalStore<PetShared>({ status: null, petsAvailable: false })
+export const petUiStore = createExternalStore<PetShared>({ status: null })
 let fetchRevision = 0
 /** Start a status fetch; only its latest revision may write the initial snapshot. */
 export function beginPetStatusFetch(): number {
@@ -46,9 +44,4 @@ export function getPetUiSnapshot(): PetShared {
 export function setPetStatus(status: PetStatus | null): void {
   fetchRevision += 1
   petUiStore.set(state => (state.status === status ? state : { ...state, status }))
-}
-
-/** 写入「是否有可用宠物」快照（侧栏入口图标显隐用）。 */
-export function setPetsAvailable(available: boolean): void {
-  petUiStore.set(state => (state.petsAvailable === available ? state : { ...state, petsAvailable: available }))
 }

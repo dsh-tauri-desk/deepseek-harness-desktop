@@ -93,7 +93,11 @@ export function useOmitIgnoreCursorEvents(elementRef: RefObject<HTMLElement | nu
 
     function isCursorInElement(x: number, y: number): boolean | undefined {
       const element = elementRef.current
-      if (element === null || windowPosition === undefined)
+      // 未选择宠物（或渲染层尚未挂载）时没有可交互面：整窗穿透，避免一个空的
+      // 透明置顶窗口吞掉桌面点击。
+      if (element === null)
+        return false
+      if (windowPosition === undefined)
         return undefined
 
       const rect = element.getBoundingClientRect()

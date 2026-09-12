@@ -1,5 +1,5 @@
 import type { ToastContentValue } from '@heroui/react'
-import type { PetStatus } from './use-pet'
+import type { Motion } from 'dsh-pet-component'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
 import { toast } from '@/utils/toast'
@@ -11,7 +11,11 @@ export interface BubbleSession {
 }
 
 export interface BubbleHandle {
-  readonly status: PetStatus | undefined
+  /**
+   * 多会话聚合出的动作档位（`dsh-pet-component` 的 14 个 Motion 之一）；
+   * `undefined` = 无会话需要展示（调用方 `pet.clear()` 回落待机）。
+   */
+  readonly motion: Motion | undefined
 }
 
 type SessionAction = 'create' | 'remove' | 'update'
@@ -99,23 +103,23 @@ const STATUS_PRIORITY: Record<string, number> = {
 
 /** 桌宠窗口的会话气泡：DSH 发送原始会话快照，本 hook 私有管理会话→toast key 映射，仅暴露聚合宠物状态。 */
 export function useBubble(): BubbleHandle {
-  const [status, setStatus] = useState<PetStatus | undefined>(undefined)
+  const [status, setStatus] = useState<Motion | undefined>(undefined)
 
   useEffect(() => {
     // 状态容器定义
     const sessions = new Map<string, BubbleSession>()
     const toastKeys = new Map<string, string>()
     const hideTimers = new Map<string, number>()
-    const previousStatus = new Map<string, PetStatus | undefined>()
+    const previousStatus = new Map<string, Motion | undefined>()
     const failedUntil = new Map<string, number>()
     const pulseTimers = new Map<string, number>()
     const consumedFailed = new Set<string>()
     const dismissed = new Set<string>()
     const pruneTimers = new Map<string, number>()
 
-    let lastAgg: PetStatus | undefined
+    let lastAgg: Motion | undefined
     /** 合并窗口内最新计算出的聚合态（未下发前持续被更新，窗口到期统一下发）。 */
-    let pendingAgg: PetStatus | undefined
+    let pendingAgg: Motion | undefined
     /** pendingAgg 是否有待下发的变更（区分「待下发 undefined 态」与「无变更」）。 */
     let hasPendingAgg = false
     let aggFlushTimer: number | undefined
@@ -209,7 +213,7 @@ export function useBubble(): BubbleHandle {
       pruneTimers.set(id, timer)
     }
 
-    const scheduleHide = (id: string, current: PetStatus) => {
+    const scheduleHide = (id: string, current: Motion) => {
       clearTimer(hideTimers, id)
       const timeout = current === 'failed' || current === 'error'
         ? FAILED_BUBBLE_TIMEOUT
@@ -391,7 +395,7 @@ export function useBubble(): BubbleHandle {
     }
   }, [])
 
-  return { status }
+  return { motion: status }
 }
 
 /** 统一解析原始会话对象 */
@@ -404,20 +408,20 @@ function rawSession(payload: unknown): BubbleSession | undefined {
   return typeof id === 'string' && id.length > 0 ? { ...session, id } : undefined
 }
 
-/** 细分工作状态档位（host reducer workStatus 输出；动画名映射见 pet-config）。 */
+/** 细分工作档位（host reducer workStatus 输出）：与 `dsh-pet-component` 的动作名同名。 */
 const WORK_STATUSES = ['thinking', 'working', 'result', 'waiting', 'success', 'error'] as const
 
 type WorkStatus = (typeof WORK_STATUSES)[number]
 
 /** 提取单个会话的状态（细分档优先，忽略底层恢复逻辑）。 */
-function sessionStatus(session: BubbleSession, ignoreError = false): PetStatus | undefined {
+function sessionStatus(session: BubbleSession, ignoreError = false): Motion | undefined {
   // 细分工作档位（host reducer 权威）：thinking/working/result/waiting/success/error
   const work = session.workStatus as unknown
   if (WORK_STATUSES.includes(work as WorkStatus)) {
     // error/success 是终态档；pulse 过期（ignoreError）后回落底层推导，不残留失败/成功视觉。
     if (ignoreError && (work === 'error' || work === 'success'))
       return undefined
-    return work as PetStatus
+    return work as Motion
   }
 
   const value = session.status ?? session.activity ?? session.phase
@@ -454,8 +458,8 @@ function statusOf(
   sessions: ReadonlyMap<string, BubbleSession>,
   failedUntil: ReadonlyMap<string, number>,
   now: number,
-): PetStatus | undefined {
-  let highestStatus: PetStatus | undefined
+): Motion | undefined {
+  let highestStatus: Motion | undefined
   let maxPriority = 0
 
   for (const session of sessions.values()) {
@@ -517,7 +521,7 @@ function toolArgDetail(tool: string, args: unknown): string | undefined {
 }
 
 /** 生成 Toast 渲染数据（对齐 dsh-dafeiyu：优先失败详情 → 任务文案 → 工具/思考活动 → 档位状态文案）。 */
-function toastContent(session: BubbleSession, status: PetStatus) {
+function toastContent(session: BubbleSession, status: Motion) {
   const getFirstString = (...items: unknown[]): string | undefined => {
     for (const item of items) {
       if (typeof item === 'string' && item.trim().length > 0) {

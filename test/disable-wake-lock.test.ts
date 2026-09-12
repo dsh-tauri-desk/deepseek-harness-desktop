@@ -93,12 +93,13 @@ describe('pet window wake lock contract', () => {
   })
 
   it('keeps every pet animation video muted', () => {
-    const source = readFileSync(new URL('../src/pet/components/pet.tsx', import.meta.url), 'utf8')
-    const videos = source.match(/<video[\s\S]*?\/>/g) ?? []
-
-    // 双 video 缓冲（前台/后台）各一个；两个都不能出声，否则桌宠动画会突然发声。
-    expect(videos).toHaveLength(2)
-    for (const video of videos)
-      expect(video).toMatch(/\bmuted\b/)
+    // 视频层已整体交给 dsh-pet-component（src/pet 不再自带 <video>）：断言渲染器的
+    // 双缓冲视频都显式静音 —— 桌宠动画一旦出声就是回归（与 #469 同源的常驻播放契约）。
+    const bundle = readFileSync(
+      new URL('../node_modules/dsh-pet-component/dist/index.mjs', import.meta.url),
+      'utf8',
+    )
+    const muted = bundle.match(/muted:\s*true/g) ?? []
+    expect(muted.length).toBeGreaterThanOrEqual(2)
   })
 })

@@ -38,11 +38,11 @@ const PET_WINDOW_BOTTOM_PAD: f64 = 10.0;
 /// 顶栏 Toast 区的最小窗口宽度（逻辑像素）：桌宠较小时仍保证气泡可读，
 /// 与 pet WebView 的 PET_BUBBLE_MIN_WIDTH 保持一致。
 const PET_WINDOW_MIN_WIDTH: f64 = 420.0;
-/// 预设动画画布 16:9（高/宽 = 9/16），与 dsh-pet 协议画布比例保持一致
+/// 预设宠物默认画布 16:9（高/宽 = 9/16）：与 dsh-pet 协议画布一致
 /// （WebM 与 macOS 的 HEVC-with-Alpha MOV 共用同一画布）。
 const PET_BUILTIN_ASPECT: f64 = 9.0 / 16.0;
-/// 自定义 Codex v2 精灵图默认 8x11 的 192x208 比例；实际比例以前端加载后为准，
-/// 这里仅作为窗口初始/DPI 尺寸的近似，避免与前端内置画布比例互相打架。
+/// Codex 图集（自定义精灵图，或清单条目声明 `kind: "codex"`）的 8x11 / 192x208 比例；
+/// 实际比例以前端加载后为准，这里仅作为窗口初始/DPI 尺寸的近似，避免与前端互相打架。
 const PET_CUSTOM_ASPECT: f64 = 208.0 / 192.0;
 /// 宠物大小百分比合法区间（设置页滑条 50%–200%；bridge/pet.rs 引用同一常量）。
 pub const PET_SIZE_MIN_PERCENT: f64 = 50.0;
@@ -123,10 +123,10 @@ pub fn get_pet_size_percent<R: Runtime>(app: &AppHandle<R>) -> f64 {
         .clamp(PET_SIZE_MIN_PERCENT, PET_SIZE_MAX_PERCENT)
 }
 
-/// 当前激活宠物使用的画布比例（高度/宽度）：预设 WebM（未限定 id）固定 9/16，
-/// 自定义精灵图（chat:/codex: 来源限定 id）用 208/192 作为窗口初始/DPI 尺寸的近似。
-/// 真正的自定义比例由前端加载后修正，因此这里不再把 208/192 硬编码给所有宠物，
-/// 避免窗口大小的两个来源互相冲突。
+/// 当前激活宠物使用的画布比例（高度/宽度）：预设宠物（未限定 id）默认 dsh-pet 的
+/// 16:9 透明视频画布，自定义精灵图（chat:/codex: 来源限定 id）用 208/192。
+/// 真正的比例由 pet WebView 拿到清单条目/图集后实时修正，这里只是窗口创建与
+/// DPI 变化时的初始近似。
 pub fn pet_window_aspect<R: Runtime>(app: &AppHandle<R>) -> f64 {
     let setting = crate::config::get_store_dat_setting(app);
     let active = setting
@@ -449,12 +449,9 @@ pub fn init_pet_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// 重载桌宠窗口页面（预设宠物更新/替换后调用）。
+/// 重载桌宠窗口页面。
 ///
-/// 桌宠窗口按 `activePet` 只拉取一次协议资源（config + webm manifest），
-/// 更新换入新文件后 URL 不变，WebView 可能继续命中缓存里的旧 webm；
-/// 显式 reload 让新资源立即生效。窗口已被收起（销毁）时无需 reload——下次显示
-/// 会重新创建 webview，天然加载新资源。
+/// 窗口已被收起（销毁）时无需 reload——下次显示会重新创建 webview，天然加载新资源。
 pub fn reload_pet_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
         let _ = window.eval("location.reload()");

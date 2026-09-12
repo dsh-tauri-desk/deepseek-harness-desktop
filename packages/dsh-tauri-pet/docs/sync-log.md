@@ -13,12 +13,37 @@
 | `source/dsh-pet` | `e1ff8c1` | v0.2.6 | 预设资产与工作状态语义来源 |
 | `source/dsh-dafeiyu` | `f4f4482` | v0.1.9 | 气泡文案/优先级逻辑参考（不下载资产） |
 
-- 预设下载清单 `src-tauri/resources/preset-pets.json` 的 `ref` 当前为
+- 预设清单 `src-tauri/resources/preset-pets.json` 的素材地址内嵌 ref
   `e1ff8c1e4001878cbb80441262d530e16541f138`（须与 dsh-pet 已采纳 HEAD 保持一致，
-  新 WebM 资产在 `903dfde` 才入库，低于此的 ref 会下载不到 6 个工作状态动画）。
+  新 WebM 资产在 `903dfde` 才入库，低于此的 ref 会取不到 6 个工作状态动画）；
+  macOS 侧为 `dsh-pet-mov` 的 `be0f3bb494cb71a4c73f916c0b92d25a3ab4d002`。
 - 旧研究参考固定 `docs/plugins/expired/pet.todo.md:96` 指向 `899150e`，仅历史参考。
 
 ## 同步记录
+
+### 2026 —— 预设宠物改为 dsh-pet-component 直连远端（移除下载/解压链路）
+
+不是上游同步，而是渲染层换实现导致预设获取方式的整体变化，记录在此以便后续核对素材来源与命令面。
+
+- **渲染层**：`src/pet` 整体换成 [`hairyf/dsh-pet-component`](https://github.com/hairyf/dsh-pet-component)
+  的 `<Pet>`（npm `dsh-pet-component@^0.1.1`，内部用 `@reause/core`）；`src/pet/components/pet.tsx`
+  （681 行）、`src/pet/config/index.ts`（294 行）、`hooks/use-pet.ts` 删除，动画池解析、
+  双视频缓冲、雪碧图帧循环、IndexedDB 缓存、双击回应全部由组件接管。`src/pet` 只剩设置状态、
+  会话气泡聚合、原生窗口拖拽（reause `useEventListener` + `useTimeoutFn`）与命中穿透。
+- **预设不再下载/安装**：`src-tauri/resources/preset-pets.json` 改成组件 props 形状
+  （`id` / `name` / `desc` / `image` / `kind` / `size` / `config` / `uri{default,mac}` /
+  `ext{default,mac}`），Rust `bridge/preset_pet.rs` 从 2148 行缩到只剩读清单 + 校验；
+  `download_preset_pet` / `update_preset_pet` / `get_preset_download_progress` /
+  `get_preset_pet_config` / `get_preset_pet_assets` 与 `dsh-pet://` 自定义协议全部删除。
+  `uri.mac` / `ext.mac` 继续指向 `dsh-tauri-desk/dsh-pet-mov` 的 HEVC-alpha `.mov`（issue #434 结论不变）。
+- **CORS**：`src/pet/main.tsx` 把全局 `fetch` 换成 `@tauri-apps/plugin-http` 的实现
+  （请求走 Rust），否则 `raw.githubusercontent.com` 不返回 `Access-Control-Allow-Origin`，
+  组件拉配置与抓 blob 会整条失败；能力文件只放开 `https://*.githubusercontent.com/*` scope，
+  媒体/图片的 CSP 增加 `blob:` 与 `https://*.githubusercontent.com`。
+- **插件前端**：`utils/preset-card.ts`、`utils/availability.ts`（含各自测试）删除——
+  预设恒可用、卡片只有「启用 / 已选」两态；store 去掉 `petsAvailable`，侧栏入口常驻。
+- 校验：`pnpm typecheck`、`pnpm build`、`pnpm exec eslint src/pet packages/dsh-tauri-pet/src src/hooks/use-iframe-invoke.ts --max-warnings=0`、
+  `pnpm exec vitest run`（295+）、`cargo test --lib`（530 passed）。
 
 ### 2026 —— 修复 macOS 预设宠物黑底（issue #434，分支 `fix/434-macos-hevc-alpha-mov-pet`）
 

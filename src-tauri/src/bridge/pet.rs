@@ -140,8 +140,9 @@ pub struct PetAsset {
 }
 
 /// 将缺省、旧版未限定 id 或非法选择归一化为空字符串（未选择任何宠物）。
-/// 合法值：预设宠物 id（~/.dsh/pets 目录，安全字符集）或来源限定 id。
-/// 注意：不再默认给内置宠物 —— 全新安装下 active_pet 为空，需用户先下载再启用。
+/// 合法值：预设宠物 id（`resources/preset-pets.json` 的安全字符集）或来源限定 id。
+/// 注意：不再默认给内置宠物 —— 全新安装下 active_pet 为空，由用户在设置页主动启用
+/// （预设条目直连远端素材，启用即用，无需任何安装步骤）。
 fn normalize_active_pet(active_pet: Option<&str>) -> String {
     let Some(id) = active_pet.map(str::trim).filter(|id| !id.is_empty()) else {
         return String::new();

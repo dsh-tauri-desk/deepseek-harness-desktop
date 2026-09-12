@@ -498,13 +498,53 @@ mod tests {
 
 #[cfg(test)]
 mod security_tests {
+    use serde_json::Value;
+
+    fn capability() -> Value {
+        serde_json::from_str(include_str!("../../capabilities/default.json")).unwrap()
+    }
+
     #[test]
     fn remote_capability_allows_only_loopback_harness() {
-        let capability = include_str!("../../capabilities/default.json");
-        assert!(capability.contains("\"remote\""));
-        let wildcard_loopback = ["http://127.0.0.1:", "*"].concat();
-        assert!(capability.contains(wildcard_loopback.as_str()));
-        assert!(!capability.contains("https://"));
+        let capability = capability();
+        // 允许被远程页承载的 origin 只有本机回环：远程页面不得驱动任意 Tauri command。
+        let urls = capability["remote"]["urls"]
+            .as_array()
+            .expect("remote.urls must be an array");
+        assert!(!urls.is_empty(), "remote.urls must not be empty");
+        for url in urls {
+            let url = url.as_str().expect("remote urls must be strings");
+            assert!(
+                url.starts_with("http://127.0.0.1:"),
+                "unexpected remote origin: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn pet_http_scope_is_limited_to_remote_asset_hosts() {
+        // 桌宠窗口经插件版 fetch 直连远端素材（绕开 githubusercontent 的 CORS），
+        // 但 scope 必须收口到素材主机：出现任意 https 通配等于把插件 fetch 面
+        // 整个开放给桌宠窗口。
+        let capability = capability();
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("permissions must be an array");
+        let mut scoped: Vec<String> = Vec::new();
+        for permission in permissions {
+            let Some(allow) = permission.get("allow").and_then(Value::as_array) else {
+                continue;
+            };
+            for entry in allow {
+                if let Some(url) = entry.get("url").and_then(Value::as_str) {
+                    scoped.push(url.to_string());
+                }
+            }
+        }
+        assert_eq!(
+            scoped,
+            vec!["https://*.githubusercontent.com/*".to_string()]
+        );
     }
 
     #[test]
@@ -603,12 +643,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::list_pets,
         crate::bridge::import_pet,
         crate::bridge::get_pet_asset,
-        crate::bridge::preset_pet::get_preset_pet_config,
-        crate::bridge::preset_pet::get_preset_pet_assets,
         crate::bridge::list_preset_pets,
-        crate::bridge::download_preset_pet,
-        crate::bridge::update_preset_pet,
-        crate::bridge::get_preset_download_progress,
         crate::desktop::pet_mouse::start_pet_mouse_stream,
     ]
 }
@@ -617,13 +652,6 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
 pub fn builder() -> tauri::Builder<tauri::Wry> {
     let builder = tauri::Builder::default()
         .manage(crate::desktop::pet_mouse::PetMouseStreamState::default())
-        .register_asynchronous_uri_scheme_protocol("dsh-pet", |context, request, responder| {
-            let app = context.app_handle().clone();
-            let label = context.webview_label().to_owned();
-            std::thread::spawn(move || {
-                responder.respond(crate::bridge::preset_pet::preset_pet_asset_response(&app, &label, request));
-            });
-        })
         .setup(|app| {
             let app_handle = app.handle().clone();
             // 首装检测必须最先执行：窗口几何恢复/退出保存等任何 store 写入都会
@@ -769,6 +797,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .plugin(tauri_plugin_notification::init())
         // FS plugin
         .plugin(tauri_plugin_fs::init())
+        // HTTP plugin：桌宠窗口拉取远端宠物素材时把 fetch 交给 Rust 发起，
+        // 绕开 raw.githubusercontent.com 不返回 CORS 头导致的浏览器拦截。
+        .plugin(tauri_plugin_http::init())
         // Simple Store plugin
         .plugin(tauri_plugin_store::Builder::new().build())
 }

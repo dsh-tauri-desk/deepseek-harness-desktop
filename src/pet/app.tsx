@@ -1,66 +1,76 @@
-import type { DragDirection } from './hooks/use-drag'
-import type { PetHandle, PetStatus } from './hooks/use-pet'
-import { useWatch } from '@hairy/react-lib'
+import type { PetRef, PetRenderMotion } from 'dsh-pet-component'
+import { useEventListener } from '@reause/core'
+import { Pet } from 'dsh-pet-component'
 import { useRef } from 'react'
+import { If } from 'react-if-lite'
 import { ToastProvider } from '@/components/toast-provider'
-import { Pet } from './components/pet'
-import { isLoopingAnimation } from './config'
+import { PetHint } from './components/pet-hint'
+import { PET_BASE_WIDTH, PET_DSH_ASPECT } from './constants'
 import { useBubble } from './hooks/use-bubble'
 import { useDrag } from './hooks/use-drag'
 import { useOmitIgnoreCursorEvents } from './hooks/use-omit-ignore-cursor-events'
-import { usePet } from './hooks/use-pet'
+import { usePetSource } from './hooks/use-pet-source'
+import { normalizeSizePercent, usePetStatus } from './hooks/use-pet-status'
+import { usePetWindowSize } from './hooks/use-pet-window'
 
-/** 拖拽方向 → 动画状态：桌面宠物在原生拖拽期间播放对应的移动动画。 */
-const DRAW_STATUS: Record<DragDirection, PetStatus> = {
-  left: 'moving-left',
-  right: 'moving-right',
-}
-
-/** 桌宠窗口的唯一组合入口：只把会话状态映射到公开的 Pet 命令面。 */
+/**
+ * 桌宠窗口的唯一组合入口。
+ *
+ * 三条输入各管一段，互不越界：
+ * - 设置状态（`usePetStatus`）→ 选哪个宠物、多大、是否可见；
+ * - 会话气泡（`useBubble`）→ 聚合出的动作档位；
+ * - 手势（`useDrag`）→ 拖动期间的方向动作。
+ *
+ * 动作全部经 `pet.motion(...)` / `pet.clear()` 下发到 `<Pet>` 的命令面（优先级高于
+ * 声明式 `motion` prop），渲染细节（动画池解析、双视频缓冲、雪碧图、缓存、双击回应）
+ * 由 `dsh-pet-component` 接管。
+ */
 export function App() {
-  const petRef = useRef<PetHandle>(null)
-  const pet = usePet(petRef)
+  const petRef = useRef<PetRef>(null)
+  const status = usePetStatus()
+  const activePet = status?.active_pet ?? ''
+  const { source, error } = usePetSource(activePet)
+  const hitboxRef = useRef<HTMLDivElement>(null)
   const bubble = useBubble()
-  const dragRef = useRef<HTMLDivElement>(null)
-  const { clickCount, direction, dragging } = useDrag(dragRef)
-  useOmitIgnoreCursorEvents(dragRef)
-  const drawStatus = direction === undefined ? undefined : DRAW_STATUS[direction]
-  // 会话状态未变化时跳过下发：同一档位的重复命令不应重启动画。视频层还有第二层
-  // 按「动画目标（资源 + 循环语义 + 重播序号）」的去重（pet.tsx → shouldReloadAnimation），
-  // 即使不同档位解析到同一个动画也不会重新播放。
-  const lastStatusRef = useRef<PetStatus | undefined>(undefined)
+  const { dragging, direction } = useDrag()
 
-  useWatch(
-    [bubble.status, pet],
-    () => {
-      if (bubble.status === lastStatusRef.current)
-        return
-      lastStatusRef.current = bubble.status
-      if (bubble.status === undefined)
-        return pet.clear()
-      // 细分档位（thinking/working/result/waiting）与 running 均为循环档；
-      // 终态档（success/error）与 review/failed 播一次后回落（handleEnded）。
-      pet.change({
-        loop: isLoopingAnimation(bubble.status),
-        status: bubble.status,
-      })
-    },
-  )
+  const visible = status === null || (status.enabled !== false && status.visible !== false)
+  const width = (source?.width ?? PET_BASE_WIDTH) * normalizeSizePercent(status?.pet_size) / 100
+  usePetWindowSize(width, source?.aspect ?? PET_DSH_ASPECT, visible)
+  useOmitIgnoreCursorEvents(hitboxRef)
+  // 桌宠窗口是装饰性的透明置顶小窗：右键不应弹出 WebView 默认 context menu。
+  useEventListener('contextmenu', (event: Event) => event.preventDefault())
+
+  // 手势优先于会话档位：拖动期间按方向播走路动画（dsh-pet 渲染器内部强制走 drag 池，
+  // 会忽略这里的方向，由组件保证）；拖动结束或方向停摆后自动回落到会话档位。
+  const motion: PetRenderMotion | undefined = dragging
+    ? (direction === undefined ? undefined : `moving-${direction}`)
+    : bubble.motion
 
   return (
     <ToastProvider custom>
-      {/* 外层只负责铺满透明窗口，保持 pointer-events-none；dragRef 绑定到 Pet 内部
-          与 dsh-pet .dsh-pet-hit 一致的唯一可交互命中区。useDrag 负责拖拽/双击，
-          useOmitIgnoreCursorEvents 负责穿透恢复，调用方无需管理鼠标流和窗口几何。 */}
-      <div className="pointer-events-none h-full w-full touch-none select-none">
-        <Pet
-          status={drawStatus}
-          dragging={dragging}
-          clickCount={clickCount}
-          hitboxRef={dragRef}
-          ref={petRef}
-        />
-      </div>
+      {/* 外层只负责铺满透明窗口并让宠物锚定底部居中；窗口内可交互面只有命中箱，
+          其余区域由 useOmitIgnoreCursorEvents 按命中箱矩形整体穿透。 */}
+      <main className={`pointer-events-none fixed inset-0 flex items-end justify-center ${visible ? '' : 'invisible'}`}>
+        {source && (
+          <Pet
+            ref={petRef}
+            kind={source.kind}
+            config={source.config}
+            uri={source.uri}
+            ext={source.ext}
+            motion={motion}
+            size={width}
+            dragging={dragging}
+            cache={true}
+            hidden={!visible}
+            hitboxRef={hitboxRef}
+          />
+        )}
+        {/* 选中了宠物但资源解析不出来（导入的宠物被删除、清单里没有该 id）：必须给出
+            可见提示 —— 透明窗口里「空」与「在加载」观感相同，静默留空等于让用户以为坏了。 */}
+        <If cond={error !== null} then={<PetHint petId={activePet} />} />
+      </main>
     </ToastProvider>
   )
 }

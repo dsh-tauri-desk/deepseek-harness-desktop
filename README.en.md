@@ -154,7 +154,30 @@ The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://githu
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — the upstream `dsh` agent platform
 - [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
+- [dsh-tauri-plugins](https://github.com/dsh-tauri-desk/dsh-tauri-plugins) — development repository for some bundled plugin packages
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — reference implementation
+
+### Plugin data sources
+
+Remote assets and upstream catalogs that plugins reference at runtime:
+
+- [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) — preset pet media (WebM motions, preview GIFs, `config.jsonc`); `preset-pets.json` pins `e1ff8c1`
+- [dsh-tauri-desk/dsh-pet-mov](https://github.com/dsh-tauri-desk/dsh-pet-mov) — macOS HEVC-alpha `.mov` mirror (WKWebView does not support VP9-alpha), pinned to `be0f3bb`
+- [hairyf/dsh-pet-component](https://github.com/hairyf/dsh-pet-component) — pet rendering component (npm `dsh-pet-component`)
+- [qinyre/dsh-plugin-capabilities](https://github.com/qinyre/dsh-plugin-capabilities) — upstream of the Skills / MCP manager, pinned to `3412f8d`
+- [anthropics/skills](https://github.com/anthropics/skills) / [vercel-labs/skills](https://github.com/vercel-labs/skills) — source of the packaged `skill-creator` / `find-skills`
+
+### Plugin sub-repositories
+
+Reference repositories cloned under `source/` as plugins need them; most are not committed to this repository:
+
+- [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) — pet motion weights, continuous playback and bubble styling (submodule)
+- [Skylarking/dsh-plugin-codex-pets](https://github.com/Skylarking/dsh-plugin-codex-pets) — Codex pet atlases and session state mapping (submodule)
+- [ayangweb/BongoCat](https://github.com/ayangweb/BongoCat) — baseline for Tauri pet window, native dragging, DPI and mouse passthrough (submodule)
+- [QCYTSN/dsh-dafeiyu](https://github.com/QCYTSN/dsh-dafeiyu) — pet bubble copy and status priority reference (submodule)
+- [Signalight/codex-to-dsh-pet](https://github.com/Signalight/codex-to-dsh-pet) — Codex v2 atlases, motion priority and session state mapping
+- [Anionex/dsh-turn-rewind](https://github.com/Anionex/dsh-turn-rewind) / [Willmylife/dsh-rewind](https://github.com/Willmylife/dsh-rewind) — turn snapshots, conflict classification and undo reference
+- [a179-sanae/dsh-auto-collapse](https://github.com/a179-sanae/dsh-auto-collapse) / [Laplace-bit/dsh-smooth-stream](https://github.com/Laplace-bit/dsh-smooth-stream) — optional-capability probing and cross-core compatibility reference
 
 ## License
 

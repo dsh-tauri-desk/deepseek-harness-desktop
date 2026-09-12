@@ -93,7 +93,11 @@ export function useOmitIgnoreCursorEvents(elementRef: RefObject<HTMLElement | nu
 
     function isCursorInElement(x: number, y: number): boolean | undefined {
       const element = elementRef.current
-      if (element === null || windowPosition === undefined)
+      // 未选择宠物（或渲染层尚未挂载）时没有可交互面：整窗穿透，避免一个空的
+      // 透明置顶窗口吞掉桌面点击。
+      if (element === null)
+        return false
+      if (windowPosition === undefined)
         return undefined
 
       const rect = element.getBoundingClientRect()
@@ -121,8 +125,8 @@ export function useOmitIgnoreCursorEvents(elementRef: RefObject<HTMLElement | nu
       void refreshWindowPosition()
     })
     const statusPromise = listen<RustPetStatus>('pet://status', ({ payload }) => {
-      // Rust PetTransientState::default() 的 visible 为 true，启用桌宠的启动
-      // 流程会报告 visible=true；任一字段显式为 false 都视为窗口不可见。
+      // `visible` 恒等于 `enabled`（关闭宠物即销毁窗口，没有进程内瞬态），
+      // 任一字段显式为 false 都视为窗口不可见。
       handleVisibility(payload.enabled !== false && payload.visible !== false)
     })
     const mouseMovePromise = listen<DeviceMousePosition>('device-mouse-move', ({ payload }) => {

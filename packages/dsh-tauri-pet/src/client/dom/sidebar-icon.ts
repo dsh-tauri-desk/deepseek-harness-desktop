@@ -11,31 +11,27 @@
  * document.body，侧栏就绪后插入并持续看护（React 重渲染容器后自动补插）；
  * guard 属性 + 位置校验防止重复插入与死循环。
  *
- * 可用性：无任何可用宠物（已安装预设或本地 chat/codex 均无）时入口隐藏，避免
- * 展示一个点了没意义的按钮；快照由本模块挂载时拉取一次，设置页在清单变化
- * （下载完成/导入）后写回。
+ * 入口常驻：预设宠物直连远端素材，任何安装状态下都可直接启用，因此不再需要
+ * 「有没有可用宠物」的可用性判定。
  */
 import { PET_ICON_ATTRIBUTE, PET_ICON_RETRY_MAX, PET_ICON_RETRY_MS, PET_SETTINGS_ROW_CLASS, SETTINGS_TRIGGER_SELECTOR, SIDEBAR_SELECTOR } from '../constants'
 import { text } from '../locales'
-import { fetchPetList, fetchPetStatus, fetchPresetPets, hidePet, setPetEnabled, showPet } from '../service/pet'
-import { beginPetStatusFetch, commitPetStatusFetch, getPetUiSnapshot, setPetsAvailable, setPetStatus, subscribePetUi } from '../store'
-import { hasAvailablePets } from '../utils/availability'
+import { fetchPetStatus, setPetEnabled } from '../service/pet'
+import { beginPetStatusFetch, commitPetStatusFetch, getPetUiSnapshot, setPetStatus, subscribePetUi } from '../store'
 
 /** 入口图标（爪印，currentColor 跟随官方 iconButton 悬停变色）。 */
 const PET_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 13.5c-2.7 0-5.5 2-5.5 4.3 0 1.4 1 2.2 2.3 2.2 1 0 1.9-.6 3.2-.6s2.2.6 3.2.6c1.3 0 2.3-.8 2.3-2.2 0-2.3-2.8-4.3-5.5-4.3z"/><path d="M7.3 8.1c-1 .1-1.8 1.2-1.7 2.5.1 1.2 1 2.1 2 2 .9-.1 1.7-1.2 1.6-2.4-.1-1.2-1-2.2-1.9-2.1z"/><path d="M12 4.5c-1.1 0-2 1.1-2 2.5s.9 2.5 2 2.5 2-1.1 2-2.5-.9-2.5-2-2.5z"/><path d="M16.7 8.1c-.9-.1-1.8.9-1.9 2.1-.1 1.2.7 2.3 1.6 2.4 1 .1 1.9-.8 2-2 .1-1.3-.7-2.4-1.7-2.5z"/><path d="M4.8 12.3c-.8.3-1.2 1.4-.9 2.4.3 1 1.2 1.6 2 1.3.8-.3 1.1-1.4.8-2.4-.3-1-1.1-1.6-1.9-1.3z"/><path d="M19.2 12.3c-.8-.3-1.6.3-1.9 1.3-.3 1 0 2.1.8 2.4.8.3 1.7-.3 2-1.3.3-1-.1-2.1-.9-2.4z"/></svg>'
 
-/** 切换桌宠启用状态（入口按钮点击；失败仅记录，设置页内有完整错误展示）。 */
+/**
+ * 切换桌宠启用状态（入口按钮点击；失败仅记录，设置页内有完整错误展示）。
+ *
+ * 纯持久开关：关掉就落盘 `enabled=false`，重启后不会自己再起来。这里刻意不再走
+ * 「临时隐藏」——用户点这个按钮的语义是「关掉宠物」，不是「这次先收起来」。
+ */
 async function togglePetEnabled(): Promise<void> {
-  const current = getPetUiSnapshot().status
-  const enabled = Boolean(current?.enabled)
-  const visible = Boolean(current?.visible)
+  const enabled = Boolean(getPetUiSnapshot().status?.enabled)
   try {
-    const nextStatus = !enabled
-      ? await setPetEnabled(true)
-      : visible
-        ? await hidePet()
-        : await showPet()
-    setPetStatus(nextStatus)
+    setPetStatus(await setPetEnabled(!enabled))
   }
   catch (error) {
     console.error('[dsh-tauri-pet] sidebar icon toggle failed:', error)
@@ -57,35 +53,11 @@ function createPetIconButton(): HTMLButtonElement {
   return button
 }
 
-/** 按共享状态缓存同步按钮显隐与两态（绿点显隐 + aria-pressed）。 */
+/** 按共享状态缓存同步按钮两态（绿点显隐 + aria-pressed）：绿点 = 宠物已开启。 */
 function syncIconState(button: HTMLButtonElement): void {
-  const shared = getPetUiSnapshot()
-  const status = shared.status
-  // 没有宠物时隐藏入口；只有存在可用宠物时才显示按钮。
-  button.style.display = shared.petsAvailable ? '' : 'none'
-  const active = Boolean(status?.enabled && status?.visible)
+  const active = Boolean(getPetUiSnapshot().status?.enabled)
   button.classList.toggle('dshp-pet__icon--on', active)
   button.setAttribute('aria-pressed', String(active))
-}
-
-/**
- * 拉取全部宠物清单并写入「是否有可用宠物」快照（侧栏入口显隐用）。失败时按
- * 有宠物处理（fail-open），避免桥接瞬时错误把入口藏掉；此后清单变化（下载
- * 完成/导入）由设置页写回同一快照。
- */
-async function refreshPetsAvailability(): Promise<void> {
-  try {
-    const [presets, chatPets, codexPets] = await Promise.all([
-      fetchPresetPets(),
-      fetchPetList('chat'),
-      fetchPetList('codex'),
-    ])
-    setPetsAvailable(hasAvailablePets(presets, chatPets, codexPets))
-  }
-  catch (error) {
-    console.error('[dsh-tauri-pet] refresh pets availability failed:', error)
-    setPetsAvailable(true)
-  }
 }
 
 /**
@@ -112,9 +84,6 @@ export function registerSidebarPetIcon(): () => void {
         commitPetStatusFetch(revision, status)
     })
     .catch(error => console.error('[dsh-tauri-pet] fetchPetStatus failed:', error))
-  // 初始可用性：无任何可用宠物时隐藏入口（按钮按默认快照先隐藏，拉取成功后才
-  // 决定是否显示；fail-open 策略见 refreshPetsAvailability）。
-  void refreshPetsAvailability()
   syncIconState(button)
 
   /**

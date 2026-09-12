@@ -40,15 +40,10 @@ const ALLOWED_INVOKE_CMDS = new Set([
   'set_active_pet',
   'set_pet_size',
   'push_pet_session',
-  'show_pet',
-  'hide_pet',
   'list_pets',
   'import_pet',
   'get_pet_asset',
   'list_preset_pets',
-  'download_preset_pet',
-  'update_preset_pet',
-  'get_preset_download_progress',
 ])
 
 export function useIframeInvoke(iframeRef: RefObject<HTMLIFrameElement | null>): void {

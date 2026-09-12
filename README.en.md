@@ -55,7 +55,7 @@
 - ⌨️ **CLI integration** — Install automatically registers the `dsh` command, ready in a new terminal; does not overwrite your existing shell config.
 - 🧭 **Launch wizard** — On first launch, choose recommended plugins, or re-select them later in config.
 - 🚀 **Self-update** — In-app updates; no need to re-download.
-- 🐾 **Desktop pets** — Manage Pets and Codex sources, download preset pets, import Codex `.zip` packs, and show activity states from conversations.
+- 🐾 **Desktop pets** — Manage Pets and Codex sources with presets that work out of the box (streamed from their upstream asset hosts, no download step), import Codex `.zip` packs, and show activity states from conversations.
 
 ## Presets
 

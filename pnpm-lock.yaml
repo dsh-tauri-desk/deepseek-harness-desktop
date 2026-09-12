@@ -149,9 +149,15 @@ catalogs:
     '@overlastic/react':
       specifier: ^0.9.0
       version: 0.9.0
+    '@reause/core':
+      specifier: ^0.1.4
+      version: 0.1.4
     '@tanstack/react-query':
       specifier: ^5.101.4
       version: 5.101.4
+    dsh-pet-component:
+      specifier: ^0.1.1
+      version: 0.1.1
     i18next:
       specifier: ^26.3.6
       version: 26.3.6
@@ -186,6 +192,9 @@ catalogs:
     '@tauri-apps/cli':
       specifier: ^2.11.4
       version: 2.11.4
+    '@tauri-apps/plugin-http':
+      specifier: ^2.6.0
+      version: 2.6.0
   testing:
     vitest:
       specifier: ^4.1.11
@@ -287,12 +296,21 @@ importers:
       '@overlastic/react':
         specifier: catalog:runtime
         version: 0.9.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@reause/core':
+        specifier: catalog:runtime
+        version: 0.1.4(react@19.2.8)
       '@tanstack/react-query':
         specifier: catalog:runtime
         version: 5.101.4(react@19.2.8)
       '@tauri-apps/api':
         specifier: catalog:tauri
         version: 2.11.1
+      '@tauri-apps/plugin-http':
+        specifier: catalog:tauri
+        version: 2.6.0
+      dsh-pet-component:
+        specifier: catalog:runtime
+        version: 0.1.1(change-case@5.4.4)(react@19.2.8)
       i18next:
         specifier: catalog:runtime
         version: 26.3.6(typescript@5.8.3)
@@ -485,7 +503,7 @@ importers:
         version: 1.5.1
       unstorage:
         specifier: catalog:utils
-        version: 1.17.5
+        version: 1.17.5(idb-keyval@6.3.0)
     devDependencies:
       '@deepseek-ai/dsh-api-session-controller':
         specifier: catalog:dsh
@@ -2744,6 +2762,58 @@ packages:
     peerDependencies:
       react: ^16.8.0 || ^17.0.0-rc.1 || ^18.0.0 || ^19.0.0-rc.1
 
+  '@reause/core@0.1.4':
+    resolution: {integrity: sha512-NkEzEvYyFpWND8H2yQ3e3iikifUqhMObdLXe1xNiGbfcZLDsExljt5SF/cCEgx9V4S/HLeNpcPnQU/yL7Y8Czw==}
+    peerDependencies:
+      react: '>=18'
+
+  '@reause/integrations@0.1.4':
+    resolution: {integrity: sha512-1UzzEb6lLbH5SYKnNDLyUONd1+dT8RtJH6W71fWXwmU/6jiZSFNbOU8GNyVnxDOWkBokPe4/5kIoo7YHEePdfQ==}
+    peerDependencies:
+      async-validator: ^4
+      axios: ^1
+      change-case: ^5
+      drauu: ^1
+      focus-trap: ^7 || ^8
+      fuse.js: ^7
+      idb-keyval: ^6
+      jwt-decode: ^4
+      nprogress: ^0.2
+      qrcode: ^1.5
+      react: '>=18'
+      sortablejs: ^1
+      universal-cookie: ^7 || ^8
+    peerDependenciesMeta:
+      async-validator:
+        optional: true
+      axios:
+        optional: true
+      change-case:
+        optional: true
+      drauu:
+        optional: true
+      focus-trap:
+        optional: true
+      fuse.js:
+        optional: true
+      idb-keyval:
+        optional: true
+      jwt-decode:
+        optional: true
+      nprogress:
+        optional: true
+      qrcode:
+        optional: true
+      sortablejs:
+        optional: true
+      universal-cookie:
+        optional: true
+
+  '@reause/shared@0.1.4':
+    resolution: {integrity: sha512-RyCfBgBq4K7dVlyI1c+MPgFk5f+OkWIccWhkPwZqfH4zjzss3Vz3egsLS0rvS6IYgxw6vA3IKN+MoyD6+1a22g==}
+    peerDependencies:
+      react: '>=18'
+
   '@rolldown/binding-android-arm64@1.0.0-beta.53':
     resolution: {integrity: sha512-Ok9V8o7o6YfSdTTYA/uHH30r3YtOxLD6G3wih/U9DO0ucBBFq8WPt/DslU53OgfteLRHITZny9N/qCUxMf9kjQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -3318,6 +3388,9 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
+  '@tauri-apps/plugin-http@2.6.0':
+    resolution: {integrity: sha512-QYXwbGb4hQ9/8Riv/ejU/kPFFnbBIrBcWwV1LIXv2xBKfoj8lkWfGkd9pkCSsBI/pljPtz+IPqfrE3t3bVl3mg==}
+
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
 
@@ -3871,6 +3944,11 @@ packages:
     resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
     engines: {node: '>=12'}
 
+  dsh-pet-component@0.1.1:
+    resolution: {integrity: sha512-M2bDCPP3Nva2acdFgu1c8BD5UZ9v0rUfTVrUm7yhSDWUSsn+x1dLtgbU//65JiDHUwh9+r5HdRal0rIJZGyIWg==}
+    peerDependencies:
+      react: ^19.0.0
+
   dts-resolver@2.1.3:
     resolution: {integrity: sha512-bihc7jPC90VrosXNzK0LTE2cuLP6jr0Ro8jk+kMugHReJVLIpHz/xadeq3MhuwyO4TD4OA3L1Q8pBBFRc08Tsw==}
     engines: {node: '>=20.19.0'}
@@ -4347,6 +4425,9 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  idb-keyval@6.3.0:
+    resolution: {integrity: sha512-um+2dgAWmYsu615EXpWVwSmapJhON0G43t3Ka/EVaohzPQXSMqKEqeDK/oIW3Ow+BXaF2PvSc+oBTFp793A5Ow==}
 
   identifier-regex@1.1.0:
     resolution: {integrity: sha512-SLX4H/vtcYlYnL7XqnuJKHU7Z8517TgsW9nmQiGOgMCjQ8V/deLYu6bEmbGoXe7WMMhc9+EUGyFFneHja8KabA==}
@@ -8469,6 +8550,23 @@ snapshots:
     dependencies:
       react: 19.2.8
 
+  '@reause/core@0.1.4(react@19.2.8)':
+    dependencies:
+      '@reause/shared': 0.1.4(react@19.2.8)
+      react: 19.2.8
+
+  '@reause/integrations@0.1.4(change-case@5.4.4)(idb-keyval@6.3.0)(react@19.2.8)':
+    dependencies:
+      '@reause/shared': 0.1.4(react@19.2.8)
+      react: 19.2.8
+    optionalDependencies:
+      change-case: 5.4.4
+      idb-keyval: 6.3.0
+
+  '@reause/shared@0.1.4(react@19.2.8)':
+    dependencies:
+      react: 19.2.8
+
   '@rolldown/binding-android-arm64@1.0.0-beta.53':
     optional: true
 
@@ -8858,6 +8956,10 @@ snapshots:
       '@tauri-apps/cli-win32-arm64-msvc': 2.11.4
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.4
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
+
+  '@tauri-apps/plugin-http@2.6.0':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   '@tybys/wasm-util@0.10.3':
     dependencies:
@@ -9458,6 +9560,26 @@ snapshots:
   dotenv@16.6.1: {}
 
   dotenv@17.4.2: {}
+
+  dsh-pet-component@0.1.1(change-case@5.4.4)(react@19.2.8):
+    dependencies:
+      '@reause/core': 0.1.4(react@19.2.8)
+      '@reause/integrations': 0.1.4(change-case@5.4.4)(idb-keyval@6.3.0)(react@19.2.8)
+      css-render: 0.15.14
+      idb-keyval: 6.3.0
+      react: 19.2.8
+    transitivePeerDependencies:
+      - async-validator
+      - axios
+      - change-case
+      - drauu
+      - focus-trap
+      - fuse.js
+      - jwt-decode
+      - nprogress
+      - qrcode
+      - sortablejs
+      - universal-cookie
 
   dts-resolver@2.1.3(oxc-resolver@11.24.2):
     optionalDependencies:
@@ -10063,6 +10185,8 @@ snapshots:
   i18next@26.3.6(typescript@5.8.3):
     optionalDependencies:
       typescript: 5.8.3
+
+  idb-keyval@6.3.0: {}
 
   identifier-regex@1.1.0:
     dependencies:
@@ -11458,7 +11582,7 @@ snapshots:
     optionalDependencies:
       synckit: 0.11.13
 
-  unstorage@1.17.5:
+  unstorage@1.17.5(idb-keyval@6.3.0):
     dependencies:
       anymatch: 3.1.3
       chokidar: 5.0.0
@@ -11468,6 +11592,8 @@ snapshots:
       node-fetch-native: 1.6.7
       ofetch: 1.5.1
       ufo: 1.6.4
+    optionalDependencies:
+      idb-keyval: 6.3.0
 
   update-browserslist-db@1.3.1(browserslist@4.28.8):
     dependencies:

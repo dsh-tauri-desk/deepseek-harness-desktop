@@ -32,6 +32,8 @@ tauri-plugin-fs = "2"
 tauri-plugin-store = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
+# 桌宠素材直连远端：插件版 HTTP 从 Rust 发起请求，绕开 githubusercontent 的 CORS。
+tauri-plugin-http = "2"
 image = { version = "0.25", default-features = false, features = [ "png" ] }
 arboard = { version = "3", features = [ "wayland-data-control" ] }
 base64 = "0.22"

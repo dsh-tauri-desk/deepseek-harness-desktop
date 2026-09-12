@@ -60,6 +60,20 @@ pub(crate) fn build_plugin_envs(
         }
     }
 
+    // 档案 node_modules 是用哪份 store 装的，是既有事实：pnpm 只在「自己解析出的 store」
+    // 与 `node_modules/.modules.yaml` 记录的一致时才继续，否则直接
+    // `ERR_PNPM_UNEXPECTED_STORE` 退出（该错误与插件本身无关，用户看到的是「插件安装失败」）。
+    // 用户的 pnpm 用户级/全局配置（如 `store-dir`）或环境变量可能把 store 指到别处
+    // （典型场景：用户在另一个分区的工程里跑过 pnpm，pnpm 就把那份 store 写进了全局配置），
+    // 此时档案安装必然失败且无法自愈。这里显式下传档案记录的 store：
+    // pnpm 的优先级是 CLI > 环境变量 > 项目 .npmrc > 用户/全局配置，
+    // 因此该值既压过用户配置，也必然等于 .modules.yaml 里的记录，子进程无从跑偏。
+    // 全新档案（没有 node_modules）不注入：让 pnpm 按用户配置自行决定并写回记录。
+    if let Some(store_dir) = super::pnpm::profile_store_dir(app_handle) {
+        log::info!("pinning plugin install pnpm store to the profile record: {store_dir}");
+        envs.insert("npm_config_store_dir".to_string(), store_dir);
+    }
+
     let mut paths = vec![bin_dir];
     if let Some(node_dir) = node_abs.parent() {
         paths.push(node_dir.to_path_buf());

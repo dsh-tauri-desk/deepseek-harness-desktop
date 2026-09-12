@@ -24,26 +24,20 @@ export interface PetAsset {
   spritesheet: string
 }
 
-/** 预设宠物清单条目（`resources/preset-pets.json` 的展示层投影）。 */
+/**
+ * 预设宠物清单条目（`resources/preset-pets.json` 的展示层投影）。
+ *
+ * 预设不再下载/安装：清单里的条目本身就是桌宠组件的渲染参数（`config` / `uri` /
+ * `ext` 等由 pet 窗口直接消费），设置页只需要展示字段，因此这里只声明投影形状，
+ * Rust 返回的其余字段前端原样忽略。
+ */
 export interface PresetPetItem {
   desc?: string | null
   id: string
   image?: string | null
-  installed: boolean
+  kind?: 'dsh' | 'codex' | null
   name: string
-  size_mb?: number | null
-  /** 已安装且清单 ref 与安装记录不同（或无记录）→ 可更新。 */
-  update_available?: boolean
-  /** 当前下载阶段（idle|downloading|extracting|done|failed），跨挂载恢复下载中视图用。 */
-  phase?: PresetDownloadProgress['phase'] | null
-}
-
-/** 预设宠物下载进度快照（设置页轮询 `get_preset_download_progress`）。 */
-export interface PresetDownloadProgress {
-  phase: 'idle' | 'downloading' | 'extracting' | 'done' | 'failed'
-  received: number
-  total: number
-  error?: string | null
+  size?: number | null
 }
 
 export interface WorkspaceItem {
@@ -86,24 +80,17 @@ export interface ConversationInputLeftProps {
 }
 
 export type LocaleKey
-  = | 'codex'
-    | 'collapsePet'
+  = | 'closePet'
     | 'create'
     | 'createFailed'
-    | 'download'
-    | 'downloadFailed'
-    | 'downloading'
     | 'emptyImported'
     | 'enable'
+    | 'enablePet'
     | 'import'
     | 'importFailed'
     | 'listFailed'
     | 'loading'
     | 'name'
-
-    | 'noPetSelected'
-    | 'petDescWhale'
-    | 'petNameWhale'
     | 'select'
     | 'selected'
     | 'setPetFailed'
@@ -113,6 +100,3 @@ export type LocaleKey
     | 'tabCodexDesc'
     | 'tabInstalledDesc'
     | 'toggleFailed'
-    | 'update'
-    | 'updateFailed'
-    | 'wakePet'

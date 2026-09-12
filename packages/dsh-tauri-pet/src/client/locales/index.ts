@@ -3,33 +3,22 @@ import type { ClientContext } from 'dsh-tauri/client'
 import type { LocaleKey } from '../types'
 import { createExternalStore } from 'dsh-tauri/client'
 import { useSyncExternalStore } from 'react'
-import {
-  BUILTIN_PET_DESC_EN,
-  BUILTIN_PET_DESC_ZH,
-  BUILTIN_PET_NAME,
-  PET_CLIENT_NS as NS,
-} from '../constants'
+import { PET_CLIENT_NS as NS } from '../constants'
 
 export { PET_CLIENT_NS as NS } from '../constants'
 
 const DICT_ZH: Record<LocaleKey, string> = {
-  codex: 'Codex',
-  collapsePet: '收起宠物',
+  closePet: '关闭宠物',
   create: '创建',
   createFailed: '创建宠物会话失败',
-  download: '下载',
-  downloadFailed: '下载预设宠物失败',
-  downloading: '下载中',
   emptyImported: '尚未导入宠物，点击右上角「导入」添加 .zip 资源包',
   enable: '启用',
+  enablePet: '启用宠物',
   import: '导入',
   importFailed: '导入宠物失败',
   listFailed: '读取宠物列表失败',
   loading: '加载中…',
   name: '宠物',
-  noPetSelected: '未选择宠物，请在设置页选择你的宠物',
-  petDescWhale: BUILTIN_PET_DESC_ZH,
-  petNameWhale: BUILTIN_PET_NAME,
   select: '选择',
   selected: '已选',
   setPetFailed: '选择宠物失败',
@@ -38,30 +27,21 @@ const DICT_ZH: Record<LocaleKey, string> = {
   sizeLabel: '大小',
   tabCodexDesc: '从 Codex 或压缩包中导入 Codex 宠物（支持 .zip 文件）',
   tabInstalledDesc: '宠物会管理对话串，并突出显示需要关注的事项',
-  toggleFailed: '切换桌宠窗口失败',
-  update: '更新',
-  updateFailed: '更新预设宠物失败',
-  wakePet: '唤醒宠物',
+  toggleFailed: '切换桌宠开关失败',
 }
 
 const DICT_EN: Record<LocaleKey, string> = {
-  codex: 'Codex',
-  collapsePet: 'Collapse pet',
+  closePet: 'Close pet',
   create: 'Create',
   createFailed: 'Failed to create a pet session',
-  download: 'Download',
-  downloadFailed: 'Failed to download preset pet',
-  downloading: 'Downloading',
   emptyImported: 'No pets imported yet. Click “Import” to add a .zip package',
   enable: 'Enable',
+  enablePet: 'Enable pet',
   import: 'Import',
   importFailed: 'Failed to import pet',
   listFailed: 'Failed to load pet list',
   loading: 'Loading…',
   name: 'Pets',
-  noPetSelected: 'No pet selected. Please choose your pet in the settings page',
-  petDescWhale: BUILTIN_PET_DESC_EN,
-  petNameWhale: BUILTIN_PET_NAME,
   select: 'Choose',
   selected: 'Selected',
   setPetFailed: 'Failed to select pet',
@@ -70,10 +50,7 @@ const DICT_EN: Record<LocaleKey, string> = {
   sizeLabel: 'Size',
   tabCodexDesc: 'Import Codex pets from Codex or archives (.zip files supported)',
   tabInstalledDesc: 'Pets manage your conversation threads and highlight items that need attention',
-  toggleFailed: 'Failed to toggle the pet window',
-  update: 'Update',
-  updateFailed: 'Failed to update preset pet',
-  wakePet: 'Wake pet',
+  toggleFailed: 'Failed to toggle the pet',
 }
 
 let activeLocale = 'en'

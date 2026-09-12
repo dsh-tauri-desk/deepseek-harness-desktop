@@ -32,6 +32,14 @@
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "opener:allow-reveal-item-in-dir",
-    "store:default"
+    "store:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://*.githubusercontent.com/*"
+        }
+      ]
+    }
   ]
 }

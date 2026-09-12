@@ -6,10 +6,9 @@
  *     dsh-tauri-ui 设置触发器（`.dshp-settings-trigger`）右侧、同一容器内
  *     （`.sidebar.settings` 的子元素）。按钮只有激活/未激活两态（激活时右上角
  *     绿色小圆点），点击即切换桌宠启用状态，不弹面板。
- *   - 设置分区：注册进 `settings.section` 槽（与归档分区同点位），提供启用
- *     开关、宠物大小拖动条、选择宠物、显示/隐藏；全部经 dsh-tauri invoke 桥
- *     调用桌面端 Tauri 命令
- *     （get_pet_status/set_pet_enabled/set_active_pet/set_pet_size/show_pet/hide_pet）。
+ *   - 设置分区：注册进 `settings.section` 槽（与归档分区同点位），提供宠物开关、
+ *     宠物大小拖动条、选择宠物；全部经 dsh-tauri invoke 桥调用桌面端 Tauri 命令
+ *     （get_pet_status/set_pet_enabled/set_active_pet/set_pet_size）。
  *
  * 依赖：slots（注册 settings.section）、locale（双语文案）。invoke 桥来自
  * dsh-tauri/client。

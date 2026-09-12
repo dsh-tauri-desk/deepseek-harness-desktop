@@ -31,17 +31,10 @@
 </p>
 
 <p align="center">
-  <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
+  <a href="docs/PREVIEW.md">
+    <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
+  </a>
 </p>
-
-<table>
-  <tr>
-    <td><a href="docs/PREVIEW.md"><img src="./docs/images/previews/preview-1.png" alt="preview 1" /></a></td>
-    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-2.png" alt="preview 2" /></a></td>
-    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-4.png" alt="preview 4" /></a></td>
-    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-5.png" alt="preview 5" /></a></td>
-  </tr>
-</table>
 
 ## Features
 

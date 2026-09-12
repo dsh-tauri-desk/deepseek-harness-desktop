@@ -355,6 +355,13 @@ fn resolve_installer_path(app_handle: &AppHandle, path: &str) -> Result<PathBuf,
     Ok(canonical)
 }
 
+/// 是否为 AppImage 安装包（Linux 便携格式，自带运行时可执行）。
+#[cfg(target_os = "linux")]
+fn is_appimage(path: &std::path::Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("AppImage"))
+}
+
 /// 校验安装包并交给系统默认处理器打开（不停服务、不动「待安装」标记）。
 ///
 /// 供两条路径共用：「对话框立即更新」与「退出时自动更新」。二者的 Harness
@@ -367,6 +374,22 @@ pub(super) fn open_installer_now(app_handle: &AppHandle, path: &str) -> Result<(
     // 直接打开仍会失败；此处幂等修复后再交给系统处理器。
     #[cfg(unix)]
     ensure_installer_executable(&resolved)?;
+
+    // Linux：AppImage 自带运行时，直接执行；xdg-open 依赖桌面注册的 MIME
+    // 处理器，COSMIC 等未注册的环境会静默失败（open::that_detached 只检查
+    // 进程是否 spawn 成功，看不到 xdg-open 的退出码）。.deb/.rpm 仍交给系统
+    // 默认处理器（软件中心 / 包管理器）。
+    #[cfg(target_os = "linux")]
+    if is_appimage(&resolved) {
+        std::process::Command::new(&resolved)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("UPDATE_OPEN: {e}"))?;
+        return Ok(());
+    }
+
     app_handle
         .opener()
         .open_path(resolved.to_string_lossy(), None::<&str>)
@@ -391,6 +414,16 @@ pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), 
     open_installer_now(app_handle, &path)?;
     // 安装包已交给系统 → 清除「待安装」标记，避免退出应用时重复拉起安装器。
     super::pending::set(app_handle, None);
+
+    // Linux AppImage 安装包就是新版本本体，且与当前实例共用单实例 D-Bus 锁：
+    // 当前实例不退出时，新进程会转发激活后立即退出（表现为「打开安装包」无效）。
+    // 释放单实例名并退出，让已拉起的新版本接管；.deb/.rpm 由包管理器处理，
+    // 无需结束当前实例。
+    #[cfg(target_os = "linux")]
+    if is_appimage(std::path::Path::new(&path)) {
+        tauri_plugin_single_instance::destroy(app_handle);
+        app_handle.exit(0);
+    }
     Ok(())
 }
 
@@ -417,6 +450,24 @@ mod tests {
             "应包含所有者/组/其他可执行位，mode={mode:o}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AppImage 识别按扩展名匹配且大小写不敏感；其它安装包格式不受影响。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_detection_is_extension_based() {
+        use std::path::Path;
+        assert!(is_appimage(Path::new(
+            "/tmp/Deepseek.Harness.Desktop_0.13.0_amd64.AppImage"
+        )));
+        assert!(is_appimage(Path::new("/tmp/tool.appimage")));
+        assert!(!is_appimage(Path::new(
+            "/tmp/Deepseek.Harness.Desktop_0.13.0_amd64.deb"
+        )));
+        assert!(!is_appimage(Path::new(
+            "/tmp/Deepseek.Harness.Desktop_0.13.0_x86_64.rpm"
+        )));
+        assert!(!is_appimage(Path::new("/tmp/AppImage")));
     }
 
     /// 镜像兜底策略回归：无摘要时只有官方源；有摘要时才加入镜像。

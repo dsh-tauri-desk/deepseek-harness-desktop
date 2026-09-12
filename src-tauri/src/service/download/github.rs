@@ -7,8 +7,8 @@
 //!
 //! 预览版（GitHub Release 标记 Pre-release、或 tag 命名含预览标记，见
 //! [`is_preview_tag`]）**不参与更新判定**：`/releases/latest` 按 label 自动排除，
-//! releases.atom 兜底按 tag 命名跳过；核心列表只使用预构建包仓库的 release，
-//! 避免把上游源码 tag 当成可切换的桌面端槽位。
+//! releases.atom 兜底按 tag 命名跳过；但核心列表（`fetch_dsh_pkg_releases`）
+//! 仍会列出预览版供用户手动下载安装。
 
 use crate::config;
 
@@ -16,7 +16,7 @@ use crate::config;
 const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/dsh-tauri-desk/deepseek-harness-pkg";
 /// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
 const DSH_PKG_REPO: &str = "https://github.com/dsh-tauri-desk/deepseek-harness-pkg";
-const GITHUB_RELEASES_PAGE_SIZE: usize = 10;
+const GITHUB_RELEASES_PAGE_SIZE: usize = 100;
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -402,6 +402,10 @@ async fn fetch_latest_non_preview() -> Result<LatestDshPkg, String> {
     fetch_dsh_pkg_asset(&tag).await
 }
 
+/// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
+///
+/// API 失败时资产 URL 按 tag 确定性构造，摘要从同一个 tag 的页面读取，避免
+/// latest 地址与固定 tag 的摘要发生错配。
 pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
     let client = github_client()?;
     let expected_name = config::get_dsh_download_url()?
@@ -482,13 +486,11 @@ pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
     })
 }
 
-/// 从核心 tag 中解析版本号：`dsh-v0.1.5-rc.2`、`dsh-0.1.0-rc.7-32054485373`、
+/// 从核心 tag 中解析版本号：`dsh-0.1.0-rc.7-32054485373`、
 /// `src-0.1.2-alpha.1` 或 `dsh-src-0.1.2-alpha.1-33260039971` → 对应的 SemVer。
 pub fn parse_version_from_tag(tag: &str) -> Option<String> {
     let has_dsh_prefix = tag.starts_with("dsh-");
     let tag = tag.strip_prefix("dsh-").unwrap_or(tag);
-    let has_v_prefix = tag.starts_with('v');
-    let tag = tag.strip_prefix('v').unwrap_or(tag);
     if let Some(version) = tag.strip_prefix("src-") {
         let version = if has_dsh_prefix {
             version.rsplit_once('-').map(|(version, _)| version)?
@@ -499,24 +501,15 @@ pub fn parse_version_from_tag(tag: &str) -> Option<String> {
             .ok()
             .map(|_| version.to_string());
     }
-    if has_v_prefix {
-        return semver::Version::parse(tag).ok().map(|_| tag.to_string());
-    }
-    if !has_dsh_prefix {
-        return None;
-    }
-    let version = tag.rsplit_once('-').map(|(version, _)| version)?;
-    if semver::Version::parse(version).is_ok() {
-        return Some(version.to_string());
-    }
-    None
+    let version = has_dsh_prefix.then(|| tag.rsplit_once('-').map(|(version, _)| version))??;
+    (!version.is_empty()).then(|| version.to_string())
 }
 
 /// 是否「预览版」tag：预览版不参与自动更新判定（不提示用户更新），但核心列表
 /// 仍会列出、可手动下载安装（见 [`fetch_dsh_pkg_releases`]）。
 ///
 /// GitHub API 的 `/releases/latest` 已按 label 排除 Pre-release；但 releases.atom
-/// 兜底（feed 无 label 字段）与核心列表的 pkg tag 需要按 tag 命名判定。
+/// 兜底（feed 无 label 字段）与核心列表的 git tags 兜底需要按 tag 命名判定。
 /// 判定规则：tag 版本解析成功（`dsh-<version>-<build-id>`）且版本号的 pre-release
 /// 段含**非 rc** 的预览标记（`preview`/`beta`/`alpha`/`canary`/`next`）→ 预览版。
 /// rc（如 `0.1.1-rc.2`）不算预览版：pkg 仓库的 rc 发布会正常推送用户更新。
@@ -673,7 +666,11 @@ pub struct DshPkgReleaseMeta {
     pub prerelease: bool,
 }
 
-/// 通过 pkg 仓库 Releases 页面获取发行列表，作为桌面端包版本管理的原有回退来源。
+/// 通过 Releases 页面获取 pkg 发行列表。
+///
+/// 页面位于 github.com，不消耗 api.github.com 的未认证配额；页面上的
+/// `Pre-release` 标签也能保留预览版信息。页面结构变化或网络失败时返回错误，
+/// 由调用方继续回退到 Tags API。
 async fn fetch_dsh_pkg_releases_from_html(
     client: &reqwest::Client,
 ) -> Result<Vec<DshPkgReleaseMeta>, String> {
@@ -696,8 +693,10 @@ async fn fetch_dsh_pkg_releases_from_html(
 
 /// 拉取 pkg 仓库的完整 release 列表（最新在前），含 GitHub 的 Pre-release label。
 ///
-/// 核心面板与桌面端当前 DSH 包版本管理都使用该列表。git tags 不含 Pre-release
-/// label，API 失败时沿用原有页面回退。
+/// 核心面板的多版本列表以此作为远程数据源（替代 git tags）：git tags 不含
+/// Pre-release label，无法区分预览版；releases 列表还能天然排除 draft（未发布
+/// 对匿名请求不可见）。API 失败时先读取 github.com Releases 页面，再失败时
+/// 由调用方回退 git tags，预览标记按 tag 命名（[`is_preview_tag`]）兜底。
 pub async fn fetch_dsh_pkg_releases() -> Result<Vec<DshPkgReleaseMeta>, String> {
     let client = github_client()?;
     let mut all_releases = Vec::new();
@@ -879,14 +878,6 @@ mod tests {
             Some("0.1.0-rc.6")
         );
         assert_eq!(parse_version_from_tag("dsh-0.2.0"), None);
-        assert_eq!(
-            parse_version_from_tag("dsh-v0.1.5-rc.2").as_deref(),
-            Some("0.1.5-rc.2")
-        );
-        assert_eq!(
-            parse_version_from_tag("v0.1.5-rc.2").as_deref(),
-            Some("0.1.5-rc.2")
-        );
         assert_eq!(parse_version_from_tag("0.1.0-rc.7-abc"), None);
         assert_eq!(parse_version_from_tag(""), None);
         assert_eq!(
@@ -910,8 +901,6 @@ mod tests {
         // rc 不算预览版：pkg 仓库的 rc 发布会正常推送用户更新
         assert!(!is_preview_tag("dsh-0.1.1-rc.2-32485170079"));
         assert!(!is_preview_tag("dsh-0.1.0-rc.8-32342588166"));
-        assert!(!is_preview_tag("dsh-v0.1.5-rc.2"));
-        assert!(is_preview_tag("dsh-v0.1.5-alpha.1"));
         // 正式版 / 无法解析的 tag 均不算预览版
         assert!(!is_preview_tag("dsh-0.2.0-32490000006"));
         assert!(!is_preview_tag("dsh-0.2.0"));

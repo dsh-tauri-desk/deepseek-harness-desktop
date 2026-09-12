@@ -28,9 +28,6 @@ mod version;
 pub use local::{local_core_package_dir, update_local_core};
 // 以下重导出为对外公开 API（部分项当前链路未直接引用，属有意保留，见模块头）。
 #[allow(unused_imports)]
-pub use source::{
-    active_dsh_binary, active_engine_version, active_source, active_version,
-    dsh_engine_version_from_binary, CoreSource, HarnessCore,
-};
+pub use source::{active_dsh_binary, active_source, active_version, CoreSource, HarnessCore};
 pub use version::{download_version, has_installed_version, list, remove_version, set_active};
 pub(crate) use runtime::prepare_active_runtime;

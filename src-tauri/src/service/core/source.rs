@@ -144,32 +144,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dsh_engine_version_reads_core_manifest() {
-        let root = std::env::temp_dir().join(format!(
-            "dsh-core-engine-version-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time after epoch")
-                .as_nanos()
-        ));
-        let package_dir = root.join("node_modules").join("@deepseek-ai").join("dsh");
-        let binary = package_dir.join("lib").join("bin.js");
-        std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("create core");
-        std::fs::write(
-            package_dir.join("package.json"),
-            r#"{"name":"@deepseek-ai/dsh","version":"0.1.5-rc.2"}"#,
-        )
-        .expect("write core manifest");
-
-        assert_eq!(
-            dsh_engine_version_from_binary(&binary).as_deref(),
-            Some("0.1.5-rc.2")
-        );
-        std::fs::remove_dir_all(root).expect("remove core test directory");
-    }
-
-    #[test]
     fn core_source_round_trips() {
         assert_eq!(CoreSource::parse("local"), Some(CoreSource::Local));
         assert_eq!(CoreSource::parse("app"), Some(CoreSource::App));

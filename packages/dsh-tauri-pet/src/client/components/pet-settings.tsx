@@ -175,6 +175,27 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     }
   }
 
+  /** 取消选择：清空已选宠物；仍在启用时一并关闭桌宠（无内容可渲染，不留空窗口）。 */
+  async function clearSelection(): Promise<void> {
+    if (busy || active === '')
+      return
+    setBusy(true)
+    setError(null)
+    try {
+      let nextStatus = await setActivePet('')
+      if (nextStatus.enabled)
+        nextStatus = await setPetEnabled(false)
+      setPetStatus(nextStatus)
+    }
+    catch (clearError) {
+      console.error('[dsh-tauri-pet] clear selection failed:', clearError)
+      setError(text('clearFailed'))
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
   /** 启用/关闭桌宠：纯持久开关，关闭后重启不再自动拉起。 */
   async function toggleEnabled(): Promise<void> {
     if (busy)
@@ -257,9 +278,9 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                   name={item.name}
                   desc={item.desc ?? ''}
                   active={active === item.id}
-                  disabled={busy || active === item.id}
-                  actionLabel={active === item.id ? text('selected') : text('enable')}
-                  onAction={() => { void enablePreset(item.id) }}
+                  disabled={busy}
+                  actionLabel={text(active === item.id ? 'clear' : 'enable')}
+                  onAction={() => { void (active === item.id ? clearSelection() : enablePreset(item.id)) }}
                 />
               ))}
               {chatPets.map(item => (
@@ -270,9 +291,9 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                   name={item.name}
                   desc={item.description ?? ''}
                   active={active === item.id}
-                  disabled={busy || active === item.id}
-                  actionLabel={text(active === item.id ? 'selected' : 'select')}
-                  onAction={() => { void choose(item.id) }}
+                  disabled={busy}
+                  actionLabel={text(active === item.id ? 'clear' : 'select')}
+                  onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
                 />
               ))}
             </div>
@@ -292,9 +313,9 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
               name={item.name}
               desc={item.description ?? ''}
               active={active === item.id}
-              disabled={busy || active === item.id}
-              actionLabel={text(active === item.id ? 'selected' : 'select')}
-              onAction={() => { void choose(item.id) }}
+              disabled={busy}
+              actionLabel={text(active === item.id ? 'clear' : 'select')}
+              onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
             />
           ))}
     </div>

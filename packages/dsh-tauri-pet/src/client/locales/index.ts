@@ -8,6 +8,8 @@ import { PET_CLIENT_NS as NS } from '../constants'
 export { PET_CLIENT_NS as NS } from '../constants'
 
 const DICT_ZH: Record<LocaleKey, string> = {
+  clear: '取消选择',
+  clearFailed: '取消选择失败',
   closePet: '关闭宠物',
   create: '创建',
   createFailed: '创建宠物会话失败',
@@ -20,7 +22,6 @@ const DICT_ZH: Record<LocaleKey, string> = {
   loading: '加载中…',
   name: '宠物',
   select: '选择',
-  selected: '已选',
   setPetFailed: '选择宠物失败',
   setSizeFailed: '设置宠物大小失败',
   sizeHint: '调整桌宠窗口的显示大小（50–200%）',
@@ -31,6 +32,8 @@ const DICT_ZH: Record<LocaleKey, string> = {
 }
 
 const DICT_EN: Record<LocaleKey, string> = {
+  clear: 'Clear selection',
+  clearFailed: 'Failed to clear pet selection',
   closePet: 'Close pet',
   create: 'Create',
   createFailed: 'Failed to create a pet session',
@@ -43,7 +46,6 @@ const DICT_EN: Record<LocaleKey, string> = {
   loading: 'Loading…',
   name: 'Pets',
   select: 'Choose',
-  selected: 'Selected',
   setPetFailed: 'Failed to select pet',
   setSizeFailed: 'Failed to set pet size',
   sizeHint: 'Adjust the pet window size (50–200%)',

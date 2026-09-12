@@ -296,7 +296,14 @@ export function createTurnCapture(options: TurnCaptureOptions): TurnCapture {
     const epoch = entry.liveEpoch
     entry.liveBusy = true
     try {
-      const result = await queue.run(workspaceRoot, () => liveDiff(store, beforeCommit, { exclude: entry.exclusions }))
+      // 嵌套仓库目录（`entry.nestedDirs`）必须一起传：超限文件在 `exclusions` 里，
+      // 而目录语义的排除（`:(exclude,glob)dir/**`）只有独立传入才生效。漏掉时
+      // `git add` 会把嵌套仓库当成 gitlink 写进私有 index，读数于是报出
+      // 「2 个文件已更改 +2 -0」这种工作区根本没发生过的改动（见 liveDiff 的注释）。
+      const result = await queue.run(workspaceRoot, () => liveDiff(store, beforeCommit, {
+        exclude: entry.exclusions,
+        nestedDirs: entry.nestedDirs,
+      }))
       if (result.ok && entry.liveEpoch === epoch)
         entry.live = { turn: entry.turn, ...result.stats }
     }

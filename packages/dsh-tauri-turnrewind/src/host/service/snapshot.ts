@@ -566,19 +566,29 @@ export async function diffTurnChanges(store: SnapshotStore, beforeCommit: string
  *     （该路径此前被正常捕获过、之后才进入排除清单，例如嵌套仓库/超限文件被学到），
  *     没有 pathspec 时 `git diff <commit>` 照样按 index 条目把它的改动算进来，
  *     实时读数就会比最终结算多出这些文件。
+ *
+ * **嵌套仓库目录必须和 {@link captureSnapshot} 一样排除**（`nestedDirs`，目录语义：
+ * `:(exclude)dir` + `:(exclude,glob)dir/**`）。漏掉它们时，before 快照里没有这些条目
+ * （捕获时被排除了），而这里的 `git add --all` 会把它们作为 gitlink 写进私有 index，
+ * 紧接着 `git diff <beforeCommit>` 就把它们报成「本轮新增的文件」（gitlink 的
+ * `--numstat` 是 `1 0`）：工作区一个字节都没动，提示条却显示「2 个文件已更改 +2 -0」
+ * （用户实际反馈；仓库里恰有两个被跟踪的嵌套仓库时正是这个读数）。
  */
 export async function liveDiff(store: SnapshotStore, beforeCommit: string, options: CaptureOptions = {}): Promise<{ ok: true, stats: { fileCount: number, insertions: number, deletions: number } } | { ok: false, reason: string }> {
-  const excluded = options.exclude ?? []
+  // 目录语义的排除必须知道哪些路径是目录，因此把嵌套仓库目录并进同一份排除清单
+  // （超限文件是文件、嵌套仓库是目录，两者在 pathspec 上的写法不同，由 nestedDirs 区分）。
+  const nestedDirs = new Set(options.nestedDirs ?? [])
+  const excluded = [...new Set([...(options.exclude ?? []), ...nestedDirs])]
   // 与 captureSnapshot 同一条纪律：被忽略的路径不能出现在 exclude pathspec 里，
   // 否则 `git add` 直接失败、实时读数永远为空（运行中提示条也就永远不出现）。
   const activeExclude = await dropIgnoredExclusions(store, excluded)
-  const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs(activeExclude, new Set())])
+  const added = await gitInSnapshot(store, ['add', '--all', '--', '.', ...excludePathspecs(activeExclude, nestedDirs)])
   if (!added.ok)
     return { ok: false, reason: added.error }
   // 没有排除项时保持原命令形态（`-- . :(exclude)…` 只在真的需要时才加）。
   const diffArgs = ['diff', '--numstat', '-z', '--no-renames', beforeCommit]
   if (excluded.length > 0)
-    diffArgs.push('--', '.', ...excludePathspecs(excluded, new Set()))
+    diffArgs.push('--', '.', ...excludePathspecs(excluded, nestedDirs))
   const numstat = await gitInSnapshot(store, diffArgs)
   if (!numstat.ok)
     return { ok: false, reason: numstat.error }

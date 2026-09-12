@@ -257,6 +257,56 @@ describe('liveDiff（运行中实时读数）', () => {
     const live = await liveDiff(store, before.commit)
     expect(live.ok).toBe(false)
   })
+
+  it('把嵌套仓库目录传给 `nestedDirs` 后，它们不会被算成本轮新增的文件', async () => {
+    // 回归背景：`source/react-use`、`source/vueuse` 这类**被跟踪的**嵌套仓库不是
+    // 「被忽略的参考克隆」：不含嵌套目录的排除清单时，这里的 `git add --all` 会把它们
+    // 作为 gitlink 写进私有 index，而 before 快照（捕获时已排除）里没有这些条目 ——
+    // `git diff <before>` 于是报出两条 `1 0` 的「新增文件」：工作区一个字节都没动，
+    // 提示条却显示「2 个文件已更改 +2 -0」（用户实际反馈，仓库里恰有两个嵌套仓库）。
+    const { dshHome, worktree } = await fixture()
+    const identity = ['-c', 'user.email=test@example.com', '-c', 'user.name=test']
+    for (const name of ['react-use', 'vueuse']) {
+      const nested = join(worktree, 'source', name)
+      await mkdir(nested, { recursive: true })
+      await run('git', ['-c', 'init.defaultBranch=main', 'init', '--quiet', nested], { windowsHide: true })
+      await writeFile(join(nested, 'inner.txt'), 'v1\n', 'utf8')
+      await run('git', ['-C', nested, ...identity, 'add', '--all'], { windowsHide: true })
+      await run('git', ['-C', nested, ...identity, 'commit', '--quiet', '-m', 'init'], { windowsHide: true })
+      // 源仓库把它登记成 gitlink：与真实仓库里被跟踪的 submodule 同形态。
+      await run('git', ['-C', worktree, ...identity, 'add', `source/${name}`], { windowsHide: true })
+    }
+
+    const store = snapshotStoreFor(dshHome, worktree)
+    const nestedDirs = scanNestedRepos(worktree)
+    // `scanNestedRepos` 按 `readdirSync` 的顺序追加（不排序），枚举顺序随文件系统而变
+    // （Linux 上就不是字典序），断言前先排序，别把文件系统行为钉进期望值。
+    expect([...nestedDirs].sort()).toEqual(['source/react-use', 'source/vueuse'])
+    const before = await captureSnapshot(store, turnRef('s16', 1, 'before'), 'before', { nestedDirs })
+    expect(before.ok).toBe(true)
+    if (!before.ok)
+      return
+
+    // 没有任何改动：读数必须是空的，私有 index 里也不能留下这两个 gitlink。
+    const live = await liveDiff(store, before.commit, { nestedDirs })
+    expect(live).toEqual({ ok: true, stats: { fileCount: 0, insertions: 0, deletions: 0 } })
+    const listed = await gitInSnapshot(store, ['ls-files', '--', 'source'])
+    expect(listed.ok).toBe(true)
+    if (listed.ok)
+      expect(listed.out.trim()).toBe('')
+
+    // 嵌套仓库内部提交前进（gitlink 指针变化）同样不算这一轮的改动：
+    // 它的内容本来就不在撤销范围内，提示条不该为它报数。
+    const advanced = join(worktree, 'source', 'react-use')
+    await writeFile(join(advanced, 'inner.txt'), 'v2\n', 'utf8')
+    await run('git', ['-C', advanced, ...identity, 'add', '--all'], { windowsHide: true })
+    await run('git', ['-C', advanced, ...identity, 'commit', '--quiet', '-m', 'advance'], { windowsHide: true })
+    expect(await liveDiff(store, before.commit, { nestedDirs })).toEqual({ ok: true, stats: { fileCount: 0, insertions: 0, deletions: 0 } })
+
+    // 真正的改动照常计入（排除不是把整棵树都静音了）。
+    await writeFile(join(worktree, 'a.txt'), 'one\ntwo\nthree\n', 'utf8')
+    expect(await liveDiff(store, before.commit, { nestedDirs })).toEqual({ ok: true, stats: { fileCount: 1, insertions: 1, deletions: 0 } })
+  })
 })
 
 describe('捕获限额（超限文件 / 嵌套仓库）', () => {

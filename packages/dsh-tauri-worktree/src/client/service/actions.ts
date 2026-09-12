@@ -4,15 +4,20 @@
  * 错误归一由 dsh-tauri 的 JSON 客户端统一承担，apis/ 直接返回解析后的类型；
  * 本文件只做去重（discardInFlight）、生命周期控制器与 store 的乐观 patch。
  */
-import type { WorktreeCheckout, WorktreeCreate, WorktreeDiscard, WorktreeStatus } from '../types'
+import type { WorktreeBindings, WorktreeCheckout, WorktreeCreate, WorktreeDiscard, WorktreeStatus } from '../types'
 import { createLifecycleController } from 'dsh-tauri/client'
-import { getStatus, postAttach, postCheckout, postCreate, postDiscard } from '../apis'
+import { getBindings, getStatus, postAttach, postCheckout, postCreate, postDiscard } from '../apis'
 import { DISCARD_MAX_POLLS, DISCARD_POLL_DELAY_MS } from '../constants'
 import { patchSession } from '../store'
 
 /** 从 unknown 错误里取可展示文本。 */
 function errMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** 批量查询工作树绑定（解析后的领域函数）——hydration 用一次请求替代逐会话 /status。 */
+export function fetchBindings(): Promise<WorktreeBindings> {
+  return getBindings()
 }
 
 /** 查询某会话的工作树状态（解析后的领域函数）。 */

@@ -87,25 +87,45 @@ checkout_worktree({ worktree_hash_dirname: '[hash]/[dirname]', branch_name: 'dsh
 - 客户端乐观标记 `deleting` 并轮询直至收敛；归档会话的清理在请求失败/任务失败时清除
   去重标记，等待下次快照重试。
 
-## 状态复核节流
+## 状态复核节流与请求模型
 
-`GET /status` 由客户端 hydration 驱动，触发源是**会话事件流**与**会话列表快照**——二者在
-流式输出期间每秒可通知上百次。逐次复核会把只读状态查询放大成持续请求风暴，因此：
+客户端的 hydration 请求分三级，目标是**请求量与会话数、事件数都解耦**：
 
-- **列表快照只补「从未复核过」的会话**：已解析的会话（含工作树模式）不在该路径复核，
-  否则会话列表每次变化都会为列表里每个未解析会话重新发一轮请求，请求量随会话数放大。
-- **工作树会话的收敛只由自身事件流驱动**（Agent 调用 `checkout_worktree` /
-  `discard_worktree` 必然产生该会话事件），并经 `SESSION_RECONCILE_MIN_INTERVAL_MS`
-  （默认 1200ms）节流：窗口内首次请求立即执行（不引入启动延迟），后续合并为窗口末尾的
-  一次拖尾执行（状态变化不丢失）；空闲（无事件、无快照变化）时完全不发请求。
-- **「宿主解析不出」（`isGit: null`）的重试必须有界**：这类会话可能是启动/新建竞态，也
-  可能是**永久**的（会话列表里长期存在宿主已不再持有的历史会话；实测某 profile 83 个
-  会话中有 77 个永远解析不出）。重试因此同时受三重约束——只在会话出现后的
-  `HYDRATION_RETRY_WINDOW_MS`（默认 10s）内、受全局
-  `HYDRATION_RETRY_BUDGET_PER_SECOND`（默认 8 次/秒，所有未解析会话共享）、以及单会话
-  次数上限；任一耗尽即永久退出复核，用户切回该会话时再重新校准一次。
-- 宿主侧 `/status` 对已绑定工作树的会话直接判定 `isGit: true`（工作树由 `git worktree add`
-  创建，必然在 Git 仓库内），不再为每次复核 fork 一个 `git rev-parse` 子进程。
+1. **批量发现**：列表快照/启动时一次 `GET /bindings`（经节流器 + 在途去重）拿到全部工作树
+   绑定与未收敛的删除任务。**绝不为列表里每个会话各打一次 `/status`** —— 那是首次加载
+   几百次请求的来源（实测某 profile 400 个会话）。只有会话集合真的变化（新增/移除）才重新
+   同步，纯状态变化（running/标题）不触发。
+2. **当前会话校准**：模式选择器只在当前会话渲染，只有它需要确定 `isGit`，因此切换会话时为
+   它打一次 `/status`（每个会话最多一次，结果缓存在 store）。工作树会话的 `isGit` 恒为
+   `true`（由绑定得出），无需请求。
+3. **回合结束复核**：工作树会话在 `running: true → false` 边沿复核一次，用于收敛 Agent 的
+   `checkout_worktree` / `discard_worktree` —— **一个回合一次请求**，而不是逐事件一次。
+   核心版本拿不到 `running` 位时退回「自身事件驱动 + 节流」，功能不退化。
+
+上述所有路径（含 discard 任务轮询收敛）最终都经同一个 per-session 节流器
+（`SESSION_RECONCILE_MIN_INTERVAL_MS`，默认 1200ms：窗口内首次立即执行，其余合并为窗口
+末尾的一次拖尾执行），因此不存在任何绕过节流窗口的请求入口。
+
+**「宿主解析不出」（`isGit: null`）的重试必须有界**：这类会话可能是启动/新建竞态，也可能是
+**永久**的（会话列表里长期存在宿主已不再持有的历史会话；实测某 profile 83 个会话中有 77 个
+永远解析不出）。重试因此同时受三重约束——只在会话出现后的 `HYDRATION_RETRY_WINDOW_MS`
+（默认 10s）内、受全局 `HYDRATION_RETRY_BUDGET_PER_SECOND`（默认 8 次/秒，所有未解析会话
+共享）、以及单会话次数上限；顺延同样计入次数，重试链必然终止（用例断言窗口过后
+`setTimeout` 残留为 0）。任一约束耗尽即永久退出复核，用户切回该会话时再重新校准一次。
+
+宿主侧 `/status` 对已绑定工作树的会话直接判定 `isGit: true`（工作树由 `git worktree add`
+创建，必然在 Git 仓库内），不再为每次复核 fork 一个 `git rev-parse` 子进程。
+
+## API
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/api/dsh-worktree/bindings` | 批量绑定视图：全部工作树绑定 + 未收敛删除任务（hydration 入口） |
+| GET | `/api/dsh-worktree/status` | 单个会话的状态（当前会话 `isGit` 校准、回合结束复核、job 进度） |
+| POST | `/api/dsh-worktree/create` | 为预分配的新会话创建工作树 |
+| POST | `/api/dsh-worktree/attach` | 把工作树会话归属到源项目 Workspace |
+| POST | `/api/dsh-worktree/checkout` | 检出本地并带回会话历史 |
+| POST | `/api/dsh-worktree/discard` | 放弃更改（异步 job） |
 
 ## 用户流程
 

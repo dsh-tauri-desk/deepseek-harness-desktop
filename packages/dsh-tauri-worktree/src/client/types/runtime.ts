@@ -105,8 +105,20 @@ export interface SessionListSnapshot {
   phase?: 'pending' | 'ready'
 }
 
+/**
+ * 被绑定的 Session 源（官方 `ClientSessions.binding(id).session`）。
+ *
+ * `getSnapshot` 是私有 Session 的 uSES 快照，含 `running` 回合位：hydration 只在
+ * 「回合结束」（running true → false 边沿）复核一次工作树状态，而不是逐事件复核。
+ * 该快照在核心版本间不保证存在，缺失时退回「自身事件驱动 + 节流」。
+ */
+export interface BoundSessionSource {
+  subscribe?: (listener: () => void) => () => void
+  getSnapshot?: () => { running?: boolean } | undefined
+}
+
 export interface WorktreeHydrationSessionsRuntime {
-  binding: (sessionId: string) => { session?: { subscribe?: (listener: () => void) => () => void } } | undefined
+  binding: (sessionId: string) => { session?: BoundSessionSource } | undefined
   list: {
     getSnapshot: () => SessionListSnapshot
     subscribe: (listener: () => void) => () => void

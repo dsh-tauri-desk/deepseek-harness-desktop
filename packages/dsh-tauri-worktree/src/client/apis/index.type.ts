@@ -1,6 +1,6 @@
-import type { WorktreeCheckout, WorktreeCreate, WorktreeDiscard, WorktreeStatus } from '../types'
+import type { WorktreeBindings, WorktreeCheckout, WorktreeCreate, WorktreeDiscard, WorktreeStatus } from '../types'
 
-export type { WorktreeCheckout, WorktreeCreate, WorktreeDiscard, WorktreeStatus }
+export type { WorktreeBindings, WorktreeCheckout, WorktreeCreate, WorktreeDiscard, WorktreeStatus }
 
 /** GET /status 查询参数。 */
 export interface GetStatusQuery {

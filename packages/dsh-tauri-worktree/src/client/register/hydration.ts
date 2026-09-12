@@ -4,15 +4,18 @@
  * Mode selector 只在 hero composer 出现，不能承担全局状态恢复；侧边栏图标、归组、
  * 状态条和弹窗均依赖本 observer 在普通历史会话打开前完成 hydration。
  *
- * 启动/新建会话存在竞态（客户端列表先于宿主会话就绪）：/status 失败或返回未知
- * （isGit: null）时按固定间隔重试，直到拿到确定答案，保证「刷新才有」的工作树 UI 自愈。
+ * 请求模型（三级，目标是「请求量与会话数、事件数都解耦」）：
+ *   1. **批量发现**：列表快照/启动时一次 `GET /bindings`（经节流器 + 在途去重）拿到全部
+ *      工作树绑定与未收敛删除任务。绝不为列表里每个会话各打一次 /status——那是首次加载
+ *      几百次请求的来源。
+ *   2. **当前会话校准**：模式选择器只在当前会话渲染，只有它需要确定 isGit，因此切换会话
+ *      时为它打一次 /status（每个会话最多一次，结果缓存在 store）。
+ *   3. **回合结束复核**：工作树会话在 `running: true → false` 边沿复核一次，用于收敛
+ *      Agent 的 checkout/discard（一个回合一次，而不是逐事件一次）。
+ * 另有两条自发起路径：discard 任务轮询收敛、以及「宿主未知（isGit: null）」的有界重试
+ * （窗口 + 全局配额 + 次数上限，见 scheduleRetry）。所有路径最终都经同一个节流器。
  *
- * 复核触发源有两个：会话事件流（流式输出期间每秒上百次通知）与会话列表快照。二者都经
- * `SESSION_RECONCILE_MIN_INTERVAL_MS` 的 per-session 节流器合并，避免把只读 /status
- * 放大成每秒上百次请求（宿主每次还要 fork 一个 git 子进程）；窗口内最后一次请求由拖尾
- * 执行兜底，状态变化不会丢失。
- *
- * create_worktree 自动交接只允许发生在「本次运行期间新出现」的工作树会话首次复核时，
+ * create_worktree 自动交接只允许发生在「本次运行期间新出现」的工作树会话首次被发现时，
  * 且每个来源只交接一次、有时效窗口——历史遗留工作树、用户事后回到源会话、点击新建
  * 会话等场景绝不抢焦点（否则「新建会话」会被误跳到工作树会话）。
  */
@@ -20,10 +23,13 @@ import type { ClientContext } from 'dsh-tauri/client'
 import type { SessionListSnapshot, WorkspaceListSnapshot, WorktreeHydrationSessionsRuntime } from '../types'
 import { createLifecycleController } from 'dsh-tauri/client'
 import { DISCARD_MAX_POLLS, DISCARD_POLL_DELAY_MS, HANDOFF_WINDOW_MS, HYDRATION_MAX_RETRIES, HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_DELAY_MS, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
-import { attachWorktreeSession, discardWorktree, fetchStatus } from '../service/actions'
+import { attachWorktreeSession, discardWorktree, fetchBindings, fetchStatus } from '../service/actions'
 import { openWorktreeSession } from '../service/handoff'
 import { patchSession, selectSessionState, worktreeStore } from '../store'
 import { createKeyedThrottle } from '../utils/throttle'
+
+/** 批量绑定同步在节流器里占用的保留 key（会话 id 不会是这种形状）。 */
+const BINDINGS_THROTTLE_KEY = '@bindings'
 
 export function registerWorktreeHydration(ctx: ClientContext): () => void {
   // HARDCODE: SessionRuntime.binding() is an internal DSH 0.1.1-rc.2 API.
@@ -36,7 +42,6 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     list: { getSnapshot: () => WorkspaceListSnapshot, subscribe: (listener: () => void) => () => void }
   }
   const controller = createLifecycleController()
-  const seen = new Set<string>()
   const switching = new Map<string, string>()
   const cleanedArchives = new Set<string>()
   const inFlight = new Set<string>()
@@ -44,6 +49,15 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   const retryAttempts = new Map<string, number>()
   // 重试预算耗尽（宿主始终解析不出该会话）：永久退出列表驱动的复核，避免会话数放大请求量。
   const exhausted = new Set<string>()
+  // 已拿到确定 isGit 的会话（`/status` 或批量绑定给出）。只有「当前会话」需要 isGit
+  // （模式选择器据此渲染），因此逐会话 /status 只服务于「当前会话尚未校准」这一个场景。
+  const gitResolved = new Set<string>()
+  // 上次观察到的 running 回合位：只在 true → false 边沿复核（一个回合一次）。
+  const lastRunning = new Map<string, boolean>()
+  // 批量绑定请求在途标记（避免同一时刻叠加多个 /bindings）。
+  let bindingsInFlight = false
+  // 已知的会话 id 集合：列表集合变化才重新同步绑定。
+  let knownIds = new Set<string>()
   // 未解析会话的重试窗口起点（与会话「出现时间」分开：后者还兼任自动交接的时效判定，
   // 不能被重试逻辑改写，否则历史会话会被误判成「本次运行新出现」而抢焦点）。
   const retryWindowStart = new Map<string, number>()
@@ -95,9 +109,8 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
             return
           }
           discardPolls.delete(sessionId)
-          // 删除任务刚结束：复核仍经节流器（同一会话的复核入口只有 requestEventReconcile
-          // / requestHydrateReconcile 两个，保证「每次 /status 都在节流窗口内」这一不变量）。
-          requestEventReconcile(sessionId)
+          // 删除任务刚结束：复核仍经节流器（保证「每次 /status 都在节流窗口内」这一不变量）。
+          requestSessionReconcile(sessionId)
         })
         .catch(() => scheduleDiscardPoll(sessionId, jobId, attempts + 1))
     }, DISCARD_POLL_DELAY_MS)
@@ -165,7 +178,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     controller.timeout(() => {
       if (controller.isDisposed())
         return
-      requestEventReconcile(sessionId)
+      requestGitCalibration(sessionId)
     }, HYDRATION_RETRY_DELAY_MS)
   }
 
@@ -189,43 +202,183 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   }
 
   /**
-   * 列表快照驱动的复核：只补「从未复核过」的会话。
+   * 批量绑定同步（列表快照 / 启动时触发）：**一次** `GET /bindings` 拿到全部工作树绑定与
+   * 未收敛的删除任务，替代「列表里每个会话各打一次 /status」。
    *
-   * 已解析的会话（含工作树模式）不在本路径复核——工作树会话由**自身事件流**驱动复核
-   * （见 requestEventReconcile），宿主解析不出的历史会话则被 exhausted 排除。
-   * 若这里放行「已复核但未解析」的会话，会话列表每次变化都会为列表里每个这样的会话
-   * 重新发起一轮请求，请求速率随会话数增长，就是本次 /status 风暴的根因。
+   * 这是初次加载请求量的关键：老实现首轮 hydrate 会为列表里每个会话各发一次 /status
+   * （实测某 profile 有 400 个会话 → 首次加载 400 次请求）；批量接口把它压到 1 次。
+   * 请求本身经节流器（保留 key）+ 在途去重：列表快照高频变化时也只在窗口边界合并执行一次。
    */
-  function requestHydrateReconcile(sessionId: string): void {
-    if (seen.has(sessionId) || exhausted.has(sessionId))
+  function requestBindingsSync(): void {
+    reconcileThrottle.request(BINDINGS_THROTTLE_KEY, () => {
+      if (bindingsInFlight || controller.isDisposed())
+        return
+      bindingsInFlight = true
+      void fetchBindings()
+        .then(applyBindings)
+        .catch(() => {
+          // 宿主路由尚未就绪/瞬时不可用：不写状态，等待下一次列表快照或当前会话校准。
+        })
+        .finally(() => {
+          bindingsInFlight = false
+        })
+    })
+  }
+
+  /** 把批量绑定视图落到各会话状态：绑定 → worktree；删除任务 → deleting/error；其余按本地处理。 */
+  function applyBindings(snapshot: import('../types').WorktreeBindings): void {
+    if (controller.isDisposed())
+      return
+    const bound = new Map(snapshot.bindings.map(binding => [binding.sessionId, binding]))
+    const jobs = new Map(snapshot.jobs.map(job => [job.sessionId, job]))
+
+    for (const sessionId of sessionsRuntime.list.getSnapshot().ids) {
+      const binding = bound.get(sessionId)
+      if (binding) {
+        patchSession(sessionId, {
+          mode: 'worktree',
+          phase: 'created',
+          // 工作树由 git worktree add 创建，必然在 Git 仓库内：无需再为该会话打 /status。
+          isGit: true,
+          worktreeKey: binding.worktreeKey,
+          worktreePath: binding.worktreePath,
+          projectPath: binding.projectPath,
+          sourceSessionId: binding.sourceSessionId,
+          log: binding.log,
+          error: '',
+        })
+        gitResolved.add(sessionId)
+        retryAttempts.delete(sessionId)
+        retryWindowStart.delete(sessionId)
+        maybeHandoffToWorktree(sessionId, binding.sourceSessionId)
+        continue
+      }
+
+      const job = jobs.get(sessionId)
+      if (job) {
+        patchSession(sessionId, {
+          mode: 'worktree',
+          phase: job.state === 'deleting' ? 'deleting' : 'error',
+          error: job.error ?? '',
+          worktreeKey: job.worktreeKey,
+          worktreePath: job.worktreePath ?? '',
+        })
+        if (job.state === 'deleting')
+          scheduleDiscardPoll(sessionId, job.jobId, 0)
+        continue
+      }
+
+      // 既无绑定也无删除任务：宿主侧就是本地会话。若本地状态还停在 worktree（Agent 已完成
+      // checkout/discard 而本端未收敛），这里一次性纠正，避免为了发现它而轮询。
+      if (selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree')
+        resetWorktreeSessionToLocal(sessionId)
+    }
+
+    // 批量结果到达后立刻校准当前会话的 isGit（它不在绑定里 = 本地会话）：
+    // 这样启动只需「1 次 /bindings + 至多 1 次 /status」，而不是每个会话一次。
+    const current = sessionsRuntime.list.getSnapshot().current
+    if (current)
+      requestGitCalibration(current)
+  }
+
+  /** 工作树模式 → 本地模式的状态复位（检出/放弃完成后同一份字段，避免两处漂移）。 */
+  function resetWorktreeSessionToLocal(sessionId: string, projectPath?: string): void {
+    patchSession(sessionId, {
+      mode: 'local',
+      phase: 'idle',
+      isGit: true,
+      loadingLabel: '',
+      log: [],
+      worktreeKey: '',
+      worktreePath: '',
+      ...(projectPath === undefined ? {} : { projectPath }),
+      sourceSessionId: '',
+      checkoutOpen: false,
+      abandonOpen: false,
+      error: '',
+    })
+  }
+
+  /**
+   * 当前会话的 isGit 校准：模式选择器只在当前会话渲染，因此只有它需要确定 isGit。
+   * 已由批量绑定确定（工作树会话）或已校准过的会话不再请求。
+   */
+  function requestGitCalibration(sessionId: string): void {
+    if (gitResolved.has(sessionId) || exhausted.has(sessionId))
       return
     reconcileThrottle.request(sessionId, () => {
-      if (!seen.has(sessionId) && !exhausted.has(sessionId))
+      if (!gitResolved.has(sessionId) && !exhausted.has(sessionId))
         reconcileSession(sessionId)
     })
   }
 
   /**
-   * 会话事件流驱动的复核：该会话自身事件流变化时才复核。
-   *   - 尚未解析成功：事件到达说明会话已在宿主侧活跃，值得补一次（限额见 scheduleRetry）；
-   *   - 处于工作树模式：Agent 可能刚调用 checkout_worktree / discard_worktree，需对齐回本地。
-   * 已放弃（exhausted）的会话不再因事件反复重试；用户主动打开时会重新校准。
+   * 无条件的节流复核入口（discard 任务收敛等自己发起的场景用）。
+   * 与 requestGitCalibration 的区别：不受 gitResolved 影响——工作树会话的 gitResolved
+   * 已经为 true，但删除完成后仍需要一次 /status 才能收敛回本地状态。
    */
-  function requestEventReconcile(sessionId: string): void {
-    if (!needsEventReconcile(sessionId))
+  function requestSessionReconcile(sessionId: string): void {
+    if (exhausted.has(sessionId))
       return
     reconcileThrottle.request(sessionId, () => {
-      if (needsEventReconcile(sessionId))
+      if (!exhausted.has(sessionId) && !controller.isDisposed())
         reconcileSession(sessionId)
     })
   }
 
-  function needsEventReconcile(sessionId: string): boolean {
+  /**
+   * 会话事件流驱动的复核 —— 只在**回合结束**边沿触发一次（`running: true → false`）。
+   *
+   * 为什么不再逐事件复核：流式输出期间事件每秒上百次，而工作树状态只可能被
+   * `create_worktree` / `checkout_worktree` / `discard_worktree` 改变，这些都发生在回合内。
+   * 回合结束时补一次 `/status` 即可收敛，一个回合一次请求（见 lastRunning 边沿判定）。
+   * 拿不到 running 位（核心版本差异）时退回事件驱动 + 节流，保证功能不退化。
+   */
+  function requestTurnEndReconcile(sessionId: string): void {
     if (exhausted.has(sessionId))
-      return false
-    if (!seen.has(sessionId))
-      return true
-    return selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree'
+      return
+    const worktreeMode = selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree'
+    // 本地会话的回合结束无需复核：Agent 的 create_worktree 会产生**新会话**（由批量绑定发现）。
+    if (!worktreeMode)
+      return
+    reconcileThrottle.request(sessionId, () => {
+      if (selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree')
+        reconcileSession(sessionId)
+    })
+  }
+
+  /**
+   * create_worktree 工具在 Host 先发布继承上下文的新根会话；它进入列表后，客户端把当前
+   * 源会话视觉交接到该工作树会话（不启动额外模型 turn）。
+   *
+   * 触发必须同时满足：首次发现该会话已绑定工作树、会话是本次运行期间新出现（基线外且未过
+   * 时效窗口）、当前仍在源会话、且该来源尚未交接过——否则会在「查看源会话」或「新建会话」
+   * 流程中误抢焦点（跳到工作树会话，导致无法新建会话）。
+   *
+   * 由 /status 与批量 /bindings 两条发现路径共用（两者都可能在会话首次出现时先到达）。
+   */
+  function maybeHandoffToWorktree(sessionId: string, sourceSessionId: string): void {
+    if (!sourceSessionId || worktreeReconciled.has(sessionId))
+      return
+    worktreeReconciled.add(sessionId)
+    const currentId = sessionsRuntime.list.getSnapshot().current
+    const appeared = appearedAt.get(sessionId)
+    const fresh = !baselineIds.has(sessionId)
+      && appeared !== undefined
+      && Date.now() - appeared <= HANDOFF_WINDOW_MS
+    if (!fresh || currentId !== sourceSessionId)
+      return
+    if (handedOff.has(sourceSessionId) || switching.has(sourceSessionId))
+      return
+    handedOff.add(sourceSessionId)
+    switching.set(sourceSessionId, sessionId)
+    void openWorktreeSession(sessionsRuntime, sourceSessionId, sessionId, {
+      isActive: () => !controller.isDisposed(),
+    })
+      .finally(() => {
+        if (switching.get(sourceSessionId) === sessionId)
+          switching.delete(sourceSessionId)
+      })
   }
 
   function reconcileSession(sessionId: string): void {
@@ -234,7 +387,6 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       return
     }
     const previous = selectSessionState(worktreeStore.getSnapshot(), sessionId)
-    seen.add(sessionId)
     inFlight.add(sessionId)
     void fetchStatus(sessionId)
       .then((status) => {
@@ -263,37 +415,14 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
             sourceSessionId: status.sourceSessionId ?? '',
             log: status.log ?? [],
           })
+          gitResolved.add(sessionId)
           retryAttempts.delete(sessionId)
           retryWindowStart.delete(sessionId)
           // 自愈旧 ledger 会话：Desktop workspace 补丁允许显式归属到源 Workspace。
+          // 只对「正在复核的这个会话」执行——逐会话补 attach 会在启动时放大成几十上百次 POST。
           if (status.sourceSessionId)
             void attachWorktreeSession(sessionId).catch(() => {})
-          // create_worktree 工具在 Host 先发布继承上下文的新根会话；它进入列表后，
-          // 客户端把当前源会话视觉交接到该工作树会话（不启动额外模型 turn）。
-          // 触发必须同时满足：首次复核成功、会话是本次运行期间新出现（基线外且未过
-          // 时效窗口）、当前仍在源会话、且该来源尚未交接过——否则会在「查看源会话」或
-          // 「新建会话」流程中误抢焦点（跳到工作树会话，导致无法新建会话）。
-          if (!worktreeReconciled.has(sessionId)) {
-            worktreeReconciled.add(sessionId)
-            const currentId = sessionsRuntime.list.getSnapshot().current
-            const sourceSessionId = status.sourceSessionId
-            const appeared = appearedAt.get(sessionId)
-            const fresh = !baselineIds.has(sessionId)
-              && appeared !== undefined
-              && Date.now() - appeared <= HANDOFF_WINDOW_MS
-            if (sourceSessionId && fresh && currentId === sourceSessionId
-              && !handedOff.has(sourceSessionId) && !switching.has(sourceSessionId)) {
-              handedOff.add(sourceSessionId)
-              switching.set(sourceSessionId, sessionId)
-              void openWorktreeSession(sessionsRuntime, sourceSessionId, sessionId, {
-                isActive: () => !controller.isDisposed(),
-              })
-                .finally(() => {
-                  if (switching.get(sourceSessionId) === sessionId)
-                    switching.delete(sourceSessionId)
-                })
-            }
-          }
+          maybeHandoffToWorktree(sessionId, status.sourceSessionId ?? '')
           return
         }
         // 未知状态（宿主尚无该会话的 cwd，新建/启动竞态）：不写入任何状态——保持
@@ -304,6 +433,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
           scheduleRetry(sessionId)
           return
         }
+        gitResolved.add(sessionId)
         retryAttempts.delete(sessionId)
         retryWindowStart.delete(sessionId)
         const isGit = status.isGit !== false
@@ -326,20 +456,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
           return
         }
         if (previous.mode === 'worktree') {
-          patchSession(sessionId, {
-            mode: 'local',
-            phase: 'idle',
-            isGit: true,
-            loadingLabel: '',
-            log: [],
-            worktreeKey: '',
-            worktreePath: '',
-            projectPath: status.projectPath ?? previous.projectPath,
-            sourceSessionId: '',
-            checkoutOpen: false,
-            abandonOpen: false,
-            error: '',
-          })
+          resetWorktreeSessionToLocal(sessionId, status.projectPath ?? previous.projectPath)
         }
         else {
           patchSession(sessionId, { isGit: true })
@@ -357,16 +474,31 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
         // 请求在途期间又到达复核请求：**仍然经节流器**再补一次。
         // 绝不能在这里直接递归 reconcileSession：那会绕过节流窗口，变成「上一次刚结束、
         // 下一次立刻发」的串行无缝拉取。经节流器后，窗口内会被合并成一次拖尾执行。
+        // 用无条件的 requestSessionReconcile（而非 requestGitCalibration）：在途的这次
+        // 复核可能已经改变了工作树状态，补跑不能被 gitResolved 挡掉。
         if (queued.delete(sessionId) && !controller.isDisposed())
-          requestEventReconcile(sessionId)
+          requestSessionReconcile(sessionId)
       })
   }
 
-  // 列表快照驱动的复核只补「从未复核过」的会话（详见 requestHydrateReconcile）：
-  // 快照在流式输出期间持续变化，若把已解析/已放弃的会话也放进来，请求量会随会话数放大。
+  // 列表快照驱动：只在**会话集合真的变化**（新增/移除会话）时才重新批量同步绑定。
+  // 会话列表在流式输出期间持续变化（running/标题等），但绑定只可能随「新建工作树会话 /
+  // 检出 / 放弃」改变；用集合签名挡掉纯状态变化，避免把 /bindings 变成 1 次/秒的轮询。
   const hydrate = (): void => {
-    const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
-    for (const sessionId of snapshot.ids) requestHydrateReconcile(sessionId)
+    const ids = sessionsRuntime.list.getSnapshot().ids
+    let changed = ids.length !== knownIds.size
+    if (!changed) {
+      for (const sessionId of ids) {
+        if (!knownIds.has(sessionId)) {
+          changed = true
+          break
+        }
+      }
+    }
+    if (!changed)
+      return
+    knownIds = new Set(ids)
+    requestBindingsSync()
   }
 
   const pollArchivedDiscard = (sessionId: string, jobId: string, attempts = 0): void => {
@@ -429,10 +561,25 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       if (!session?.subscribe)
         continue
       subscribedSessions.add(sessionId)
-      // 会话事件流在流式输出期间每秒可通知上百次：复核必须经节流器合并，
-      // 否则每个事件都会打一次 /status（宿主还会 fork 一个 git 子进程）。
-      // 工作树会话的 checkout/discard 收敛由这条「自身事件」路径负责（列表路径不再复核）。
-      controller.add(session.subscribe(() => requestEventReconcile(sessionId)))
+      // 会话事件流在流式输出期间每秒可通知上百次。这里**不**逐事件复核：只在
+      // 「回合结束」边沿（running true → false）复核一次工作树状态——工作树只可能被
+      // create/checkout/discard 工具改变，而它们都在回合内发生，回合结束补一次即可收敛。
+      // 拿不到 running 位（核心版本差异）时退回事件驱动 + 节流，功能不退化。
+      controller.add(session.subscribe(() => {
+        if (controller.isDisposed())
+          return
+        const running = session.getSnapshot?.()?.running
+        if (typeof running !== 'boolean') {
+          requestTurnEndReconcile(sessionId)
+          return
+        }
+        const previousRunning = lastRunning.get(sessionId)
+        lastRunning.set(sessionId, running)
+        // 首次观察只记录基线；只有 true → false 这一个边沿触发复核。
+        if (previousRunning !== true || running)
+          return
+        requestTurnEndReconcile(sessionId)
+      }))
     }
   }
   const unsubscribeSessions = sessionsRuntime.list.subscribe(() => {
@@ -440,15 +587,16 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     noteAppearances()
     hydrate()
     bindSessionEvents()
-    // 用户切换到某个会话时给它一次重新校准的机会：曾因重试预算耗尽被放弃的会话在此
-    // 重新进入复核（只在切换时重置，不会让当前会话变成永久轮询）。
+    // 当前会话切换：模式选择器只在当前会话渲染，只有它需要确定 isGit，因此只为它
+    // 打一次 /status（其余会话的「是否工作树」由批量 /bindings 回答，不需要逐会话请求）。
+    // 同时给曾因重试预算耗尽被放弃的会话一次重新校准的机会（只在切换时重置）。
     const current = (sessionsRuntime.list.getSnapshot() as SessionListSnapshot).current
     if (current && current !== lastCurrent) {
       lastCurrent = current
       exhausted.delete(current)
       retryAttempts.delete(current)
       retryWindowStart.set(current, Date.now())
-      requestEventReconcile(current)
+      requestGitCalibration(current)
     }
   })
   const unsubscribeWorkspaces = workspacesRuntime.list.subscribe(cleanupArchivedWorktrees)

@@ -39,6 +39,37 @@ export interface WorktreeUiState {
   bySession: Record<string, WorktreeSessionState>
 }
 
+/** 一条工作树绑定（批量 /bindings 的精简投影）。 */
+export interface WorktreeBindingSummary {
+  sessionId: string
+  sourceSessionId: string
+  hash: string
+  dirname: string
+  worktreeKey: string
+  worktreePath: string
+  projectPath: string
+  log: string[]
+}
+
+/** 尚未收敛的删除任务（批量 /bindings 附带；completed 不再返回）。 */
+export interface WorktreeDiscardJobSummary {
+  sessionId: string
+  jobId: string
+  state: 'deleting' | 'failed'
+  error?: string
+  worktreeKey: string
+  worktreePath?: string
+}
+
+/**
+ * GET /bindings 响应：一次拿到全部工作树绑定与未收敛的删除任务。
+ * 替代「hydrate 时列表里每个会话各打一次 /status」——后者请求量随会话数线性增长。
+ */
+export interface WorktreeBindings {
+  bindings: WorktreeBindingSummary[]
+  jobs: WorktreeDiscardJobSummary[]
+}
+
 export interface WorktreeDiscard {
   ok: boolean
   jobId?: string

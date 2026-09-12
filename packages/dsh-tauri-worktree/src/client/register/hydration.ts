@@ -19,7 +19,7 @@
 import type { ClientContext } from 'dsh-tauri/client'
 import type { SessionListSnapshot, WorkspaceListSnapshot, WorktreeHydrationSessionsRuntime } from '../types'
 import { createLifecycleController } from 'dsh-tauri/client'
-import { DISCARD_MAX_POLLS, DISCARD_POLL_DELAY_MS, HANDOFF_WINDOW_MS, HYDRATION_MAX_RETRIES, HYDRATION_RETRY_DELAY_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
+import { DISCARD_MAX_POLLS, DISCARD_POLL_DELAY_MS, HANDOFF_WINDOW_MS, HYDRATION_MAX_RETRIES, HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_DELAY_MS, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
 import { attachWorktreeSession, discardWorktree, fetchStatus } from '../service/actions'
 import { openWorktreeSession } from '../service/handoff'
 import { patchSession, selectSessionState, worktreeStore } from '../store'
@@ -42,6 +42,15 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   const inFlight = new Set<string>()
   const queued = new Set<string>()
   const retryAttempts = new Map<string, number>()
+  // 重试预算耗尽（宿主始终解析不出该会话）：永久退出列表驱动的复核，避免会话数放大请求量。
+  const exhausted = new Set<string>()
+  // 未解析会话的重试窗口起点（与会话「出现时间」分开：后者还兼任自动交接的时效判定，
+  // 不能被重试逻辑改写，否则历史会话会被误判成「本次运行新出现」而抢焦点）。
+  const retryWindowStart = new Map<string, number>()
+  // 未解析会话的全局重试配额（滑动秒窗）：让聚合速率与会话数解耦。
+  let retryWindowStartAt = 0
+  let retrySlotUsed = 0
+  let lastCurrent: string | undefined
   // 插件安装时的会话基线：基线内的工作树会话是历史遗留，绝不自动交接。
   let baselineCaptured = false
   const baselineIds = new Set<string>()
@@ -63,6 +72,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
   controller.add(() => reconcileThrottle.clear())
   controller.add(() => {
     retryAttempts.clear()
+    retryWindowStart.clear()
     discardPolls.clear()
   })
 
@@ -121,50 +131,95 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
    * 请求失败或宿主返回「未知」（isGit: null，会话尚未就绪）时按固定间隔重试。
    * 启动/新建会话存在竞态：客户端列表已出现会话而宿主尚无 header.cwd，一次失败后
    * 若只等列表事件，可能永远不再触发（列表已稳定），工作树 UI 就停留在「刷新才有」。
-   * 达到上限后停止定时重试，但失败/未知都会从 seen 移除，后续列表事件仍可再次拉起。
+   *
+   * 但「未知」也可能是**永久**的：会话列表里长期存在宿主已不再持有的历史会话（换过机器、
+   * 会话目录被清理等），它们永远不会解析成功。此时重试必须收敛，否则聚合速率随会话数
+   * 线性增长——这正是 /status 请求风暴的放大器。因此重试同时受三重约束：
+   *   1. 只在会话「出现后的短窗口」内重试（启动竞态只需数秒）；
+   *   2. 全局每秒配额（会话可能有几十上百个，不能让它们各自独立重试）；
+   *   3. 单会话次数上限。
+   * 任一约束耗尽即标记 exhausted，永久退出复核（用户打开该会话时再重新校准一次）。
    */
   function scheduleRetry(sessionId: string): void {
     if (controller.isDisposed())
       return
-    const attempts = retryAttempts.get(sessionId) ?? 0
-    if (attempts >= HYDRATION_MAX_RETRIES) {
+    if (!retryWindowStart.has(sessionId))
+      retryWindowStart.set(sessionId, Date.now())
+    if (!withinRetryWindow(sessionId) || (retryAttempts.get(sessionId) ?? 0) >= HYDRATION_MAX_RETRIES) {
       retryAttempts.delete(sessionId)
+      exhausted.add(sessionId)
       return
     }
-    retryAttempts.set(sessionId, attempts + 1)
+    // 全局配额不足时只顺延、不消耗次数：配额由所有未解析会话共享，聚合速率因此有上界。
+    if (!takeRetrySlot()) {
+      controller.timeout(() => scheduleRetry(sessionId), HYDRATION_RETRY_DELAY_MS)
+      return
+    }
+    retryAttempts.set(sessionId, (retryAttempts.get(sessionId) ?? 0) + 1)
     controller.timeout(() => {
       if (controller.isDisposed())
         return
-      requestReconcile(sessionId)
+      requestEventReconcile(sessionId)
     }, HYDRATION_RETRY_DELAY_MS)
   }
 
-  /**
-   * 该会话是否需要向宿主复核状态：
-   *   - 尚未解析成功（首次 hydrate，或失败/未知后从 seen 移除待重试）；
-   *   - 处于工作树模式：Agent 可能刚调用 checkout_worktree / discard_worktree，
-   *     需要在其事件流变化时对齐回本地状态。
-   * 其余会话（已解析的本地/待创建会话）不再发请求。
-   */
-  function needsReconcile(sessionId: string): boolean {
-    if (!seen.has(sessionId))
-      return true
-    return selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree'
+  /** 会话是否仍处于重试窗口内（窗口外说明不是启动竞态，继续重试无意义）。 */
+  function withinRetryWindow(sessionId: string): boolean {
+    const started = retryWindowStart.get(sessionId)
+    return started === undefined || Date.now() - started <= HYDRATION_RETRY_WINDOW_MS
+  }
+
+  /** 领取一次全局重试配额（滑动秒窗），配额耗尽返回 false。 */
+  function takeRetrySlot(): boolean {
+    const now = Date.now()
+    if (now - retryWindowStartAt >= 1000) {
+      retryWindowStartAt = now
+      retrySlotUsed = 0
+    }
+    if (retrySlotUsed >= HYDRATION_RETRY_BUDGET_PER_SECOND)
+      return false
+    retrySlotUsed += 1
+    return true
   }
 
   /**
-   * 复核请求的唯一入口：事件流/列表快照/重试都经节流器合并，每个会话每个窗口至多
-   * 一次 /status；窗口内的最后一次请求由拖尾执行兜底。
-   * 执行前重新判定 needsReconcile：排队期间会话可能已解析为本地模式（例如 Agent 刚
-   * 完成 checkout 并由别的路径收敛），此时拖尾请求直接跳过，不再多发一次。
+   * 列表快照驱动的复核：只补「从未复核过」的会话。
+   *
+   * 已解析的会话（含工作树模式）不在本路径复核——工作树会话由**自身事件流**驱动复核
+   * （见 requestEventReconcile），宿主解析不出的历史会话则被 exhausted 排除。
+   * 若这里放行「已复核但未解析」的会话，会话列表每次变化都会为列表里每个这样的会话
+   * 重新发起一轮请求，请求速率随会话数增长，就是本次 /status 风暴的根因。
    */
-  function requestReconcile(sessionId: string): void {
-    if (!needsReconcile(sessionId))
+  function requestHydrateReconcile(sessionId: string): void {
+    if (seen.has(sessionId) || exhausted.has(sessionId))
       return
     reconcileThrottle.request(sessionId, () => {
-      if (needsReconcile(sessionId))
+      if (!seen.has(sessionId) && !exhausted.has(sessionId))
         reconcileSession(sessionId)
     })
+  }
+
+  /**
+   * 会话事件流驱动的复核：该会话自身事件流变化时才复核。
+   *   - 尚未解析成功：事件到达说明会话已在宿主侧活跃，值得补一次（限额见 scheduleRetry）；
+   *   - 处于工作树模式：Agent 可能刚调用 checkout_worktree / discard_worktree，需对齐回本地。
+   * 已放弃（exhausted）的会话不再因事件反复重试；用户主动打开时会重新校准。
+   */
+  function requestEventReconcile(sessionId: string): void {
+    if (!needsEventReconcile(sessionId))
+      return
+    reconcileThrottle.request(sessionId, () => {
+      if (needsEventReconcile(sessionId))
+        reconcileSession(sessionId)
+    })
+  }
+
+  function needsEventReconcile(sessionId: string): boolean {
+    if (exhausted.has(sessionId))
+      return false
+    if (!seen.has(sessionId))
+      return true
+    return selectSessionState(worktreeStore.getSnapshot(), sessionId).mode === 'worktree'
   }
 
   function reconcileSession(sessionId: string): void {
@@ -203,6 +258,7 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
             log: status.log ?? [],
           })
           retryAttempts.delete(sessionId)
+          retryWindowStart.delete(sessionId)
           // 自愈旧 ledger 会话：Desktop workspace 补丁允许显式归属到源 Workspace。
           if (status.sourceSessionId)
             void attachWorktreeSession(sessionId).catch(() => {})
@@ -235,13 +291,15 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
           return
         }
         // 未知状态（宿主尚无该会话的 cwd，新建/启动竞态）：不写入任何状态——保持
-        // 默认 git 假设与用户已选模式（选择器可见），固定间隔重试直到拿到确定答案。
+        // 默认 git 假设与用户已选模式（选择器可见），交由 scheduleRetry 的有界重试链
+        // 收敛（窗口 + 全局配额 + 次数上限，见该函数注释）。绝不把 seen 清掉换「列表事件
+        // 重新拉起」——宿主永久解析不出的历史会话会让请求量随会话数放大。
         if (status.isGit === null) {
-          seen.delete(sessionId)
           scheduleRetry(sessionId)
           return
         }
         retryAttempts.delete(sessionId)
+        retryWindowStart.delete(sessionId)
         const isGit = status.isGit !== false
         // 非 git 目录：永远只能是本地模式，且隐藏工作树模式选择器（select 据此渲染）。
         if (!isGit) {
@@ -283,8 +341,9 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       })
       .catch(() => {
         // 状态接口失败（宿主路由尚未就绪、会话瞬时不可寻址等）不应影响普通会话；
-        // 从 seen 移除并退避重试，使启动/新建竞态在无刷新下自愈。
-        seen.delete(sessionId)
+        // 交给 scheduleRetry 的有界重试链自愈。
+        // 注意：不能从 seen 移除——seen 现在表示「已尝试过」，移除会让会话列表的每次
+        // 变化都为该会话重新发起请求，请求量随会话数放大（本次 /status 风暴的根因）。
         scheduleRetry(sessionId)
       })
       .finally(() => {
@@ -296,11 +355,11 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       })
   }
 
-  // 列表快照驱动的复核同样经节流器：快照在流式输出期间持续变化，逐次请求会放大成风暴；
-  // 首次 hydrate 仍由节流器的前沿立即执行保证（不引入启动延迟）。
+  // 列表快照驱动的复核只补「从未复核过」的会话（详见 requestHydrateReconcile）：
+  // 快照在流式输出期间持续变化，若把已解析/已放弃的会话也放进来，请求量会随会话数放大。
   const hydrate = (): void => {
     const snapshot = sessionsRuntime.list.getSnapshot() as SessionListSnapshot
-    for (const sessionId of snapshot.ids) requestReconcile(sessionId)
+    for (const sessionId of snapshot.ids) requestHydrateReconcile(sessionId)
   }
 
   const pollArchivedDiscard = (sessionId: string, jobId: string, attempts = 0): void => {
@@ -365,7 +424,8 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
       subscribedSessions.add(sessionId)
       // 会话事件流在流式输出期间每秒可通知上百次：复核必须经节流器合并，
       // 否则每个事件都会打一次 /status（宿主还会 fork 一个 git 子进程）。
-      controller.add(session.subscribe(() => requestReconcile(sessionId)))
+      // 工作树会话的 checkout/discard 收敛由这条「自身事件」路径负责（列表路径不再复核）。
+      controller.add(session.subscribe(() => requestEventReconcile(sessionId)))
     }
   }
   const unsubscribeSessions = sessionsRuntime.list.subscribe(() => {
@@ -373,12 +433,25 @@ export function registerWorktreeHydration(ctx: ClientContext): () => void {
     noteAppearances()
     hydrate()
     bindSessionEvents()
+    // 用户切换到某个会话时给它一次重新校准的机会：曾因重试预算耗尽被放弃的会话在此
+    // 重新进入复核（只在切换时重置，不会让当前会话变成永久轮询）。
+    const current = (sessionsRuntime.list.getSnapshot() as SessionListSnapshot).current
+    if (current && current !== lastCurrent) {
+      lastCurrent = current
+      exhausted.delete(current)
+      retryAttempts.delete(current)
+      retryWindowStart.set(current, Date.now())
+      requestEventReconcile(current)
+    }
   })
   const unsubscribeWorkspaces = workspacesRuntime.list.subscribe(cleanupArchivedWorktrees)
   controller.add(unsubscribeSessions)
   controller.add(unsubscribeWorkspaces)
   noteListBaseline()
   noteAppearances()
+  // 初始 current 由本次 hydrate 直接覆盖，不算「切换」——否则首个列表快照会为当前会话
+  // 多补一次复核（重复请求）。
+  lastCurrent = (sessionsRuntime.list.getSnapshot() as SessionListSnapshot).current
   hydrate()
   bindSessionEvents()
   cleanupArchivedWorktrees()

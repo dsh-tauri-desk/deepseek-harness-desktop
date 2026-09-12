@@ -10,7 +10,7 @@
  * fetch（HTTP 边界）与定时器收敛成可观察的替身。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
+import { HYDRATION_RETRY_BUDGET_PER_SECOND, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
 import { registerWorktreeHydration } from './hydration'
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn() }))
@@ -104,37 +104,49 @@ async function flushMicrotasks(times = 10): Promise<void> {
 
 interface Harness {
   dispose: () => void
-  emitSessionEvent: () => void
+  emitSessionEvent: (sessionId?: string) => void
   publishList: () => void
+  setCurrent: (sessionId: string) => void
   statusCalls: () => number
+  callsFor: (sessionId: string) => number
 }
 
-/** 装配一个「单会话 + 可手动触发事件流/列表快照」的 hydration 环境。 */
-function harness(status: Record<string, unknown>): Harness {
-  const sessionId = 'session-1'
-  const sessionListeners = new Set<() => void>()
-  const list = snapshotSource({ ids: [sessionId], current: sessionId })
+/**
+ * 装配「多会话 + 可手动触发事件流/列表快照」的 hydration 环境。
+ * @param statusFor 每个会话的 /status 返回体
+ * @param sessionIds 客户端列表里的会话（模拟真实 profile：大量宿主解析不出的历史会话）
+ */
+function harness(statusFor: (sessionId: string) => Record<string, unknown>, sessionIds: string[] = ['s-1']): Harness {
+  const listenersBySession = new Map<string, Set<() => void>>()
+  let current: string | undefined = sessionIds[0]
+  const list = snapshotSource<{ ids: string[], current?: string }>({ ids: [...sessionIds], current })
   const workspaces = snapshotSource({ archivedSessionIds: [] as string[] })
 
   mocks.fetch.mockImplementation(async (url: string) => {
-    if (url.includes('/status'))
-      return status
+    const matched = /sessionId=([^&]+)/.exec(String(url))
+    if (String(url).includes('/status') && matched)
+      return statusFor(decodeURIComponent(matched[1]))
     return { ok: true }
   })
+
+  const sessionSource = (id: string) => {
+    let listeners = listenersBySession.get(id)
+    if (!listeners) {
+      listeners = new Set()
+      listenersBySession.set(id, listeners)
+    }
+    return {
+      subscribe: (listener: () => void) => {
+        listeners!.add(listener)
+        return () => listeners!.delete(listener)
+      },
+    }
+  }
 
   const ctx = {
     sessions: {
       list,
-      binding: (id: string) => id === sessionId
-        ? {
-            session: {
-              subscribe: (listener: () => void) => {
-                sessionListeners.add(listener)
-                return () => sessionListeners.delete(listener)
-              },
-            },
-          }
-        : undefined,
+      binding: (id: string) => sessionIds.includes(id) ? { session: sessionSource(id) } : undefined,
       open: () => {},
       refresh: async () => {},
     },
@@ -142,14 +154,24 @@ function harness(status: Record<string, unknown>): Harness {
   }
 
   const dispose = registerWorktreeHydration(ctx as never)
+  const statusCalls = (): number => mocks.fetch.mock.calls.filter(call => String(call[0]).includes('/status')).length
   return {
     dispose,
-    emitSessionEvent: () => {
-      for (const listener of [...sessionListeners])
+    emitSessionEvent: (sessionId = sessionIds[0]) => {
+      for (const listener of [...(listenersBySession.get(sessionId) ?? [])])
         listener()
     },
-    publishList: () => list.publish({ ids: [sessionId], current: sessionId }),
-    statusCalls: () => mocks.fetch.mock.calls.filter(call => String(call[0]).includes('/status')).length,
+    publishList: () => list.publish({ ids: [...sessionIds], current }),
+    setCurrent: (sessionId: string) => {
+      current = sessionId
+      list.publish({ ids: [...sessionIds], current: sessionId })
+    },
+    statusCalls,
+    callsFor: (sessionId: string) => {
+      const urls = mocks.fetch.mock.calls.map(call => String(call[0]))
+      const pattern = new RegExp(`sessionId=${sessionId}(?:&|$)`)
+      return urls.filter(url => url.includes('/status') && pattern.test(url)).length
+    },
   }
 }
 
@@ -164,7 +186,7 @@ describe('registerWorktreeHydration /status 请求频率', () => {
   })
 
   it('工作树会话：事件风暴合并为窗口末尾的一次复核', async () => {
-    const h = harness({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true })
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }))
     // 首次 hydrate 立即发一次（前沿语义：不引入启动延迟）。
     expect(h.statusCalls()).toBe(1)
     await flushMicrotasks()
@@ -186,7 +208,7 @@ describe('registerWorktreeHydration /status 请求频率', () => {
   })
 
   it('工作树会话：持续 10 个窗口的高频触发只产生 1 次/窗口的请求', async () => {
-    const h = harness({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true })
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }))
     await flushMicrotasks()
     for (let window = 0; window < 10; window++) {
       for (let i = 0; i < 200; i++) {
@@ -201,7 +223,7 @@ describe('registerWorktreeHydration /status 请求频率', () => {
   })
 
   it('事件率提高 10 倍不改变请求数（节流与触发频率解耦）', async () => {
-    const h = harness({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true })
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }))
     await flushMicrotasks()
     // 每个窗口 2000 次事件 + 2000 次列表快照（≈2000 次/秒，是上一用例的 10 倍）。
     for (let window = 0; window < 10; window++) {
@@ -216,8 +238,62 @@ describe('registerWorktreeHydration /status 请求频率', () => {
     h.dispose()
   })
 
+  it('工作树会话：仅列表快照变化（无自身事件）不再复核', async () => {
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }))
+    await flushMicrotasks()
+    expect(h.statusCalls()).toBe(1)
+    // 10 个窗口 × 500 次列表快照：工作树会话的复核只由自身事件驱动，列表路径必须保持静默。
+    for (let window = 0; window < 10; window++) {
+      for (let i = 0; i < 500; i++) h.publishList()
+      await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
+    }
+    expect(h.statusCalls()).toBe(1)
+    h.dispose()
+  })
+
+  it('大量宿主解析不出的会话：请求收敛到窗口+全局配额内，之后归零', async () => {
+    // 复现线上形态：profile 里有几十个宿主已不再持有的历史会话，/status 永远返回
+    // isGit: null。修复前这类会话会让请求量随会话数放大（每次列表快照各打一次）。
+    const ids = Array.from({ length: 30 }, (_, i) => `s-${i}`)
+    const h = harness(() => ({ mode: 'local', projectPath: '', isGit: null }), ids)
+    await flushMicrotasks()
+    // 首轮：每个会话各一次（不引入启动延迟）。
+    expect(h.statusCalls()).toBe(30)
+
+    // 15s 内高频列表快照：重试受「10s 窗口 + 全局 8 次/秒配额」约束。
+    for (let i = 0; i < 15; i++) {
+      for (let n = 0; n < 200; n++) h.publishList()
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    const afterWindow = h.statusCalls()
+    expect(afterWindow).toBeLessThanOrEqual(30 + HYDRATION_RETRY_BUDGET_PER_SECOND * 10 + 10)
+
+    // 窗口过后彻底静默：再来 30s 高频快照，请求数不再增长。
+    for (let i = 0; i < 30; i++) {
+      for (let n = 0; n < 200; n++) h.publishList()
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    expect(h.statusCalls()).toBe(afterWindow)
+    h.dispose()
+  })
+
+  it('切回某会话时重新校准一次（放弃的会话可恢复）', async () => {
+    const h = harness(() => ({ mode: 'local', projectPath: '', isGit: null }), ['s-1', 's-2'])
+    await flushMicrotasks()
+    expect(h.callsFor('s-1')).toBe(1)
+    // 越过重试窗口，让两个会话都被放弃。
+    for (let i = 0; i < 15; i++) await vi.advanceTimersByTimeAsync(1000)
+    const settled = h.callsFor('s-1')
+
+    h.setCurrent('s-2')
+    h.setCurrent('s-1')
+    await flushMicrotasks()
+    expect(h.callsFor('s-1')).toBe(settled + 1)
+    h.dispose()
+  })
+
   it('本地会话：解析成功后事件/列表变化都不再触发请求', async () => {
-    const h = harness({ mode: 'local', projectPath: 'C:/repo', isGit: true })
+    const h = harness(() => ({ mode: 'local', projectPath: 'C:/repo', isGit: true }))
     expect(h.statusCalls()).toBe(1)
     await flushMicrotasks()
 
@@ -233,7 +309,7 @@ describe('registerWorktreeHydration /status 请求频率', () => {
   })
 
   it('dispose 取消待执行的拖尾复核', async () => {
-    const h = harness({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true })
+    const h = harness(() => ({ mode: 'worktree', worktreeKey: 'h/d', worktreePath: 'C:/wt', projectPath: 'C:/repo', log: [], isGit: true }))
     await flushMicrotasks()
     h.emitSessionEvent()
     // 拖尾任务已排定但尚未执行（请求数仍为首次的那一次）。

@@ -620,24 +620,56 @@ fn pnpm_probe_path(pnpm: &Path, node: Option<&Path>) -> Option<OsString> {
 /// node_modules）时返回 `None`，由调用方走"全新档案"逻辑。
 /// 供 [`ensure_pnpm`] 选版与 [`crate::service::plugin::verify`] 的修复选版共用。
 pub(crate) fn profile_store_major(app_handle: &AppHandle) -> Option<u32> {
-    let modules_yaml = profile_dir(app_handle)
-        .join("node_modules")
-        .join(".modules.yaml");
-    let content = std::fs::read_to_string(modules_yaml).ok()?;
-    parse_store_major_from_modules_yaml(&content)
+    parse_store_major_from_modules_yaml(&read_modules_yaml(app_handle)?)
+}
+
+/// 档案 `node_modules/.modules.yaml` 记录的 pnpm store 目录（原样，含 `v10` 版本段）。
+///
+/// 与 [`profile_store_major`] 同源，但给出整条路径：pnpm 只在「解析出的 store」与
+/// `node_modules/.modules.yaml` 记录的一致时才继续安装，否则 `ERR_PNPM_UNEXPECTED_STORE`。
+/// 用户的 pnpm 用户级/全局配置（或 `npm_config_store_dir` 环境变量）可能把 store 指到
+/// 别处，而档案早已按自己那份 store 装好——此时任何 `dsh plugin` 安装/升级都会失败，
+/// 与插件本身无关。把这个值下传给子进程（见 [`super::env::build_plugin_envs`]）即可
+/// 保证子进程用的必然是与档案一致的那份 store。
+///
+/// pnpm 对末尾的版本段是幂等的（传 `...\store\v10` 与传 `...\store` 解析结果相同），
+/// 因此这里原样返回、不做剥离。
+pub(crate) fn profile_store_dir(app_handle: &AppHandle) -> Option<String> {
+    parse_store_dir_from_modules_yaml(&read_modules_yaml(app_handle)?)
+}
+
+/// 读取档案的 `node_modules/.modules.yaml`；文件缺失（全新档案）返回 `None`。
+fn read_modules_yaml(app_handle: &AppHandle) -> Option<String> {
+    std::fs::read_to_string(
+        profile_dir(app_handle)
+            .join("node_modules")
+            .join(".modules.yaml"),
+    )
+    .ok()
+}
+
+/// 从 `.modules.yaml` 文本解析 `storeDir`（纯函数，便于单测）。
+///
+/// 兼容 pnpm 的两种写法：未加引号的裸路径（Windows 反斜杠、Unix 正斜杠），以及
+/// 含特殊字符时 YAML 双引号包裹 + `\\` 转义的形式。
+fn parse_store_dir_from_modules_yaml(content: &str) -> Option<String> {
+    let raw = content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("storeDir:").map(str::trim))?
+        .trim_matches(['"', '\''])
+        .trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // YAML 双引号标量里的 `\\` 表示单个反斜杠；裸路径不会出现连续反斜杠，替换是安全的。
+    Some(raw.replace("\\\\", "\\"))
 }
 
 /// 从 `.modules.yaml` 文本解析 store 主版本（纯函数，便于单测）。
 fn parse_store_major_from_modules_yaml(content: &str) -> Option<u32> {
-    let store_dir = content
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("storeDir:").map(str::trim))?;
     // storeDir 形如 `C:\Users\xx\AppData\Local\pnpm\store\v10`，取末段 `v10` 的数字
-    let major = store_dir
-        .trim_matches(['"', '\''])
-        .rsplit(['\\', '/'])
-        .next()?
-        .strip_prefix('v')?;
+    let store_dir = parse_store_dir_from_modules_yaml(content)?;
+    let major = store_dir.rsplit(['\\', '/']).next()?.strip_prefix('v')?;
     major.parse().ok()
 }
 
@@ -921,8 +953,44 @@ virtualStoreDir: node_modules/.pnpm
             None
         );
         assert_eq!(parse_store_major_from_modules_yaml(""), None);
+        // storeDir 存在但没有版本段（理论上不该出现）→ 无法判定主版本
         assert_eq!(
             parse_store_major_from_modules_yaml("storeDir: C:\\Users\\x\\pnpm\\store\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn store_dir_parsed_for_handoff_to_pnpm() {
+        // 下传给 `npm_config_store_dir` 的必须是完整路径（含 v10 版本段，pnpm 对该段幂等）
+        let content = "\
+hoistPattern:
+  - '*'
+storeDir: C:\\Users\\test\\AppData\\Local\\pnpm\\store\\v10
+virtualStoreDir: node_modules/.pnpm
+";
+        assert_eq!(
+            parse_store_dir_from_modules_yaml(content).as_deref(),
+            Some("C:\\Users\\test\\AppData\\Local\\pnpm\\store\\v10")
+        );
+        assert_eq!(
+            parse_store_dir_from_modules_yaml("storeDir: /home/test/.local/share/pnpm/store/v11\n")
+                .as_deref(),
+            Some("/home/test/.local/share/pnpm/store/v11")
+        );
+        // YAML 双引号形式：去引号并把 `\\` 还原成单个反斜杠
+        assert_eq!(
+            parse_store_dir_from_modules_yaml("storeDir: \"C:\\\\pnpm store\\\\v3\"\n").as_deref(),
+            Some("C:\\pnpm store\\v3")
+        );
+        assert_eq!(
+            parse_store_dir_from_modules_yaml("storeDir: 'D:\\.pnpm-store\\v10'\n").as_deref(),
+            Some("D:\\.pnpm-store\\v10")
+        );
+        // 缺失 / 空值 → None（全新档案不注入环境变量）
+        assert_eq!(parse_store_dir_from_modules_yaml("storeDir:\n"), None);
+        assert_eq!(
+            parse_store_dir_from_modules_yaml("lockfileVersion: '9.0'\n"),
             None
         );
     }

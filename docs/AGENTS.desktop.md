@@ -238,6 +238,7 @@ export function FooComponent(props: FooProps) {
 - AppData layout（核心共用）：`runtime/node.exe`、`dependencies/dsh/`、`dependencies/pnpm/`、`.store.dat` / `.store.dev.dat`（后者为 debug）；服务日志 `logs/dsh-web.log`（debug 为 `logs/dsh-web.dev.log`）；`$DSH_HOME` 在用户主目录（release `~/.dsh`，debug `~/.dsh.dev`）。
 - Service args: `node bin.js --profile web --host 127.0.0.1 --port <setting.port>`; `cli::ensure` runs after install.
 - 原生模块 ABI（issue #441）：预打包核心的原生模块（`fs-ext` 等 node-gyp 包）在 pkg 构建期编译，ABI 只与构建期 Node 大版本一致，而本地 Node 只按 semver 挑选。`service/core/runtime.rs::prepare_active_runtime` 在 spawn 前用 `NATIVE_PROBE_SCRIPT` 探测（require 核心里的原生包，`NODE_MODULE_VERSION` 不匹配即 ABI 失败）：先补 sharp/koffi 平台包，再改用与核心对齐的捆绑运行时（`config::set_prefer_bundled_node_runtime`，`get_node_binary_path`/`get_active_node_version`/`Nodejs::check_installed` 均受其影响，`launch.rs` 会在 prepare 后重新解析 node 路径），再 `npm rebuild`（用所选运行时自带的 npm），最后返回 `CORE_NATIVE_ABI_MISMATCH:` 诊断。CLI shim 的 node 选择仍是 semver-only。
+- pnpm store 绑定（`ERR_PNPM_UNEXPECTED_STORE`）：pnpm 只在「自己解析出的 store」与档案 `node_modules/.modules.yaml` 里的 `storeDir` 一致时才继续安装，否则直接退出 —— 用户的 pnpm 用户级/全局配置（`store-dir`）或 `npm_config_store_dir` 环境变量把 store 指到别处（典型：用户在其他分区的工程里跑过 pnpm，pnpm 把那份 store 写进全局配置）时，档案安装会**在自身完全健康的情况下**失败，报错却是「插件安装失败」。`service/plugin/install/env.rs::build_plugin_envs` 因此把档案记录的 `storeDir` 显式注入子进程的 `npm_config_store_dir`（环境变量优先级高于 `.npmrc` 与全局配置，`Command::envs` 又会覆盖继承值），`ensure_pnpm` 的 store **主版本**匹配（`profile_store_major`）只解决 pnpm 10/11 布局不兼容，解决不了「同主版本、不同路径」。`storeDir` 解析见 `install/pnpm.rs::parse_store_dir_from_modules_yaml`。
 
 ## Summary
 

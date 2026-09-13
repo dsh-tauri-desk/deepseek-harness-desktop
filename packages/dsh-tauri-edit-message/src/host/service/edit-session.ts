@@ -60,7 +60,7 @@ export function userText(message: Record<string, unknown>): string {
 
 /** 边界解析结果（与 DSH-EasyRewrite 的 /bubble/recall 语义一致）。 */
 export type BoundaryResult
-  = | { ok: true, boundary: number, turn: number, eventSeq: number, before: string }
+  = | { ok: true, boundary: number, turn: number, eventSeq: number, before: string, reset: boolean }
     | { ok: false, code: 'session-not-found' | 'invalid-target' | 'turn-open' | 'no-boundary', message: string }
 
 /**
@@ -89,9 +89,13 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
     return { ok: false, code: 'invalid-target', message: '目标事件不是该回合的用户消息。' }
 
   const boundary = turn.startSeq - 1
-  if (boundary < 0)
-    return { ok: false, code: 'no-boundary', message: '这是首条消息，之前没有可截断的闭合回合边界。' }
-  return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data) }
+  if (boundary < 0) {
+    // 首轮之前只有系统提示、没有任何 turn/end 可锚：fork 的最小切点是「一轮的末尾」，
+    // 用它必然把整轮复制过去（就是「旧提问又跑一遍」）。上游 DSH-EasyRewrite 对这种情况
+    // 走 reset：归档原会话 + 在同一工作区开一个全新会话，只把改后的提问发出去。
+    return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true }
+  }
+  return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false }
 }
 
 /** 读一条会话并解析边界。 */

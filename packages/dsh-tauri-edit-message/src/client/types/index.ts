@@ -16,10 +16,13 @@ export interface EditRequest {
 /** 边界解析成功：该消息之前最后一个闭合回合的 turn/end seq。 */
 export interface BoundaryOk {
   ok: true
+  /** fork 的锚点 seq；eset: true 时为 -1（首轮：没有可锚的闭合回合）。 */
   boundary: number
   turn: number
   eventSeq: number
   before: string
+  /** 首轮编辑：不用 fork，改为「归档原会话 + 同工作区新建空白会话」。 */
+  reset: boolean
 }
 
 /** 边界解析失败（首条消息 / 回合未闭合 / 找不到目标）。 */
@@ -54,6 +57,10 @@ export interface SessionsService {
   open: (sessionId: string) => void
   /** 官方截断边界器：child 进入会话列表并可打开。 */
   fork?: (options: { sessionId: string, atSeq: number }) => Promise<string>
+  /** 新建会话（首轮 reset 路径用；workspaceId 与 cwd 互斥）。 */
+  create?: (opts?: { workspaceId?: string, cwd?: string }) => Promise<string>
+  /** 该会话所属的侧栏工作区 id（找不到返回 undefined）。 */
+  workspaceOf?: (sessionId: string) => string | undefined
   binding?: (sessionId: string) => SessionBinding | undefined
 }
 

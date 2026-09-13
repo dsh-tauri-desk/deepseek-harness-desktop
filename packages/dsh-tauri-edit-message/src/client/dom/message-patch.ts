@@ -37,7 +37,7 @@ import {
   USER_TURN_ATTR,
 } from '../constants'
 import { createPencilIcon } from './icons'
-import { currentSessionId, getSessions, openWhenListed } from './runtime'
+import { createFreshSession, currentSessionId, getSessions, openWhenListed, workspaceOf } from './runtime'
 
 /** 行状态缓存（WeakMap，行被移除即回收）。 */
 const rowStates = new WeakMap<Element, HostRowState>()
@@ -243,15 +243,28 @@ async function submitEdit(
     if (!plan.ok)
       throw new Error(plan.message || plan.code)
     const sessions = getSessions()
-    if (!sessions || typeof sessions.fork !== 'function')
-      throw new Error('当前内核没有提供会话 fork 能力，无法撤回重建。')
-    // 官方 fork 即截断边界器：child 进入会话列表、可打开、继承前缀历史。
-    const childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
-    if (typeof childId !== 'string' || childId === '')
-      throw new Error('会话 fork 没有返回新的会话 id。')
-    // 新会话建成后才动原会话：fork 已经拿到前缀历史，删除不会丢内容。
-    await retireOriginal(sessionId)
-    // 先把改后的文本发进新会话（此时它已存在，只是可能还没出现在侧栏快照里）。
+    if (!sessions)
+      throw new Error('当前内核没有提供会话服务，无法重建会话。')
+    let childId: string
+    if (plan.reset) {
+      // 必须在归档/删除之前定位工作区：归档会把该会话从工作区名单里摘掉。
+      const workspaceId = workspaceOf(sessions, sessionId)
+      // 首轮：之前没有任何闭合回合可锚，fork 的最小切点必然把整轮复制过去。
+      // 与 DSH-EasyRewrite 的 reset 分支一致——归档原会话 + 同工作区开空白新会话。
+      await retireOriginal(sessionId)
+      childId = await createFreshSession(sessions, workspaceId)
+    }
+    else {
+      if (typeof sessions.fork !== 'function')
+        throw new Error('当前内核没有提供会话 fork 能力，无法撤回重建。')
+      // 官方 fork 即截断边界器：child 进入会话列表、可打开、继承前缀历史。
+      childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
+      if (typeof childId !== 'string' || childId === '')
+        throw new Error('会话 fork 没有返回新的会话 id。')
+      // 新会话建成后才动原会话：fork 已经拿到前缀历史，删除不会丢内容。
+      await retireOriginal(sessionId)
+    }
+    // 把改后的文本发进新会话（此时它已存在，只是可能还没出现在侧栏快照里）。
     await sendPrompt(childId, text)
     endEdit(row)
     openWhenListed(childId)

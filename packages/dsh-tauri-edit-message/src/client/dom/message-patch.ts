@@ -266,6 +266,10 @@ async function submitEdit(
       childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
       if (typeof childId !== 'string' || childId === '')
         throw new Error('会话 fork 没有返回新的会话 id。')
+      // 核对 fork 是否真的按 atSeq 截断：把子会话的回合表记下来。
+      // 若这里出现 turn > plan.turn，说明运行中的内核忽略了 atSeq（或用了兜底 findLast），
+      // 那就是「编辑后旧消息还在、看起来又跑一遍」的直接证据。
+      logEvent('submit', 'fork-verify', await describeSession(sessions, childId, plan.turn))
       // 新会话建成后才动原会话：fork 已经拿到前缀历史，删除不会丢内容。
       await retireOriginal(sessionId)
     }
@@ -352,8 +356,59 @@ async function sendPrompt(sessionId: string, text: string): Promise<void> {
   await session.prompt([{ type: 'text', text }], 'queue')
 }
 
-/** 官方 composer 的动作面（`setDraft` / `submit` / `addAttachments`）。 */
-interface ComposerActions {
+/**
+ * 摘要一条会话的回合表（诊断用：核对 fork 是否真按 atSeq 截断）。
+ *
+ * 直接读会话日志（`snapshotEvents()`），列出每个 `turn/start` 的 seq 与紧随其后的
+ * 用户文本，因此「子会话里是否残留被编辑掉的那一轮」一眼可见。
+ */
+async function describeSession(
+  sessions: NonNullable<ReturnType<typeof getSessions>>,
+  sessionId: string,
+  targetTurn: number,
+): Promise<Record<string, unknown>> {
+  try {
+    const binding = typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
+    const session = (binding as { session?: unknown } | undefined)?.session as {
+      snapshotEvents?: () => Array<{ seq: number, type: string, data?: Record<string, unknown> }>
+    } | undefined
+    const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
+    if (!Array.isArray(events))
+      return { sessionId, unavailable: true }
+    const turns: Array<{ turn: unknown, startSeq: number, userSeq: number | null, text: string }> = []
+    let current: { turn: unknown, startSeq: number, userSeq: number | null, text: string } | undefined
+    for (const event of events) {
+      if (event.type === 'turn/start') {
+        if (current)
+          turns.push(current)
+        current = { turn: event.data?.turn, startSeq: event.seq, userSeq: null, text: '' }
+        continue
+      }
+      if (current && event.type === 'user/message' && current.userSeq === null) {
+        const blocks = event.data?.content
+        if (Array.isArray(blocks)) {
+          current.userSeq = event.seq
+          current.text = blocks.map(block => String((block as { text?: string }).text ?? '')).join('').slice(0, 24)
+        }
+      }
+    }
+    if (current)
+      turns.push(current)
+    return {
+      sessionId,
+      targetTurn,
+      eventCount: events.length,
+      turns,
+      // fork 若忽略了 atSeq，子会话里就会留下 targetTurn 及之后的轮次。
+      keptBeyondTarget: turns.filter(t => typeof t.turn === 'number' && (t.turn as number) >= targetTurn).map(t => t.turn),
+    }
+  }
+  catch (e) {
+    return { sessionId, error: String((e as Error)?.message || e) }
+  }
+}
+
+/** 官方 composer 的动作面（`setDraft` / `submit` / `addAttachments`）。 */interface ComposerActions {
   setDraft?: (text: string) => void
   submit?: () => void
 }

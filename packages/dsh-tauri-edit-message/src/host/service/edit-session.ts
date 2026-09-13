@@ -146,7 +146,31 @@ export async function planEdit(ctx: HostContext, sessionId: string, turnNumber: 
       return { ok: false, code: 'invalid-target', message: 'eventSeq 不属于任何已闭合回合。' }
     turnNumber = owner.turn
   }
-  return resolveBoundary(record, turnNumber, eventSeq)
+  const result = resolveBoundary(record, turnNumber, eventSeq)
+  // 内核 fork 读的是 `sessionQuery.observeSession`（持久化视角）。核对同一视角：
+  // 若它返回的 events 里找不到 anchor 之后第一个 `turn/end`，fork 会兜底到
+  // findLast（= 整段历史都被复制）。这条日志是判定 fork 是否真按 atSeq 截断的直接证据。
+  if (result.ok && !result.reset) {
+    try {
+      const observed = await ctx.sessionQuery.observeSession(sessionId) as { events?: any[] } | undefined
+      const obsEvents = observed?.events ?? []
+      const obsBoundary = obsEvents.find(event => event.type === 'turn/end' && event.seq >= result.boundary)
+      void logEvent('boundary', 'observe-check', {
+        sessionId,
+        anchor: result.boundary,
+        liveEvents: record.events.length,
+        observedEvents: obsEvents.length,
+        observedFirstSeq: obsEvents[0]?.seq ?? null,
+        observedLastSeq: obsEvents.at(-1)?.seq ?? null,
+        observedHasAnchorTurnEnd: obsBoundary !== undefined,
+        observedBoundarySeq: obsBoundary?.seq ?? null,
+      })
+    }
+    catch (e) {
+      void logEvent('boundary', 'observe-check-failed', { sessionId, error: String((e as Error)?.message || e) })
+    }
+  }
+  return result
 }
 
 /* ------------------------------------------------------------- 树投影 -- */

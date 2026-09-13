@@ -165,6 +165,7 @@ function beginEdit(row: Element): void {
   const container = document.createElement('div')
   container.setAttribute(INJECTED_ATTR, '')
   container.setAttribute('data-mtx-mark', MARK_EDITOR)
+  container.style.width = '100%'
   stack.appendChild(container)
   state.root = createRoot(container)
   state.root.render(

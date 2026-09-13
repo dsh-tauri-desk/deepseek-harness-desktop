@@ -29,7 +29,6 @@ export default c([
     }),
     c('[class$="entryTitle"]', {
       fontSize: '14px',
-
     }),
     c('[class$="entryDescription"]', {
       fontSize: '12px',

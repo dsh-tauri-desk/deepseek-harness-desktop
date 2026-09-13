@@ -19,16 +19,6 @@ export function sessionEvents(session: unknown): readonly Record<string, unknown
   return events as readonly Record<string, unknown>[]
 }
 
-/** 不物化现代活会话日志的前提下读追加长度。 */
-export function sessionEventCount(session: unknown): number {
-  const candidate = session as { snapshotEvents?: unknown, seq?: unknown } | undefined
-  return typeof candidate?.snapshotEvents === 'function'
-    && Number.isSafeInteger(candidate.seq)
-    && (candidate.seq as number) >= 0
-    ? candidate.seq as number
-    : sessionEvents(session).length
-}
-
 /** 为一次操作里的全部规划 / 祖先 / seed 读取取同一个稳定快照。 */
 export function sessionRecord(session: unknown): SessionRecordLike {
   const events = sessionEvents(session)
@@ -49,21 +39,6 @@ export function sessionRecord(session: unknown): SessionRecordLike {
     events: events as unknown as SessionRecordLike['events'],
     inheritedEventCount: rawInherited as number,
   }
-}
-
-/** DSH 把继承边界从 header.seedLength 搬到了创建选项上。 */
-export function branchSeedOptions(source: SessionRecordLike, inheritedEventCount: number): {
-  inheritedEventCount?: number
-  meta: Record<string, unknown>
-} {
-  return typeof source.header.isSeeded === 'boolean'
-    ? { inheritedEventCount, meta: { isSeeded: true } }
-    : { meta: { seedLength: inheritedEventCount } }
-}
-
-/** 会话身份（活会话 / 快照两种形态都认）。 */
-export function sessionRecordId(session: any): string | undefined {
-  return session?.header?.id ?? session?.id
 }
 
 /** 从宿主 ctx 读一条会话的稳定记录（live 优先，其次 sessionQuery）。 */

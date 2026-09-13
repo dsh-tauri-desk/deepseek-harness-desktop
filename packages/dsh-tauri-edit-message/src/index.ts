@@ -3,9 +3,4 @@
  */
 
 export { apply, inject } from './host/apply'
-export {
-  EDIT_MESSAGE_PLUGIN_NAME,
-  MESSAGE_TREE_EVENT,
-  MESSAGE_TREE_PATH,
-  MESSAGE_TREE_SCHEMA,
-} from './shared/constants'
+export { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_PATH } from './shared/constants'

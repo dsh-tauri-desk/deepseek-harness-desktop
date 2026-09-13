@@ -25,7 +25,7 @@ import {
 } from 'dsh-tauri'
 import { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_PATH } from '../../shared/constants'
 import { logEvent } from '../service/debug-log'
-import { applyEdit, planEdit, readTree } from '../service/edit-session'
+import { applyEdit } from '../service/edit-session'
 
 /** 只允许本机（回环）地址发起变更。 */
 function isLoopback(request: IncomingMessage): boolean {
@@ -73,11 +73,6 @@ export function buildRoutes(ctx: HostContext): any[] {
       return
     }
     try {
-      if (method === 'GET') {
-        const url = new URL(request.url ?? MESSAGE_TREE_PATH, 'http://message-tree.local')
-        respond(response, 200, await readTree(ctx, sessionIdOf(url.searchParams.get('sessionId'))))
-        return
-      }
       if (!isLoopback(request))
         throw new HttpError('变更操作仅限本机（127.0.0.1）调用', 403)
       const sameOrigin = isSameOriginJsonRequest(request)
@@ -96,12 +91,12 @@ export function buildRoutes(ctx: HostContext): any[] {
         throw new TypeError('必须提供 turn 或 eventSeq 来定位被编辑的消息。')
       const eventSeq = hasEventSeq ? integerOf(body.eventSeq, 'eventSeq') : undefined
       const turn = hasTurn ? integerOf(body.turn, 'turn') : undefined
-      // 默认只**解析边界**（与 DSH-EasyRewrite 的 /bubble/recall 一致）：子会话由客户端用
-      // 官方 `sessions.fork({ atSeq })` 建，宿主不碰 Agent。
-      // `apply: true` 是明确的回落请求（官方 fork 不可用时），才由宿主用 agents.create 建。
-      const result = body.apply === true
-        ? await applyEdit(ctx, sessionId, turn, eventSeq)
-        : await planEdit(ctx, sessionId, turn, eventSeq)
+      // 单一执行路径：宿主用内核原语建好截断子会话，并把继承来的悬挂 inbox 入队项排空。
+      //
+      // 不再走客户端 `sessions.fork({ atSeq })`：它的切点落在目标轮 `turn/start`，只带走该轮
+      // 提问的**入队**事件、带不走其后的排空事件，子会话 inbox 由日志重建时会把被丢弃的提问
+      // 复活成自己的一轮（官方 fork 与 DSH-EasyRewrite 在 0.1.5-rc.2 上同样复现）。
+      const result = await applyEdit(ctx, sessionId, turn, eventSeq)
       respond(response, result.ok ? 200 : result.code === 'turn-open' || result.code === 'no-boundary' ? 409 : 404, result)
     }
     catch (error) {

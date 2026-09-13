@@ -242,35 +242,22 @@ async function submitEdit(
   error.hidden = true
   logEvent('submit', 'begin', { sessionId, turn, textLength: text.length, text: text.slice(0, 40) })
   try {
-    const plan = await postEdit({ sessionId, turn, text })
-    logEvent('submit', 'plan', plan)
-    if (!plan.ok)
-      throw new Error(plan.message || plan.code)
-    // 建子会话：**必须走宿主路径**（`apply: true`）。
+    // 一次请求完成：宿主解析边界、建好截断子会话、并把继承来的悬挂 inbox 入队项排空。
     //
-    // 官方 `sessions.fork({ atSeq })` 的切点落在目标轮的 `turn/start`，而提问的内核形态是
-    // 「先 `agent/inbox/spliced` 入队 → `turn/start` → 之后才排空」。切在 `turn/start` 时，
-    // 目标轮的**入队事件在 seed 里、排空事件不在**，子会话的 inbox 由日志重建
-    // （dsh-agent-loop 的 inboxProjectionDefinition：`inbox.toSpliced(start, removedCount, ...inserted)`），
-    // 于是那句**被丢弃的旧提问复活**，被当成子会话的第一轮消费掉——就是「旧内容又跑一遍」。
-    //
-    // 这个缺陷在官方 fork 和 DSH-EasyRewrite 上都存在（用户在 0.1.5-rc.2 上实测复现），
-    // 因为二者共用同一个切点。宿主路径会在 seed 末尾补一条
-    // `agent/inbox/spliced {start:0, removedCount:pending, inserted:[]}` 把悬挂项排空，
-    // 这是目前唯一能避免复活的实现。
-    let childId: string | undefined
-    const applied = await postEdit({ sessionId, turn, text, apply: true })
-    logEvent('submit', 'host-apply', applied)
+    // 为什么不由客户端 `sessions.fork({ atSeq })` 建：它的切点落在目标轮 `turn/start`，而
+    // 提问的内核形态是「先 `agent/inbox/spliced` 入队 → `turn/start` → 之后才排空」。切在
+    // `turn/start` 时，目标轮的入队事件在 seed 里、排空事件不在，子会话的 inbox 由日志重建
+    // （dsh-agent-loop inboxProjectionDefinition：`inbox.toSpliced(start, removedCount, ...inserted)`），
+    // 于是被丢弃的旧提问会复活成子会话的一轮（官方 fork 与 DSH-EasyRewrite 在 0.1.5-rc.2 同样复现）。
+    const applied = await postEdit({ sessionId, turn, text })
+    logEvent('submit', 'applied', applied)
     if (!applied.ok)
       throw new Error(applied.message || applied.code)
-    childId = applied.childId
+    const childId = applied.childId
     if (typeof childId !== 'string' || childId === '')
       throw new Error('宿主没有返回重建后的会话 id。')
-    // 【临时停用归档/删除】用户要求先隔离这个变量：归档（乃至此前的物理删除）会改动源会话
-    // 的归属与生命周期，怀疑它影响新会话的可见性/持久化。这里暂时完全不动源会话，
-    // 需要恢复时把下一行取消注释即可。
-    // 新会话已建好（seed 已经拷走前缀），现在收掉被取代的原会话：归档（官方可逆）
-    // 之后物理删除。放在发送之前：用户切到新会话时列表里已经没有旧的那条。
+    // 新会话已建好（seed 已经拷走前缀），收掉被取代的原会话：归档 → 物理删除。
+    // 放在导航/发送之前：用户落到新会话时列表里已经没有旧的那条。
     await retireOriginal(sessionId)
     // 先打开新会话：官方 composer 的动作面要等该会话进入舞台（scope 物化）才可用，
     // DSH-EasyRewrite 也是「先 openSession(newId) → 等 composer 就绪 → setDraft + submit」。

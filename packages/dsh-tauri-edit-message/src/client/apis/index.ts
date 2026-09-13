@@ -9,12 +9,6 @@ import type { EditRequest, EditResponse } from '../types'
 import { fetch } from 'dsh-tauri/client'
 import { MESSAGE_TREE_PATH, SESSION_API_PREFIX } from '../constants'
 
-/** @method get 读取一条会话所在家族的完整版本树。 */
-export function getTree(sessionId: string): Promise<{ sessionId: string, versions: unknown[] }> {
-  // no-store：版本树随时可能因编辑 / 删除变化，不能吃浏览器缓存（与上游一致）。
-  return fetch(`${MESSAGE_TREE_PATH}?sessionId=${encodeURIComponent(sessionId)}`, { cache: 'no-store' })
-}
-
 /** @method post 解析编辑边界（宿主只读，fork 由客户端执行）。 */
 export function postEdit(body: EditRequest): Promise<EditResponse> {
   return fetch<EditResponse>(MESSAGE_TREE_PATH, {

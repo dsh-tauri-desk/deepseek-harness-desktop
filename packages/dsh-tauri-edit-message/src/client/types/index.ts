@@ -11,15 +11,13 @@ export interface EditRequest {
   eventSeq?: number
   /** 改后的文本（宿主回显时用于日志，不参与边界计算）。 */
   text: string
-  /** 显式请求宿主建子会话（仅在官方 sessions.fork 不可用时的回落路径）。 */
-  apply?: boolean
 }
 
 /** 边界解析成功：该消息之前最后一个闭合回合的 turn/end seq。 */
 export interface BoundaryOk {
   ok: true
-  /** 宿主建好的截断子会话 id（仅 pply: true 路径返回）。 */
-  childId?: string
+  /** 宿主建好的截断子会话 id。 */
+  childId: string
   /** 边界锚点（诊断用；首轮为 -1）。 */
   boundary: number
   turn: number
@@ -62,8 +60,6 @@ export interface SessionsService {
   fork?: (options: { sessionId: string, atSeq: number }) => Promise<string>
   /** 新建会话（首轮 reset 路径用；workspaceId 与 cwd 互斥）。 */
   create?: (opts?: { workspaceId?: string, cwd?: string }) => Promise<string>
-  /** 该会话所属的侧栏工作区 id（找不到返回 undefined）。 */
-  workspaceOf?: (sessionId: string) => string | undefined
   binding?: (sessionId: string) => SessionBinding | undefined
 }
 

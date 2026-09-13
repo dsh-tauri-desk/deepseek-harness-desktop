@@ -5,7 +5,7 @@
  * 与 `styles/editor.cssr.ts` 里 `e()/m()` 生成的类名必须逐字对应。
  */
 
-export { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_EVENT, MESSAGE_TREE_PATH, MESSAGE_TREE_SCHEMA } from '../../shared/constants'
+export { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_PATH } from '../../shared/constants'
 
 /** 内置插件 dsh-tauri-session 拥有的会话归档 / 删除路由前缀。 */
 export const SESSION_API_PREFIX = '/api/dsh-session'

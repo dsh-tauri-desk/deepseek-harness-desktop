@@ -1,5 +1,5 @@
 /**
- * host/types/index.ts — 宿主半区类型（最小契约 + 版本家族树投影）。
+ * host/types/index.ts — 宿主半区类型。
  *
  * 宿主 ctx 的完整契约由运行时提供，这里只声明本插件真正调用的成员，避免复制
  * 会漂移的宽接口。
@@ -46,74 +46,4 @@ export interface TurnLike {
   startSeq: number
   endSeq: number
   user?: SessionEventLike
-}
-
-/** 一次分支操作的规划结果（宿主内部）。 */
-export interface EditPlanLike {
-  /** 保留到（含）哪个事件 seq：`turn/start - 1`。 */
-  boundary: number
-  /** 写入新会话的版本标记事件载荷。 */
-  version: Record<string, unknown>
-  /** 排进新会话队列的用户消息（改后 / 原样）。 */
-  queuedUsers: Array<Record<string, unknown>>
-}
-
-/** 客户端 POST /message-tree 的操作语义面。 */
-export interface MessageOperationLike {
-  action: 'edit' | 'retry'
-  sessionId: string
-  eventSeq?: number
-  blockIndex?: number
-  text?: string
-  turn?: number
-  stopPrevious?: boolean
-}
-
-/** 会话家族里的一条版本（‹ n/m › 与版本图的数据行）。 */
-export interface VersionLike {
-  sessionId: string
-  parentSessionId?: string
-  createdAt: number
-  depth: number
-  current: boolean
-  onCurrentPath: boolean
-  deleted?: boolean
-  archived?: boolean
-  operation?: string
-  targetTurn?: number
-  targetEventSeq?: number
-  before?: string
-  after?: string
-  turns: Array<{ turn: number, text: string, time: number }>
-}
-
-/** 家族扁平化用的条目（含 ghost 墓碑）。 */
-export interface VersionEntryLike {
-  id: string
-  parentId?: string
-  createdAt: number
-  ghost?: boolean
-  marker?: Record<string, unknown>
-}
-
-/** 一次分支创建的响应。 */
-export interface EditSessionResponse {
-  sessionId: string
-  queuedTurns: number[]
-}
-
-/** 版本图里的一个轮次节点（`buildTurnTree` 的输出）。 */
-export interface TurnNode {
-  id: string
-  sessionId: string
-  turn?: number
-  parentId?: string
-  isRoot?: boolean
-  operation?: string
-  text?: string
-  time?: number
-  current?: boolean
-  onCurrentPath?: boolean
-  deleted?: boolean
-  archived?: boolean
 }

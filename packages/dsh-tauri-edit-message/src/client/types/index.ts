@@ -1,3 +1,4 @@
+import type { Root } from 'react-dom/client'
 /**
  * client/types/index.ts — 客户端共享类型（宿主协议 + 行状态 + 运行时服务）。
  */
@@ -70,4 +71,6 @@ export interface HostRowState {
   editing: boolean
   /** 官方气泡进入编辑前的 `display`，退出时逐字还原。 */
   bubbleDisplay: string
+  /** 编辑面板的 React root（进入编辑态时创建，退出时 unmount）。 */
+  root?: Root
 }

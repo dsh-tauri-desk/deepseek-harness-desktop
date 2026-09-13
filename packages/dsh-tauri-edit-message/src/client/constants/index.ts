@@ -13,6 +13,9 @@ export const SESSION_API_PREFIX = '/api/dsh-session'
 /** 注入标记属性：渲染 / 遍历都据此跳过插件自己的节点。 */
 export const INJECTED_ATTR = 'data-mtx-injected'
 
+/** 挂在官方气泡上的双击监听标记（避免 React 重建后重复绑定）。 */
+export const DOUBLECLICK_ATTR = 'data-mtx-dblclick'
+
 /** css-render 挂载用的 style id。 */
 export const EDITOR_STYLE_ID = 'dsh-tauri-edit-message/editor'
 

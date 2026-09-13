@@ -16,8 +16,10 @@
 
 import type { ClientContext } from 'dsh-tauri/client'
 import type { SessionsService } from './types'
+import { mountStyle } from 'dsh-tauri-ui/client'
 import { installMessagePatch } from './dom/install-patch'
 import { setSessionsService } from './dom/runtime'
+import styles from './styles/global.cssr'
 
 /** 插件显示名（诊断元数据）。 */
 export const name = 'dsh-tauri-edit-message'
@@ -40,6 +42,11 @@ export function apply(ctx: ClientContext): void {
     // 没有导航服务也照常注入：编辑仍会重建会话，只是提交后无法自动跳过去。
     console.warn('[dsh-tauri-edit-message] 缺少会话导航服务（sessions.open），提交编辑后无法自动打开新会话。')
   }
+
+  ctx.effect(
+    () => mountStyle(styles, 'dsh-tauri-edit-message-global-styles'),
+    'dsh-tauri-edit-message: styles',
+  )
 
   ctx.effect((): void | (() => void) => installMessagePatch())
 }

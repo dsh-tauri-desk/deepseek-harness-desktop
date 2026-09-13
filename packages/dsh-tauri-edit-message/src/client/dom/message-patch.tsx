@@ -11,11 +11,10 @@
  */
 
 import type { HostRowState } from '../types'
+import { Pencil } from 'dsh-tauri-ui/client'
 import { createRoot } from 'react-dom/client'
 import { Editor } from '../components/editor'
 import {
-  CLS_EDIT_BTN,
-  CLS_OWN_ACTIONS,
   DOUBLECLICK_ATTR,
   HOST_ACTIONS_CLASS,
   HOST_BUBBLE_CLASS,
@@ -27,7 +26,7 @@ import {
   USER_ROW_SELECTOR,
   USER_TURN_ATTR,
 } from '../constants'
-import { createPencilIcon } from './icons'
+import { renderInto } from './render'
 import { currentSessionId } from './runtime'
 
 /** 行状态缓存（WeakMap，行被移除即回收）。 */
@@ -102,12 +101,13 @@ function ensureBubbleDoubleClick(row: Element): void {
 function createEditButton(row: Element): HTMLButtonElement {
   const button = document.createElement('button')
   button.type = 'button'
-  button.className = `${HOST_ACTIONS_CLASS} ${CLS_EDIT_BTN}`
+  button.className = `${HOST_ACTIONS_CLASS} dshp-edit-message__edit-btn`
   button.setAttribute(INJECTED_ATTR, '')
   button.setAttribute('data-mtx-mark', MARK_EDIT)
   button.title = '编辑消息'
   button.setAttribute('aria-label', '编辑消息')
-  button.appendChild(createPencilIcon())
+  // 图标同样由 React 渲染（原生按钮不属于 React 树，用 createRoot 挂进去）。
+  renderInto(button, <Pencil />)
   button.addEventListener('click', (event) => {
     event.preventDefault()
     event.stopPropagation()
@@ -129,7 +129,7 @@ function ensureEditButton(row: Element): void {
   const own = document.createElement('div')
   own.setAttribute(INJECTED_ATTR, '')
   own.setAttribute('data-mtx-mark', MARK_OWN_ACTIONS)
-  own.className = CLS_OWN_ACTIONS
+  own.className = 'dshp-edit-message__own-actions'
   own.appendChild(createEditButton(row))
   row.appendChild(own)
 }

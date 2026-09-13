@@ -11,14 +11,6 @@
 
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  CLS_ACTIONS,
-  CLS_BUTTON,
-  CLS_BUTTON_PRIMARY,
-  CLS_EDITOR,
-  CLS_ERROR,
-  CLS_TEXTAREA,
-} from '../constants'
 import { submitEdit } from '../service/edit'
 
 /** 组件入参。 */
@@ -85,10 +77,10 @@ export function Editor({ sessionId, turn, initialText, onCancel }: EditorProps):
   }, [onCancel, submit])
 
   return (
-    <div className={CLS_EDITOR}>
+    <div className="dshp-edit-message__editor">
       <textarea
         ref={textareaRef}
-        className={CLS_TEXTAREA}
+        className="dshp-edit-message__textarea"
         rows={3}
         aria-label="编辑消息"
         value={text}
@@ -96,12 +88,12 @@ export function Editor({ sessionId, turn, initialText, onCancel }: EditorProps):
         onChange={event => setText(event.target.value)}
         onKeyDown={onKeyDown}
       />
-      {error === '' ? null : <div className={CLS_ERROR}>{error}</div>}
-      <div className={CLS_ACTIONS}>
-        <button type="button" className={CLS_BUTTON} onClick={onCancel}>取消</button>
+      {error === '' ? null : <div className="dshp-edit-message__error">{error}</div>}
+      <div className="dshp-edit-message__actions">
+        <button type="button" className="dshp-edit-message__btn" onClick={onCancel}>取消</button>
         <button
           type="button"
-          className={`${CLS_BUTTON} ${CLS_BUTTON_PRIMARY}`}
+          className="dshp-edit-message__btn dshp-edit-message__btn--primary"
           disabled={busy || text.trim() === ''}
           onClick={() => void submit()}
         >

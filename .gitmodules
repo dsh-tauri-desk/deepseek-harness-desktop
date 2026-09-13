@@ -13,3 +13,6 @@
 [submodule "source/dsh-plugin-message-edit"]
 	path = source/dsh-plugin-message-edit
 	url = https://github.com/hairyf/dsh-plugin-message-edit
+[submodule "source/DSH-EasyRewrite"]
+	path = source/DSH-EasyRewrite
+	url = https://github.com/hairyf/DSH-EasyRewrite

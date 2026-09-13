@@ -2,23 +2,41 @@
  * client/types/index.ts — 客户端共享类型（宿主协议 + 行状态 + 运行时服务）。
  */
 
-/** 编辑请求体（POST /edit-message）。 */
+/** 编辑请求体（POST /message-tree）。 */
 export interface EditRequest {
-  /** 操作类型：edit 改文本后重建；retry 原样重跑该轮。 */
-  action: 'edit' | 'retry'
   sessionId: string
-  /** 轮次（DOM 注入路径）。 */
+  /** 轮次（DOM 注入路径；与 eventSeq 二选一）。 */
   turn?: number
   /** 事件 seq（气泡 props 路径）。 */
   eventSeq?: number
+  /** 改后的文本（宿主回显时用于日志，不参与边界计算）。 */
   text: string
-  /** 提交前停掉该家族里仍在生成的回合（与上游一致）。 */
-  stopPrevious?: boolean
 }
 
-/** 编辑响应体。 */
-export interface EditResponse {
-  sessionId: string
+/** 边界解析成功：该消息之前最后一个闭合回合的 turn/end seq。 */
+export interface BoundaryOk {
+  ok: true
+  boundary: number
+  turn: number
+  eventSeq: number
+  before: string
+}
+
+/** 边界解析失败（首条消息 / 回合未闭合 / 找不到目标）。 */
+export interface BoundaryFail {
+  ok: false
+  code: 'session-not-found' | 'invalid-target' | 'turn-open' | 'no-boundary'
+  message: string
+}
+
+/** 编辑响应体（与 DSH-EasyRewrite 的 /bubble/recall 语义一致）。 */
+export type EditResponse = BoundaryOk | BoundaryFail
+
+/** 会话绑定（`ctx.sessions.binding(id)`）。 */
+export interface SessionBinding {
+  session?: {
+    prompt?: (content: unknown, mode?: unknown) => Promise<unknown>
+  }
 }
 
 /** 会话列表订阅快照（`ctx.sessions.list`）。 */
@@ -27,13 +45,16 @@ export interface SessionListSnapshot {
   byId: Record<string, { running?: boolean } | undefined>
 }
 
-/** 会话导航 / 列表服务的最小契约。 */
+/** 会话导航 / 列表 / fork 服务的最小契约。 */
 export interface SessionsService {
   list?: {
     getSnapshot: () => SessionListSnapshot
     subscribe: (listener: () => void) => () => void
   }
   open: (sessionId: string) => void
+  /** 官方截断边界器：child 进入会话列表并可打开。 */
+  fork?: (options: { sessionId: string, atSeq: number }) => Promise<string>
+  binding?: (sessionId: string) => SessionBinding | undefined
 }
 
 /** 一个用户气泡行的注入状态。 */

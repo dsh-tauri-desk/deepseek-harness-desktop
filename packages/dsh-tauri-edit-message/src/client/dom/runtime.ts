@@ -9,6 +9,11 @@ import type { SessionsService } from '../types'
 
 let sessionsService: SessionsService | null = null
 
+/** 宽松视图：ISessions 的类型面未必声明 list / open / fork，运行时才有。 */
+function store(): SessionsService | undefined {
+  return sessionsService ?? undefined
+}
+
 /** 记录 apply() 解析到的 sessions 服务。 */
 export function setSessionsService(service: SessionsService | null): void {
   sessionsService = service
@@ -21,7 +26,7 @@ export function getSessions(): SessionsService | null {
 
 /** 当前会话 id：行上没有该属性，取会话列表快照的 current。 */
 export function currentSessionId(): string | undefined {
-  const list = sessionsService?.list
+  const list = store()?.list
   if (!list || typeof list.getSnapshot !== 'function')
     return undefined
   const snapshot = list.getSnapshot()
@@ -30,8 +35,8 @@ export function currentSessionId(): string | undefined {
 
 /** 会话出现在 list 快照后再导航（应用不认未列出的 id）。 */
 export function openWhenListed(sessionId: string): void {
-  const sessions = sessionsService
-  if (!sessions)
+  const sessions = store()
+  if (!sessions || typeof sessions.open !== 'function')
     return
   const list = sessions.list
   if (!list || typeof list.getSnapshot !== 'function') {

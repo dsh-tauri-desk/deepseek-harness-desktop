@@ -1,18 +1,21 @@
 /**
- * client/dom/message-patch.ts — 用户气泡的 DOM 注入（官方气泡本体原样保留）。
+ * client/dom/message-patch.ts — 用户气泡的 DOM 注入 + 撤回式编辑（对齐 DSH-EasyRewrite）。
  *
- * 行为对齐 docs/spec/EDIT_MESSAGE.md：
- *   - 悬停 / 停留用户气泡时，在官方操作行里多出一个 Edit 图标按钮；
- *   - 点击后隐藏官方气泡（`display:none`，可逐字还原），在气泡位置上插入
- *     宽 100%、圆角、灰底的编辑面板（多行输入框 + 右下角「取消 / 发送」）；
- *   - `Enter` 直接提交、`Shift+Enter` 换行、`Esc` 取消；
- *   - 提交后该消息之后的历史被丢弃（宿主用种子会话重建）并重新生成回答。
+ * 行为对齐 docs/spec/EDIT_MESSAGE.md，执行方式对齐 DSH-EasyRewrite：
+ *   - 悬停 / 停留用户气泡时，官方操作行里多出一个 Edit 图标按钮；
+ *   - 点击后隐藏官方气泡，原位插入宽 100%、圆角、灰底的编辑面板；
+ *   - `Enter` 提交、`Shift+Enter` 换行、`Esc` 取消；
+ *   - 提交时：宿主只解析边界（该消息之前最后一个闭合回合的 turn/end），**客户端**用
+ *     官方 `sessions.fork({ sessionId, atSeq: boundary })` 建新会话 → 归档原会话 →
+ *     打开新会话 → 在新会话里把改后的文本发出去重新生成。
  *
- * 定位只用语义锚点（`data-chat-flow-kind` / `data-chat-turn`）与官方类名，不依赖
- * 生成的 CSS module 哈希；注入节点带 `data-mtx-injected`，遍历会跳过它们。
+ * 这样源会话全程不被重新激活（宿主半区不 resume agent、不 followup），所以不会出现
+ * 「编辑一次，整段对话又被跑一遍」。
+ *
+ * 官方气泡本体不做任何替换：只隐藏（`display:none`，可逐字还原）并往里追加插件节点。
  */
 
-import type { HostRowState } from '../types'
+import type { HostRowState, SessionsService } from '../types'
 import { postEdit } from '../apis'
 import {
   CLS_ACTIONS,
@@ -34,7 +37,7 @@ import {
   USER_TURN_ATTR,
 } from '../constants'
 import { createPencilIcon } from './icons'
-import { currentSessionId, openWhenListed } from './runtime'
+import { currentSessionId, getSessions, openWhenListed } from './runtime'
 
 /** 行状态缓存（WeakMap，行被移除即回收）。 */
 const rowStates = new WeakMap<Element, HostRowState>()
@@ -68,12 +71,12 @@ function hostBubble(row: Element): HTMLElement | null {
   return row.querySelector<HTMLElement>(`.${HOST_BUBBLE_CLASS}`)
 }
 
-/** 官方气泡列（气泡所在的那一列，编辑面板插在这里）。 */
+/** 官方气泡列（编辑面板插在这里）。 */
 function hostStack(row: Element): HTMLElement | null {
   return row.querySelector<HTMLElement>(`.${HOST_STACK_CLASS}`)
 }
 
-/** 气泡正文（复制与编辑初值都取自官方气泡，不解析任何节点 payload）。 */
+/** 气泡正文（编辑初值取自官方气泡，不解析任何节点 payload）。 */
 function bubbleText(row: Element): string {
   const bubble = hostBubble(row)
   return bubble ? (bubble.textContent ?? '') : ''
@@ -109,10 +112,9 @@ function ensureEditButton(row: Element): void {
   }
   if (!hostStack(row))
     return
-  let own = row.querySelector<HTMLElement>(`[${INJECTED_ATTR}][data-mtx-mark="own-actions"]`)
-  if (own)
+  if (row.querySelector<HTMLElement>(`[${INJECTED_ATTR}][data-mtx-mark="${MARK_OWN_ACTIONS}"]`))
     return
-  own = document.createElement('div')
+  const own = document.createElement('div')
   own.setAttribute(INJECTED_ATTR, '')
   own.setAttribute('data-mtx-mark', MARK_OWN_ACTIONS)
   own.className = CLS_OWN_ACTIONS
@@ -174,7 +176,7 @@ function ensureEditor(row: Element): void {
   const textarea = document.createElement('textarea')
   textarea.className = CLS_TEXTAREA
   textarea.value = bubbleText(row)
-  textarea.rows = 1
+  textarea.rows = 3
   textarea.setAttribute('aria-label', '编辑消息')
 
   const error = document.createElement('div')
@@ -222,7 +224,7 @@ function ensureEditor(row: Element): void {
   })
 }
 
-/** 提交编辑：POST /edit-message → 打开重建后的会话（回答随即重新生成）。 */
+/** 提交编辑：宿主解析边界 → 官方 fork → 归档原会话 → 打开新会话 → 发送改后的文本。 */
 async function submitEdit(
   row: Element,
   textarea: HTMLTextAreaElement,
@@ -231,16 +233,27 @@ async function submitEdit(
 ): Promise<void> {
   const sessionId = currentSessionId()
   const turn = turnOf(row)
-  const text = textarea.value
-  if (sessionId === undefined || turn === undefined || text.trim() === '')
+  const text = textarea.value.trim()
+  if (sessionId === undefined || turn === undefined || text === '')
     return
   confirm.disabled = true
   error.hidden = true
   try {
-    // 与上游一致：提交即先停掉仍在生成的回答，再从该轮之前建分支。
-    const result = await postEdit({ action: 'edit', sessionId, turn, text, stopPrevious: true })
+    const plan = await postEdit({ sessionId, turn, text })
+    if (!plan.ok)
+      throw new Error(plan.message || plan.code)
+    const sessions = getSessions()
+    if (!sessions || typeof sessions.fork !== 'function')
+      throw new Error('当前内核没有提供会话 fork 能力，无法撤回重建。')
+    // 官方 fork 即截断边界器：child 进入会话列表、可打开、继承前缀历史。
+    const childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
+    if (typeof childId !== 'string' || childId === '')
+      throw new Error('会话 fork 没有返回新的会话 id。')
+    await archiveOriginal(sessions, sessionId)
+    // 先把改后的文本发进新会话（此时它已存在，只是可能还没出现在侧栏快照里）。
+    await sendPrompt(childId, text)
     endEdit(row)
-    openWhenListed(result.sessionId)
+    openWhenListed(childId)
   }
   catch (e) {
     error.textContent = String((e as Error)?.message || e)
@@ -251,13 +264,44 @@ async function submitEdit(
   }
 }
 
+/** 归档原会话（no-op 视为成功；失败只是外观问题，不让编辑失败）。 */
+async function archiveOriginal(sessions: SessionsService, sessionId: string): Promise<void> {
+  const workspaces = (sessions as { workspaces?: unknown }).workspaces
+  const target = workspaces ?? sessions
+  const archive = (target as { archiveSession?: (id: string) => unknown }).archiveSession
+  if (typeof archive !== 'function')
+    return
+  try {
+    await Promise.resolve(archive.call(target, sessionId))
+  }
+  catch {
+    // 归档失败不影响已经建好的新分支。
+  }
+}
+
+/**
+ * 把文本发进目标会话。
+ *
+ * 走官方会话面 `ctx.sessions.binding(id).session.prompt(content)`；缺失时给出可诊断
+ * 的错误，而不是静默半成品（新会话已建好，用户可手动把文本发一遍）。
+ */
+async function sendPrompt(sessionId: string, text: string): Promise<void> {
+  const sessions = getSessions()
+  const binding = sessions && typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
+  const session = (binding as { session?: unknown } | undefined)?.session as {
+    prompt?: (content: unknown, mode?: unknown) => Promise<unknown>
+  } | undefined
+  if (!session || typeof session.prompt !== 'function')
+    throw new Error('新会话已建立，但当前内核不暴露 prompt 接口：请点开新会话后手动发送改后的文本。')
+  await session.prompt([{ type: 'text', text }])
+}
+
 /* ---------------------------------------------------------------- 安装 -- */
 
 /** 对单个用户行补齐注入（幂等）。 */
 function patchRow(row: Element): void {
-  const state = stateOf(row)
   // 编辑态下 React 若重建了操作行，不打扰正在编辑的面板。
-  if (state.editing)
+  if (stateOf(row).editing)
     return
   ensureEditButton(row)
 }

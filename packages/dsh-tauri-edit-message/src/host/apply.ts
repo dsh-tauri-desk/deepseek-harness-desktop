@@ -4,24 +4,17 @@
  * 注意：这里列出的服务都是**按属性访问**的，必须全部声明在 inject 里——cordis 的
  * ctx 代理对未声明的服务会抛 `cannot get property "<name>" without inject`，而
  * apply() 里抛异常会让整个 loader entry 失败（桌面端会显示插件恢复页）。
- * 可选服务（connection / agentPresets）一律用 `ctx.get(name)` 反射读取。
+ * 可选服务（connection / workspaceRegistry）一律用 `ctx.get(name)` 反射读取。
  *
- * workspaceRegistry 被三处使用：在树载荷里标记已归档版本（应用无法导航到已归档会话，
- * 客户端据此先取消归档）、按需取消归档、把新版本挂到与父相同的侧栏工作区分组。
+ * 与 DSH-EasyRewrite 一致：宿主半区**不注入 agents**——边界解析与树投影都是只读的，
+ * 因此源会话绝不会因为一次编辑而被重新激活。
  */
 
 import type { HostContext } from './types'
 import { buildRoutes } from './routes'
 
-/** 宿主依赖：会话存储、Agent 注册表、会话持久化与查询、Web 服务器、工作区注册表。 */
-export const inject = [
-  'sessions',
-  'agents',
-  'sessionPersistence',
-  'sessionQuery',
-  'webServer',
-  'workspaceRegistry',
-]
+/** 宿主依赖：会话存储、会话查询、Web 服务器。 */
+export const inject = ['sessions', 'sessionQuery', 'webServer']
 
 /**
  * 宿主插件体。

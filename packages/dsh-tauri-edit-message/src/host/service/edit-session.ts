@@ -197,32 +197,31 @@ async function createChildSession(
   ctx: HostContext,
   source: SessionRecordLike,
   prefixLength: number,
-  options?: { inherited?: boolean },
 ): Promise<string> {
   const seed = source.events.slice(0, Math.max(0, prefixLength)) as SessionEventLike[]
   const childId = `session-${crypto.randomUUID()}`
-  // `inherited` 默认 false：不要把保留的前缀声明成「继承自父会话」。
+  // 刻意**不传** `meta.parentSession`：血缘会让内核在落盘时把父会话的日志并回子会话。
   //
-  // 实测（日志 child-verify vs 落盘）：声明 isSeeded + inheritedEventCount 时，宿主刚建完
-  // 读回是正确截断（21 events / turns:[1]），但子会话一跑起来落盘就变成 38 events /
-  // turns:[1,2,3] —— 内核按「继承会话」语义把**父会话的内容重新并入**了子会话，
-  // 于是被编辑掉的那轮又回来了（这正是用户看到的「旧轮还在」）。
-  // 不声明继承时，保留下来的事件就是子会话自己的历史，不会再被父会话污染。
-  const inherited = options?.inherited === true
+  // 实测（child-verify 读活会话 vs 直接解磁盘上的 session.v3.jsonl.zstd）：
+  //   - 建完立刻读回：21 events / turns:[1]                  ← 截断正确
+  //   - 落盘后：      38 events / turns:[1,2,3]              ← 被编辑掉的那轮又回来了
+  // 无论声明 `isSeeded`（继承语义）还是 `isSeeded:false`，只要带 `parentSession`，
+  // 子会话的持久化日志就会补上父会话的内容。去掉血缘后子会话是独立会话，
+  // 保留的前缀就是它自己的历史，不会再被父会话污染。
+  //
+  // 代价：子会话不会嵌套在侧栏的父会话下（只在树投影里通过 parentSessionId 体现），
+  // 但「编辑掉的那轮不再出现」是硬要求，优先保证。
   await ctx.agents.create({
     sessionId: childId,
     seed,
-    ...(inherited ? { inheritedEventCount: seed.length } : {}),
     meta: {
       ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
-      parentSession: source.id,
-      ...(inherited ? { isSeeded: true } : {}),
     },
   })
   void logEvent('edit', 'child-created', {
     childId,
-    parentSession: source.id,
-    inherited,
+    parentSession: null,
+    sourceSession: source.id,
     prefixLength: seed.length,
     seedFirstSeq: seed[0]?.seq ?? null,
     seedLastSeq: seed.at(-1)?.seq ?? null,

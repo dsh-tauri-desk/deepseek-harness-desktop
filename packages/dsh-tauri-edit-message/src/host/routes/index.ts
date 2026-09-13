@@ -56,6 +56,7 @@ export function buildRoutes(ctx: HostContext): any[] {
   const handler = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const method = request.method ?? 'GET'
     const requestUrl = request.url ?? MESSAGE_TREE_PATH
+    void logEvent('http', 'request', { method, url: requestUrl })
     if (method === 'OPTIONS') {
       respond(response, 204, {})
       return
@@ -107,7 +108,12 @@ export function buildRoutes(ctx: HostContext): any[] {
     }
   }
 
+  // 两条 exact 路由：内核 webserver 的 exact 表按路径精确匹配（dsh-host-webserver
+  // register()/match()），所以 `/message-tree/log` 必须自己注册一条，否则客户端日志
+  // 会被 SPA 兜底接走（实测 405）而静默丢弃。
+  const wrapped = withConnectionAuth(connection, handler, EDIT_MESSAGE_PLUGIN_NAME)
   return [
-    { kind: 'exact', path: MESSAGE_TREE_PATH, handler: withConnectionAuth(connection, handler, EDIT_MESSAGE_PLUGIN_NAME) },
+    { kind: 'exact', path: MESSAGE_TREE_PATH, handler: wrapped },
+    { kind: 'exact', path: `${MESSAGE_TREE_PATH}/log`, handler: wrapped },
   ]
 }

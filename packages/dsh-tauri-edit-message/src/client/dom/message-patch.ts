@@ -16,7 +16,7 @@
  */
 
 import type { HostRowState } from '../types'
-import { postArchive, postDelete, postEdit } from '../apis'
+import { postArchive, postEdit } from '../apis'
 import {
   CLS_ACTIONS,
   CLS_BUTTON,
@@ -289,25 +289,23 @@ async function submitEdit(
 }
 
 /**
- * 处理被取代的原会话：先归档（官方可逆），再彻底删除（物理删除会话数据）。
+ * 处理被取代的原会话：**归档**（官方可逆操作，与 DSH-EasyRewrite 一致）。
  *
- * 删除不是原子操作，这里刻意分两步并各自处理失败：
- *   - 归档失败：原会话留在列表里，但编辑已经成功（新分支可用），只记一条警告；
- *   - 删除失败：原会话仍安全地待在归档里，可由用户手动清理——绝不让编辑失败。
+ * 暂时不做物理删除：`/api/dsh-session/delete` 会移除 fork 父会话的数据目录，
+ * 而子会话的 seed 血缘指向它——这是本实现相对两个参考插件**独有**的副作用
+ * （REF B 只 archive，REF A 连 archive 都不做）。先用最保守的归档验证
+ * 「旧轮不再重跑」；确认稳定后若仍要物理删除，再单独打开。
+ *
+ * 归档失败只记警告：编辑已经成功，新会话可用，不让它失败。
  */
 async function retireOriginal(sessionId: string): Promise<void> {
   try {
     await postArchive(sessionId)
+    logEvent('submit', 'archived', { sessionId })
   }
   catch (e) {
+    logEvent('submit', 'archive-failed', { sessionId, error: String((e as Error)?.message || e) })
     console.warn('[dsh-tauri-edit-message] 原会话归档失败（编辑已生效）。', e)
-    return
-  }
-  try {
-    await postDelete(sessionId)
-  }
-  catch (e) {
-    console.warn('[dsh-tauri-edit-message] 原会话彻底删除失败，已保留在归档中。', e)
   }
 }
 

@@ -7,6 +7,9 @@
 
 export { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_EVENT, MESSAGE_TREE_PATH, MESSAGE_TREE_SCHEMA } from '../../shared/constants'
 
+/** 内置插件 dsh-tauri-session 拥有的会话归档 / 删除路由前缀。 */
+export const SESSION_API_PREFIX = '/api/dsh-session'
+
 /** 注入标记属性：渲染 / 遍历都据此跳过插件自己的节点。 */
 export const INJECTED_ATTR = 'data-mtx-injected'
 

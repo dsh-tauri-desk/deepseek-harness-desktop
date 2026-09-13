@@ -15,8 +15,8 @@
  * 官方气泡本体不做任何替换：只隐藏（`display:none`，可逐字还原）并往里追加插件节点。
  */
 
-import type { HostRowState, SessionsService } from '../types'
-import { postEdit } from '../apis'
+import type { HostRowState } from '../types'
+import { postArchive, postDelete, postEdit } from '../apis'
 import {
   CLS_ACTIONS,
   CLS_BUTTON,
@@ -249,7 +249,8 @@ async function submitEdit(
     const childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
     if (typeof childId !== 'string' || childId === '')
       throw new Error('会话 fork 没有返回新的会话 id。')
-    await archiveOriginal(sessions, sessionId)
+    // 新会话建成后才动原会话：fork 已经拿到前缀历史，删除不会丢内容。
+    await retireOriginal(sessionId)
     // 先把改后的文本发进新会话（此时它已存在，只是可能还没出现在侧栏快照里）。
     await sendPrompt(childId, text)
     endEdit(row)
@@ -264,18 +265,26 @@ async function submitEdit(
   }
 }
 
-/** 归档原会话（no-op 视为成功；失败只是外观问题，不让编辑失败）。 */
-async function archiveOriginal(sessions: SessionsService, sessionId: string): Promise<void> {
-  const workspaces = (sessions as { workspaces?: unknown }).workspaces
-  const target = workspaces ?? sessions
-  const archive = (target as { archiveSession?: (id: string) => unknown }).archiveSession
-  if (typeof archive !== 'function')
-    return
+/**
+ * 处理被取代的原会话：先归档（官方可逆），再彻底删除（物理删除会话数据）。
+ *
+ * 删除不是原子操作，这里刻意分两步并各自处理失败：
+ *   - 归档失败：原会话留在列表里，但编辑已经成功（新分支可用），只记一条警告；
+ *   - 删除失败：原会话仍安全地待在归档里，可由用户手动清理——绝不让编辑失败。
+ */
+async function retireOriginal(sessionId: string): Promise<void> {
   try {
-    await Promise.resolve(archive.call(target, sessionId))
+    await postArchive(sessionId)
   }
-  catch {
-    // 归档失败不影响已经建好的新分支。
+  catch (e) {
+    console.warn('[dsh-tauri-edit-message] 原会话归档失败（编辑已生效）。', e)
+    return
+  }
+  try {
+    await postDelete(sessionId)
+  }
+  catch (e) {
+    console.warn('[dsh-tauri-edit-message] 原会话彻底删除失败，已保留在归档中。', e)
   }
 }
 

@@ -112,7 +112,24 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
     void logEvent('boundary', 'ok-reset(first turn)', { sessionId: record.id, turn: turn.turn })
     return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true }
   }
-  void logEvent('boundary', 'ok-fork', { sessionId: record.id, turn: turn.turn, boundary, previousTurnEnd: previous === undefined ? null : previous.endSeq, targetStartSeq: turn.startSeq })
+  // 预测官方 fork 的结果，写进日志：boundary = 第一个 seq >= anchor 的 turn/end，
+  // cut = 从 boundary 之后推进到下一个 turn/start。这样日志能直接说明子会话会保留
+  // 哪几轮，不必再猜「晚了一个节点」是保留多了还是少了。
+  const boundaryEvent = record.events.find(event => event.type === 'turn/end' && event.seq >= boundary)
+  let cut = boundaryEvent === undefined ? -1 : boundaryEvent.seq + 1
+  while (cut >= 0 && cut < record.events.length && record.events[cut]?.type !== 'turn/start')
+    cut += 1
+  const keptTurns = closedTurns(record.events as SessionEventLike[]).filter(candidate => cut >= 0 && candidate.endSeq < cut).map(candidate => candidate.turn)
+  void logEvent('boundary', 'ok-fork', {
+    sessionId: record.id,
+    targetTurn: turn.turn,
+    anchor: boundary,
+    boundarySeq: boundaryEvent?.seq ?? null,
+    cutSeq: cut,
+    cutEvent: cut >= 0 ? record.events[cut]?.type : null,
+    keptTurns,
+    childWillShowTurns: keptTurns,
+  })
   return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false }
 }
 

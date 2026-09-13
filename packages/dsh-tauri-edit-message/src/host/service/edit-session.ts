@@ -136,6 +136,7 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
 /** 读一条会话并解析边界。 */
 export async function planEdit(ctx: HostContext, sessionId: string, turnNumber: number | undefined, eventSeq: number | undefined): Promise<BoundaryResult> {
   const record = await loadSessionRecord(ctx, sessionId)
+  void logEvent('plan', 'input', { sessionId, turn: turnNumber ?? null, eventSeq: eventSeq ?? null, eventsLength: record.events.length, inheritedEventCount: record.inheritedEventCount, headerParent: record.header.parentSession ?? null })
   if (turnNumber === undefined) {
     // 只给了 eventSeq：先由事件定位它所在的已闭合回合。
     if (eventSeq === undefined)

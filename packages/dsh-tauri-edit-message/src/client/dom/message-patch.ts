@@ -234,6 +234,7 @@ async function submitEdit(
 ): Promise<void> {
   const sessionId = currentSessionId()
   const turn = turnOf(row)
+  logEvent('submit', 'context', { sessionId: sessionId ?? null, turn: turn ?? null, currentFromList: currentSessionId() ?? null, rowTurn: row.getAttribute(USER_TURN_ATTR) })
   const text = textarea.value.trim()
   if (sessionId === undefined || turn === undefined || text === '')
     return
@@ -261,6 +262,7 @@ async function submitEdit(
       if (typeof sessions.fork !== 'function')
         throw new Error('当前内核没有提供会话 fork 能力，无法撤回重建。')
       // 官方 fork 即截断边界器：child 进入会话列表、可打开、继承前缀历史。
+      logEvent('submit', 'fork-call', { sessionId, atSeq: plan.boundary })
       childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
       if (typeof childId !== 'string' || childId === '')
         throw new Error('会话 fork 没有返回新的会话 id。')
@@ -316,6 +318,7 @@ async function retireOriginal(sessionId: string): Promise<void> {
 async function sendPrompt(sessionId: string, text: string): Promise<void> {
   const sessions = getSessions()
   const binding = sessions && typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
+  logEvent('submit', 'binding', { sessionId, hasBinding: binding !== undefined, hasPrompt: typeof (binding && binding.session && binding.session.prompt) === 'function' })
   const session = (binding as { session?: unknown } | undefined)?.session as {
     prompt?: (content: unknown, mode: unknown) => Promise<unknown>
   } | undefined

@@ -197,22 +197,32 @@ async function createChildSession(
   ctx: HostContext,
   source: SessionRecordLike,
   prefixLength: number,
+  options?: { inherited?: boolean },
 ): Promise<string> {
   const seed = source.events.slice(0, Math.max(0, prefixLength)) as SessionEventLike[]
   const childId = `session-${crypto.randomUUID()}`
+  // `inherited` 默认 false：不要把保留的前缀声明成「继承自父会话」。
+  //
+  // 实测（日志 child-verify vs 落盘）：声明 isSeeded + inheritedEventCount 时，宿主刚建完
+  // 读回是正确截断（21 events / turns:[1]），但子会话一跑起来落盘就变成 38 events /
+  // turns:[1,2,3] —— 内核按「继承会话」语义把**父会话的内容重新并入**了子会话，
+  // 于是被编辑掉的那轮又回来了（这正是用户看到的「旧轮还在」）。
+  // 不声明继承时，保留下来的事件就是子会话自己的历史，不会再被父会话污染。
+  const inherited = options?.inherited === true
   await ctx.agents.create({
     sessionId: childId,
     seed,
-    inheritedEventCount: seed.length,
+    ...(inherited ? { inheritedEventCount: seed.length } : {}),
     meta: {
       ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
       parentSession: source.id,
-      isSeeded: true,
+      ...(inherited ? { isSeeded: true } : {}),
     },
   })
   void logEvent('edit', 'child-created', {
     childId,
     parentSession: source.id,
+    inherited,
     prefixLength: seed.length,
     seedFirstSeq: seed[0]?.seq ?? null,
     seedLastSeq: seed.at(-1)?.seq ?? null,

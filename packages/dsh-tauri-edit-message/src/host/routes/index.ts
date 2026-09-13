@@ -24,6 +24,7 @@ import {
   withConnectionAuth,
 } from 'dsh-tauri'
 import { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_PATH } from '../../shared/constants'
+import { logEvent } from '../service/debug-log'
 import { planEdit, readTree } from '../service/edit-session'
 
 /** 只允许本机（回环）地址发起变更。 */
@@ -54,12 +55,20 @@ export function buildRoutes(ctx: HostContext): any[] {
 
   const handler = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const method = request.method ?? 'GET'
+    const requestUrl = request.url ?? MESSAGE_TREE_PATH
     if (method === 'OPTIONS') {
       respond(response, 204, {})
       return
     }
     if (method !== 'GET' && method !== 'POST') {
       respond(response, 405, { error: '仅支持 GET / POST 请求' })
+      return
+    }
+    // 客户端日志回传：与宿主日志同一文件，形成一条时间线（失败静默）。
+    if (method === 'POST' && requestUrl.startsWith(`${MESSAGE_TREE_PATH}/log`)) {
+      const raw = await readJsonBody(request)
+      await logEvent(`client:${String(raw.tag ?? 'log')}`, String(raw.message ?? ''), raw.data)
+      respond(response, 200, { ok: true })
       return
     }
     try {

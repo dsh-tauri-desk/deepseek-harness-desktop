@@ -20,6 +20,7 @@ import type {
   VersionLike,
 } from '../types'
 import { MESSAGE_TREE_EVENT, MESSAGE_TREE_SCHEMA } from '../../shared/constants'
+import { logEvent } from './debug-log'
 import { loadSessionRecord, sessionEventCount, sessionRecord } from './session-record'
 import { ancestorChainFromLog, collectFamily } from './tree-logic'
 
@@ -76,6 +77,13 @@ export type BoundaryResult
 export function resolveBoundary(record: SessionRecordLike, turnNumber: number, eventSeq: number | undefined): BoundaryResult {
   const turns = closedTurns(record.events)
   const turn = turns.find(candidate => candidate.turn === turnNumber)
+  void logEvent('boundary', 'resolve', {
+    sessionId: record.id,
+    turn: turnNumber,
+    eventSeq: eventSeq ?? null,
+    eventsLength: record.events.length,
+    turns: turns.map(candidate => ({ turn: candidate.turn, startSeq: candidate.startSeq, endSeq: candidate.endSeq, userSeq: candidate.user?.seq ?? null })),
+  })
   if (turn === undefined) {
     // 目标轮还没有闭合（还在生成）或轮次号对不上。
     const openTurn = record.events.some(event => event.type === 'turn/start' && event.data.turn === turnNumber)
@@ -88,13 +96,23 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
   if (eventSeq !== undefined && turn.user.seq !== eventSeq)
     return { ok: false, code: 'invalid-target', message: '目标事件不是该回合的用户消息。' }
 
-  const boundary = turn.startSeq - 1
+  // 锚点必须是「目标轮之前最后一个闭合回合的 turn/end seq」（DSH-EasyRewrite 的
+  // findTurnEndBefore 同一判据）。
+  //
+  // 不能用 `turn.startSeq - 1`：`turn/start` 的前一个事件通常是 `agent/inbox/spliced`，
+  // 而官方 fork 的切点是「第一个 seq >= atSeq 的 turn/end，再推进到下一轮 turn/start」。
+  // 锚到 spliced 时 `find` 会命中**目标轮自己的 turn/end**，于是整段历史被保留、
+  // 新消息只是追加在后面（实测到的「没回退、只在最后加一条」）。
+  const previous = turns.find(candidate => candidate.turn === turn.turn - 1)
+  const boundary = previous === undefined ? -1 : previous.endSeq
   if (boundary < 0) {
     // 首轮之前只有系统提示、没有任何 turn/end 可锚：fork 的最小切点是「一轮的末尾」，
     // 用它必然把整轮复制过去（就是「旧提问又跑一遍」）。上游 DSH-EasyRewrite 对这种情况
     // 走 reset：归档原会话 + 在同一工作区开一个全新会话，只把改后的提问发出去。
+    void logEvent('boundary', 'ok-reset(first turn)', { sessionId: record.id, turn: turn.turn })
     return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true }
   }
+  void logEvent('boundary', 'ok-fork', { sessionId: record.id, turn: turn.turn, boundary, previousTurnEnd: previous === undefined ? null : previous.endSeq, targetStartSeq: turn.startSeq })
   return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false }
 }
 

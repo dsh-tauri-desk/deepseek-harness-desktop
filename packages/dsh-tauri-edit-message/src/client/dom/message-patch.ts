@@ -36,6 +36,7 @@ import {
   USER_ROW_SELECTOR,
   USER_TURN_ATTR,
 } from '../constants'
+import { logEvent } from './debug-log'
 import { createPencilIcon } from './icons'
 import { createFreshSession, currentSessionId, getSessions, openWhenListed, workspaceOf } from './runtime'
 
@@ -238,8 +239,10 @@ async function submitEdit(
     return
   confirm.disabled = true
   error.hidden = true
+  logEvent('submit', 'begin', { sessionId, turn, textLength: text.length, text: text.slice(0, 40) })
   try {
     const plan = await postEdit({ sessionId, turn, text })
+    logEvent('submit', 'plan', plan)
     if (!plan.ok)
       throw new Error(plan.message || plan.code)
     const sessions = getSessions()
@@ -264,12 +267,15 @@ async function submitEdit(
       // 新会话建成后才动原会话：fork 已经拿到前缀历史，删除不会丢内容。
       await retireOriginal(sessionId)
     }
+    logEvent('submit', plan.reset ? 'created' : 'forked', { childId, boundary: plan.boundary, reset: plan.reset })
     // 把改后的文本发进新会话（此时它已存在，只是可能还没出现在侧栏快照里）。
     await sendPrompt(childId, text)
+    logEvent('submit', 'prompted', { childId })
     endEdit(row)
     openWhenListed(childId)
   }
   catch (e) {
+    logEvent('submit', 'failed', { error: String((e as Error)?.message || e) })
     error.textContent = String((e as Error)?.message || e)
     error.hidden = false
   }

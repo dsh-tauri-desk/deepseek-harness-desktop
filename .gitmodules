@@ -10,3 +10,6 @@
 [submodule "source/dsh-dafeiyu"]
 	path = source/dsh-dafeiyu
 	url = https://github.com/QCYTSN/dsh-dafeiyu
+[submodule "source/dsh-plugin-message-edit"]
+	path = source/dsh-plugin-message-edit
+	url = https://github.com/hairyf/dsh-plugin-message-edit

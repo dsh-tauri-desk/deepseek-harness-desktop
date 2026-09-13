@@ -68,5 +68,12 @@
     "name": "DSH Tauri Rightclick Menu",
     "description": "Native-style right-click context menu for the desktop shell: quick actions for sessions, workspaces, conversation text, links, and inputs — in-house successor to the deprecated dsh-session-context-menu.",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick"
+  },
+  {
+    "id": "dsh-tauri-edit-message",
+    "spec": "dsh-tauri-edit-message",
+    "name": "DSH Edit Message",
+    "description": "Edit a sent user message: hover a user bubble for an inline Edit button, rewrite the text, and the plugin rebuilds the conversation from that turn and regenerates the answer.",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-edit-message"
   }
 ]

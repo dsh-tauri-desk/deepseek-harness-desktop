@@ -539,6 +539,9 @@ importers:
       dsh-tauri:
         specifier: workspace:*
         version: link:../dsh-tauri
+      dsh-tauri-edit-message:
+        specifier: workspace:*
+        version: link:../dsh-tauri-edit-message
       dsh-tauri-panel:
         specifier: workspace:*
         version: link:../dsh-tauri-panel
@@ -566,6 +569,25 @@ importers:
       dsh-tauri-worktree:
         specifier: workspace:*
         version: link:../dsh-tauri-worktree
+
+  packages/dsh-tauri-edit-message:
+    dependencies:
+      dsh-tauri:
+        specifier: workspace:*
+        version: link:../dsh-tauri
+      dsh-tauri-ui:
+        specifier: workspace:*
+        version: link:../dsh-tauri-ui
+    devDependencies:
+      dsh-tauri-tsdown:
+        specifier: workspace:*
+        version: link:../dsh-tauri-tsdown
+      tsdown:
+        specifier: catalog:cli
+        version: 0.17.4(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(oxc-resolver@11.24.2)(publint@0.3.24)(synckit@0.11.13)(typescript@5.8.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.11(@types/node@22.20.1)(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.30.1)(tsx@4.23.12)(yaml@2.9.0))
 
   packages/dsh-tauri-panel:
     dependencies:

@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "dsh-tauri": "workspace:*",
+    "dsh-tauri-edit-message": "workspace:*",
     "dsh-tauri-panel": "workspace:*",
     "dsh-tauri-panel-extension": "workspace:*",
     "dsh-tauri-panel-scheduler": "workspace:*",

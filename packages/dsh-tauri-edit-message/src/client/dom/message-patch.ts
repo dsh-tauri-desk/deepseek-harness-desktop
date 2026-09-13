@@ -270,11 +270,13 @@ async function submitEdit(
       await retireOriginal(sessionId)
     }
     logEvent('submit', plan.reset ? 'created' : 'forked', { childId, boundary: plan.boundary, reset: plan.reset })
+    // 先打开新会话：官方 composer 的动作面要等该会话进入舞台（scope 物化）才可用，
+    // DSH-EasyRewrite 也是「先 openSession(newId) → 等 composer 就绪 → setDraft + submit」。
+    endEdit(row)
+    openWhenListed(childId)
     // 把改后的文本发进新会话（此时它已存在，只是可能还没出现在侧栏快照里）。
     await sendPrompt(childId, text)
     logEvent('submit', 'prompted', { childId })
-    endEdit(row)
-    openWhenListed(childId)
   }
   catch (e) {
     logEvent('submit', 'failed', { error: String((e as Error)?.message || e) })
@@ -333,17 +335,11 @@ async function sendPrompt(sessionId: string, text: string): Promise<void> {
   if (actions && typeof actions.setDraft === 'function' && typeof actions.submit === 'function') {
     const { setDraft, submit } = actions as { setDraft: (text: string) => void, submit: () => void }
     setDraft(text)
-    // 与 EasyRewrite 一致：提交放到下一个 tick，让编辑器的 draft 状态先落定。
+    // 与 EasyRewrite 一致：提交前留一点时间让编辑器的 draft 状态落定（它用 60ms）。
     await new Promise<void>((resolve) => {
-      setTimeout(() => {
-        try {
-          submit()
-        }
-        finally {
-          resolve()
-        }
-      }, 60)
+      setTimeout(resolve, 60)
     })
+    submit()
     return
   }
 

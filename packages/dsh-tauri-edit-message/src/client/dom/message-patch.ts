@@ -282,18 +282,20 @@ async function archiveOriginal(sessions: SessionsService, sessionId: string): Pr
 /**
  * 把文本发进目标会话。
  *
- * 走官方会话面 `ctx.sessions.binding(id).session.prompt(content)`；缺失时给出可诊断
+ * 走官方会话面 `ctx.sessions.binding(id).session.prompt(content, mode)`（mode 必填，用 `queue`）；缺失时给出可诊断
  * 的错误，而不是静默半成品（新会话已建好，用户可手动把文本发一遍）。
  */
 async function sendPrompt(sessionId: string, text: string): Promise<void> {
   const sessions = getSessions()
   const binding = sessions && typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
   const session = (binding as { session?: unknown } | undefined)?.session as {
-    prompt?: (content: unknown, mode?: unknown) => Promise<unknown>
+    prompt?: (content: unknown, mode: unknown) => Promise<unknown>
   } | undefined
   if (!session || typeof session.prompt !== 'function')
     throw new Error('新会话已建立，但当前内核不暴露 prompt 接口：请点开新会话后手动发送改后的文本。')
-  await session.prompt([{ type: 'text', text }])
+  // mode 是 session/prompt 的必填枚举（"queue" | "steer"）：漏传会被 schema 拒绝
+  // （client api: session/prompt rejected "request"）。这里要的是正常排队一轮，用 queue。
+  await session.prompt([{ type: 'text', text }], 'queue')
 }
 
 /* ---------------------------------------------------------------- 安装 -- */

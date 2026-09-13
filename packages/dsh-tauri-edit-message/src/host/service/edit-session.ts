@@ -217,6 +217,24 @@ async function createChildSession(
     seedFirstSeq: seed[0]?.seq ?? null,
     seedLastSeq: seed.at(-1)?.seq ?? null,
   })
+  // 立刻核对子会话**实际**的事件数量：内核若忽略 seed，这里就会远大于 seed.length。
+  // 这是判定「截断是否真的生效」的唯一权威读数（不依赖任何客户端）。
+  try {
+    const childRecord = sessionRecord(ctx.sessions.get(childId))
+    const childTurns = closedTurns(childRecord.events)
+    void logEvent('edit', 'child-verify', {
+      childId,
+      expectedEvents: seed.length,
+      actualEvents: childRecord.events.length,
+      actualTurns: childTurns.map(candidate => candidate.turn),
+      inheritedEventCount: childRecord.inheritedEventCount,
+      seeded: childRecord.header.isSeeded === true,
+      truncationHonored: childRecord.events.length <= seed.length + 2,
+    })
+  }
+  catch (e) {
+    void logEvent('edit', 'child-verify-failed', { childId, error: String((e as Error)?.message || e) })
+  }
   return childId
 }
 

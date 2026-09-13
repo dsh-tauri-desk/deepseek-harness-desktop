@@ -61,7 +61,7 @@ export function userText(message: Record<string, unknown>): string {
 
 /** 边界解析结果（与 DSH-EasyRewrite 的 /bubble/recall 语义一致）。 */
 export type BoundaryResult
-  = | { ok: true, boundary: number, turn: number, eventSeq: number, before: string, reset: boolean }
+  = | { ok: true, boundary: number, turn: number, eventSeq: number, before: string, reset: boolean, prefixLength: number }
     | { ok: false, code: 'session-not-found' | 'invalid-target' | 'turn-open' | 'no-boundary', message: string }
 
 /**
@@ -110,7 +110,7 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
     // 用它必然把整轮复制过去（就是「旧提问又跑一遍」）。上游 DSH-EasyRewrite 对这种情况
     // 走 reset：归档原会话 + 在同一工作区开一个全新会话，只把改后的提问发出去。
     void logEvent('boundary', 'ok-reset(first turn)', { sessionId: record.id, turn: turn.turn })
-    return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true }
+    return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true, prefixLength: 0 }
   }
   // 预测官方 fork 的结果，写进日志：boundary = 第一个 seq >= anchor 的 turn/end，
   // cut = 从 boundary 之后推进到下一个 turn/start。这样日志能直接说明子会话会保留
@@ -130,7 +130,7 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
     keptTurns,
     childWillShowTurns: keptTurns,
   })
-  return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false }
+  return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false, prefixLength: cut }
 }
 
 /** 读一条会话并解析边界。 */
@@ -171,6 +171,85 @@ export async function planEdit(ctx: HostContext, sessionId: string, turnNumber: 
     }
   }
   return result
+}
+
+/* --------------------------------------------------------- 子会话创建 -- */
+
+/**
+ * 用**内核自己的 fork 原语**建子会话：`ctx.agents.create({ seed })`。
+ *
+ * 为什么不用客户端 `sessions.fork({ atSeq })`：dev 内核（0.1.5-rc.1）实测**忽略 atSeq**
+ * ——父会话只有 3 轮，`atSeq=18` 之后建出的子会话却有 4 轮（被编辑掉的那一轮连同原样
+ * 回复全被复制）。对真实日志比对 assistant 时间戳可证：子会话 seq 16 的时间戳与父会话
+ * **完全相同**（继承），而后续轮次是新生成的。
+ *
+ * 官方 session/fork 内部也正是这么建子会话的（dsh-api-session-controller
+ * `lib/index.js:696-711`）：
+ *   agents.create({ sessionId, seed: source.events.slice(0, cut),
+ *                   inheritedEventCount: cut, meta: { parentSession, isSeeded: true } })
+ * 这里照抄同一形状，但 `cut` 由我们按「目标轮之前」精确计算，因此不受 fork 的
+ * 「必须切在一轮末尾」限制。
+ *
+ * 硬约束：`inheritedEventCount` 必须等于 seed 长度。内核断言
+ * `seeded session constructor seed must equal its inherited prefix`，多一条/少一条都 409。
+ */
+async function createChildSession(
+  ctx: HostContext,
+  source: SessionRecordLike,
+  prefixLength: number,
+): Promise<string> {
+  const seed = source.events.slice(0, Math.max(0, prefixLength)) as SessionEventLike[]
+  const childId = `session-${crypto.randomUUID()}`
+  await ctx.agents.create({
+    sessionId: childId,
+    seed,
+    inheritedEventCount: seed.length,
+    meta: {
+      ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
+      parentSession: source.id,
+      isSeeded: true,
+    },
+  })
+  void logEvent('edit', 'child-created', {
+    childId,
+    parentSession: source.id,
+    prefixLength: seed.length,
+    seedFirstSeq: seed[0]?.seq ?? null,
+    seedLastSeq: seed.at(-1)?.seq ?? null,
+  })
+  return childId
+}
+
+/** 读一条会话、解析边界、并**建好**截断后的子会话；返回新会话 id。 */
+export async function applyEdit(
+  ctx: HostContext,
+  sessionId: string,
+  turnNumber: number | undefined,
+  eventSeq: number | undefined,
+): Promise<{ ok: true, childId: string, boundary: number, turn: number, eventSeq: number, reset: boolean } | { ok: false, code: string, message: string }> {
+  const record = await loadSessionRecord(ctx, sessionId)
+  // 只给了 eventSeq 时，先由事件定位它所在的已闭合回合。
+  let turn = turnNumber
+  if (turn === undefined) {
+    if (eventSeq === undefined)
+      return { ok: false, code: 'invalid-target', message: '必须提供 turn 或 eventSeq。' }
+    const owner = closedTurns(record.events).find(candidate => eventSeq >= candidate.startSeq && eventSeq <= candidate.endSeq)
+    if (owner === undefined)
+      return { ok: false, code: 'invalid-target', message: 'eventSeq 不属于任何已闭合回合。' }
+    turn = owner.turn
+  }
+  const result = resolveBoundary(record, turn, eventSeq)
+  if (!result.ok)
+    return result
+  const childId = await createChildSession(ctx, record, result.prefixLength)
+  return {
+    ok: true,
+    childId,
+    boundary: result.boundary,
+    turn: result.turn,
+    eventSeq: result.eventSeq,
+    reset: result.reset,
+  }
 }
 
 /* ------------------------------------------------------------- 树投影 -- */

@@ -38,7 +38,7 @@ import {
 } from '../constants'
 import { logEvent } from './debug-log'
 import { createPencilIcon } from './icons'
-import { createFreshSession, currentSessionId, getSessions, openWhenListed, workspaceOf } from './runtime'
+import { currentSessionId, getSessions, openWhenListed } from './runtime'
 
 /** 行状态缓存（WeakMap，行被移除即回收）。 */
 const rowStates = new WeakMap<Element, HostRowState>()
@@ -246,34 +246,18 @@ async function submitEdit(
     logEvent('submit', 'plan', plan)
     if (!plan.ok)
       throw new Error(plan.message || plan.code)
-    const sessions = getSessions()
-    if (!sessions)
-      throw new Error('当前内核没有提供会话服务，无法重建会话。')
-    let childId: string
-    if (plan.reset) {
-      // 必须在归档/删除之前定位工作区：归档会把该会话从工作区名单里摘掉。
-      const workspaceId = workspaceOf(sessions, sessionId)
-      // 首轮：之前没有任何闭合回合可锚，fork 的最小切点必然把整轮复制过去。
-      // 与 DSH-EasyRewrite 的 reset 分支一致——归档原会话 + 同工作区开空白新会话。
-      await retireOriginal(sessionId)
-      childId = await createFreshSession(sessions, workspaceId)
-    }
-    else {
-      if (typeof sessions.fork !== 'function')
-        throw new Error('当前内核没有提供会话 fork 能力，无法撤回重建。')
-      // 官方 fork 即截断边界器：child 进入会话列表、可打开、继承前缀历史。
-      logEvent('submit', 'fork-call', { sessionId, atSeq: plan.boundary })
-      childId = await sessions.fork({ sessionId, atSeq: plan.boundary })
-      if (typeof childId !== 'string' || childId === '')
-        throw new Error('会话 fork 没有返回新的会话 id。')
-      // 核对 fork 是否真的按 atSeq 截断：把子会话的回合表记下来。
-      // 若这里出现 turn > plan.turn，说明运行中的内核忽略了 atSeq（或用了兜底 findLast），
-      // 那就是「编辑后旧消息还在、看起来又跑一遍」的直接证据。
-      logEvent('submit', 'fork-verify', await describeSession(sessions, childId, plan.turn))
-      // 新会话建成后才动原会话：fork 已经拿到前缀历史，删除不会丢内容。
-      await retireOriginal(sessionId)
-    }
-    logEvent('submit', plan.reset ? 'created' : 'forked', { childId, boundary: plan.boundary, reset: plan.reset })
+    // 子会话由**宿主**用内核自己的 fork 原语建好（`agents.create({ seed: 前缀 })`）。
+    //
+    // 为什么不再用客户端 `sessions.fork({ atSeq })`：dev 内核（0.1.5-rc.1）实测忽略 atSeq
+    // ——日志证据：父会话 3 轮、`atSeq=18`，建出的子会话却有 4 轮，被编辑掉那一轮连同其
+    // 原样回复整段被复制；比对 assistant 时间戳可见子会话 seq16 与父会话完全相同（继承），
+    // 后续轮次才是新生成。宿主建子会话不受 fork 的「必须切在一轮末尾」限制，可精确停在目标轮之前。
+    const childId = plan.childId
+    if (typeof childId !== 'string' || childId === '')
+      throw new Error('宿主没有返回重建后的会话 id。')
+    logEvent('submit', 'child-from-host', { childId, boundary: plan.boundary, reset: plan.reset })
+    // 子会话已建好才有原会话的归档——顺序上先保住新分支。
+    await retireOriginal(sessionId)
     // 先打开新会话：官方 composer 的动作面要等该会话进入舞台（scope 物化）才可用，
     // DSH-EasyRewrite 也是「先 openSession(newId) → 等 composer 就绪 → setDraft + submit」。
     endEdit(row)
@@ -354,58 +338,6 @@ async function sendPrompt(sessionId: string, text: string): Promise<void> {
   // mode 是 session/prompt 的必填枚举（"queue" | "steer"）：漏传会被 schema 拒绝
   // （client api: session/prompt rejected "request"）。这里要的是正常排队一轮，用 queue。
   await session.prompt([{ type: 'text', text }], 'queue')
-}
-
-/**
- * 摘要一条会话的回合表（诊断用：核对 fork 是否真按 atSeq 截断）。
- *
- * 直接读会话日志（`snapshotEvents()`），列出每个 `turn/start` 的 seq 与紧随其后的
- * 用户文本，因此「子会话里是否残留被编辑掉的那一轮」一眼可见。
- */
-async function describeSession(
-  sessions: NonNullable<ReturnType<typeof getSessions>>,
-  sessionId: string,
-  targetTurn: number,
-): Promise<Record<string, unknown>> {
-  try {
-    const binding = typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
-    const session = (binding as { session?: unknown } | undefined)?.session as {
-      snapshotEvents?: () => Array<{ seq: number, type: string, data?: Record<string, unknown> }>
-    } | undefined
-    const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
-    if (!Array.isArray(events))
-      return { sessionId, unavailable: true }
-    const turns: Array<{ turn: unknown, startSeq: number, userSeq: number | null, text: string }> = []
-    let current: { turn: unknown, startSeq: number, userSeq: number | null, text: string } | undefined
-    for (const event of events) {
-      if (event.type === 'turn/start') {
-        if (current)
-          turns.push(current)
-        current = { turn: event.data?.turn, startSeq: event.seq, userSeq: null, text: '' }
-        continue
-      }
-      if (current && event.type === 'user/message' && current.userSeq === null) {
-        const blocks = event.data?.content
-        if (Array.isArray(blocks)) {
-          current.userSeq = event.seq
-          current.text = blocks.map(block => String((block as { text?: string }).text ?? '')).join('').slice(0, 24)
-        }
-      }
-    }
-    if (current)
-      turns.push(current)
-    return {
-      sessionId,
-      targetTurn,
-      eventCount: events.length,
-      turns,
-      // fork 若忽略了 atSeq，子会话里就会留下 targetTurn 及之后的轮次。
-      keptBeyondTarget: turns.filter(t => typeof t.turn === 'number' && (t.turn as number) >= targetTurn).map(t => t.turn),
-    }
-  }
-  catch (e) {
-    return { sessionId, error: String((e as Error)?.message || e) }
-  }
 }
 
 /** 官方 composer 的动作面（`setDraft` / `submit` / `addAttachments`）。 */interface ComposerActions {

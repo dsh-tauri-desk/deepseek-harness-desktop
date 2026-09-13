@@ -25,7 +25,7 @@ import {
 } from 'dsh-tauri'
 import { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_PATH } from '../../shared/constants'
 import { logEvent } from '../service/debug-log'
-import { planEdit, readTree } from '../service/edit-session'
+import { applyEdit, readTree } from '../service/edit-session'
 
 /** 只允许本机（回环）地址发起变更。 */
 function isLoopback(request: IncomingMessage): boolean {
@@ -96,7 +96,7 @@ export function buildRoutes(ctx: HostContext): any[] {
         throw new TypeError('必须提供 turn 或 eventSeq 来定位被编辑的消息。')
       const eventSeq = hasEventSeq ? integerOf(body.eventSeq, 'eventSeq') : undefined
       const turn = hasTurn ? integerOf(body.turn, 'turn') : undefined
-      const result = await planEdit(ctx, sessionId, turn, eventSeq)
+      const result = await applyEdit(ctx, sessionId, turn, eventSeq)
       respond(response, result.ok ? 200 : result.code === 'turn-open' || result.code === 'no-boundary' ? 409 : 404, result)
     }
     catch (error) {

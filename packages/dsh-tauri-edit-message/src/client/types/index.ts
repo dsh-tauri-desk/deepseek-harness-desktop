@@ -16,12 +16,13 @@ export interface EditRequest {
 /** 边界解析成功：该消息之前最后一个闭合回合的 turn/end seq。 */
 export interface BoundaryOk {
   ok: true
-  /** fork 的锚点 seq；eset: true 时为 -1（首轮：没有可锚的闭合回合）。 */
+  /** 宿主**已经建好**的截断子会话 id（内核 fork 原语 agents.create({seed})）。 */
+  childId: string
+  /** 边界锚点（诊断用；首轮为 -1）。 */
   boundary: number
   turn: number
   eventSeq: number
-  before: string
-  /** 首轮编辑：不用 fork，改为「归档原会话 + 同工作区新建空白会话」。 */
+  /** 首轮编辑：前缀为空，子会话只有系统提示。 */
   reset: boolean
 }
 

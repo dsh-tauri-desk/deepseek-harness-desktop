@@ -14,7 +14,7 @@ import type { HostContext } from './types'
 import { buildRoutes } from './routes'
 
 /** 宿主依赖：会话存储、会话查询、Web 服务器。 */
-export const inject = ['sessions', 'sessionQuery', 'webServer']
+export const inject = ['sessions', 'agents', 'sessionQuery', 'webServer']
 
 /**
  * 宿主插件体。

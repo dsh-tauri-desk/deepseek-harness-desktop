@@ -1,20 +1,24 @@
 /**
- * client/dom/message-patch.ts — 用户气泡的 DOM 注入层。
+ * client/dom/message-patch.tsx — 用户气泡的 DOM 注入层。
  *
  * 职责只有两件，业务编排在 `service/edit.ts`、UI 在 `components/editor.tsx`：
  *   1. 给官方用户气泡挂「编辑」入口（悬停操作行里的 Edit 图标按钮 + 双击气泡本体）；
  *   2. 进入编辑态时隐藏官方气泡与操作行，并在原位挂载 React 编辑面板（`createRoot`）。
  *
  * 官方气泡本体不做任何替换：只隐藏（`display:none`，可逐字还原）并往里追加插件节点。
- * 之所以用 DOM 注入而不是槽位 shadow：整个 `conversation.chat.node` 由插件接管会改变
- * 官方渲染语义，这里只做增量。
+ *
+ * 类名约定：样式由 `styles/editor.cssr.ts` 的 `bem` 助手生成，其嵌套形态是**后代**选择器
+ * （`.dshp-edit-message .dshp-edit-message__edit-btn`），所以每个注入节点的外层必须带块类
+ * `BLOCK` —— 否则 Edit 按钮会退回浏览器默认样式（它被追加进的是**官方**操作行）。
  */
 
 import type { HostRowState } from '../types'
-import { Pencil } from 'dsh-tauri-ui/client'
+import { Icon, Pencil } from 'dsh-tauri-ui/client'
 import { createRoot } from 'react-dom/client'
 import { Editor } from '../components/editor'
 import {
+  BLOCK,
+  CLS_EDIT_BTN,
   DOUBLECLICK_ATTR,
   HOST_ACTIONS_CLASS,
   HOST_BUBBLE_CLASS,
@@ -26,7 +30,6 @@ import {
   USER_ROW_SELECTOR,
   USER_TURN_ATTR,
 } from '../constants'
-import { renderInto } from './render'
 import { currentSessionId } from './runtime'
 
 /** 行状态缓存（WeakMap，行被移除即回收）。 */
@@ -97,23 +100,35 @@ function ensureBubbleDoubleClick(row: Element): void {
   bubble.addEventListener('dblclick', event => handleBubbleDoubleClick(row, event))
 }
 
-/** 造 Edit 图标按钮（复用官方 `.xzv4MW_action` 类，尺寸 / hover 同源）。 */
-function createEditButton(row: Element): HTMLButtonElement {
+/**
+ * 造 Edit 图标按钮。
+ *
+ * 外面包一层带块类的容器：bem 的嵌套选择器需要一个块祖先，而按钮本体必须追加进
+ * **官方**操作行（`.xzv4MW_action` 的尺寸 / hover 由官方负责）。
+ */
+function createEditButton(row: Element): HTMLElement {
+  const wrapper = document.createElement('span')
+  wrapper.setAttribute(INJECTED_ATTR, '')
+  wrapper.setAttribute('data-mtx-mark', MARK_EDIT)
+  wrapper.className = BLOCK
+
   const button = document.createElement('button')
   button.type = 'button'
-  button.className = `${HOST_ACTIONS_CLASS} dshp-edit-message__edit-btn`
+  button.className = `${HOST_ACTIONS_CLASS} ${CLS_EDIT_BTN}`
   button.setAttribute(INJECTED_ATTR, '')
-  button.setAttribute('data-mtx-mark', MARK_EDIT)
   button.title = '编辑消息'
   button.setAttribute('aria-label', '编辑消息')
-  // 图标同样由 React 渲染（原生按钮不属于 React 树，用 createRoot 挂进去）。
-  renderInto(button, <Pencil />)
   button.addEventListener('click', (event) => {
     event.preventDefault()
     event.stopPropagation()
     beginEdit(row)
   })
-  return button
+  // 图标走共享的 `Icon` + Gravity `Pencil`（React 渲染；原生按钮不属于 React 树，
+  // 因此用 createRoot 挂进去）。
+  createRoot(button).render(<Icon as={Pencil} />)
+
+  wrapper.appendChild(button)
+  return wrapper
 }
 
 /** 把 Edit 按钮追加进官方操作行；没有官方操作行时自建一条。 */
@@ -129,7 +144,7 @@ function ensureEditButton(row: Element): void {
   const own = document.createElement('div')
   own.setAttribute(INJECTED_ATTR, '')
   own.setAttribute('data-mtx-mark', MARK_OWN_ACTIONS)
-  own.className = 'dshp-edit-message__own-actions'
+  own.className = BLOCK
   own.appendChild(createEditButton(row))
   row.appendChild(own)
 }
@@ -160,11 +175,12 @@ function beginEdit(row: Element): void {
   if (actions)
     actions.style.display = 'none'
 
-  // 容器插在官方气泡列里，React 只接管这个容器内部（官方节点是 React 渲染的，
-  // 但这里既不改动它的子节点、也不与它共享 reconcile，因此安全）。
+  // 容器带块类，面板内部的 `__editor` / `__textarea` 等元素选择器才会命中
+  // （bem 嵌套生成的是后代选择器）。
   const container = document.createElement('div')
   container.setAttribute(INJECTED_ATTR, '')
   container.setAttribute('data-mtx-mark', MARK_EDITOR)
+  container.className = BLOCK
   container.style.width = '100%'
   stack.appendChild(container)
   state.root = createRoot(container)

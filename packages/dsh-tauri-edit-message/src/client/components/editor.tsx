@@ -13,6 +13,15 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { submitEdit } from '../service/edit'
 
+// 类名取自 `styles/editor.cssr.ts` 的 bem 产物（块 `dshp-edit-message`）。
+// 面板容器由 DOM 层挂上块类，这里只写元素 / 修饰符。
+const EDITOR = 'dshp-edit-message__editor'
+const TEXTAREA = 'dshp-edit-message__textarea'
+const ERROR = 'dshp-edit-message__error'
+const ACTIONS = 'dshp-edit-message__actions'
+const BUTTON = 'dshp-edit-message__btn'
+const BUTTON_PRIMARY = 'dshp-edit-message__btn--primary'
+
 /** 组件入参。 */
 export interface EditorProps {
   /** 被编辑消息所在的会话。 */
@@ -77,10 +86,10 @@ export function Editor({ sessionId, turn, initialText, onCancel }: EditorProps):
   }, [onCancel, submit])
 
   return (
-    <div className="dshp-edit-message__editor">
+    <div className={EDITOR}>
       <textarea
         ref={textareaRef}
-        className="dshp-edit-message__textarea"
+        className={TEXTAREA}
         rows={3}
         aria-label="编辑消息"
         value={text}
@@ -88,12 +97,12 @@ export function Editor({ sessionId, turn, initialText, onCancel }: EditorProps):
         onChange={event => setText(event.target.value)}
         onKeyDown={onKeyDown}
       />
-      {error === '' ? null : <div className="dshp-edit-message__error">{error}</div>}
-      <div className="dshp-edit-message__actions">
-        <button type="button" className="dshp-edit-message__btn" onClick={onCancel}>取消</button>
+      {error === '' ? null : <div className={ERROR}>{error}</div>}
+      <div className={ACTIONS}>
+        <button type="button" className={BUTTON} onClick={onCancel}>取消</button>
         <button
           type="button"
-          className="dshp-edit-message__btn dshp-edit-message__btn--primary"
+          className={`${BUTTON} ${BUTTON_PRIMARY}`}
           disabled={busy || text.trim() === ''}
           onClick={() => void submit()}
         >

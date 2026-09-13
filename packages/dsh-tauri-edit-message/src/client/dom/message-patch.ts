@@ -310,23 +310,80 @@ async function retireOriginal(sessionId: string): Promise<void> {
 }
 
 /**
- * 把文本发进目标会话。
+ * 把文本发进目标会话——走**官方 composer 的公开动作面**（与 DSH-EasyRewrite 一致）。
  *
- * 走官方会话面 `ctx.sessions.binding(id).session.prompt(content, mode)`（mode 必填，用 `queue`）；缺失时给出可诊断
- * 的错误，而不是静默半成品（新会话已建好，用户可手动把文本发一遍）。
+ * DSH-EasyRewrite 从不调用 `session.prompt`：它在 `conversation.input.dock` 槽里取到
+ * 官方 input 门面的 actions，然后用 `setDraft(text)` + `submit()` 让**应用自己的发送
+ * 路径**提交（`submit()` 内部就是 `this.submit("queue")`）。这条路径会经过编辑器的
+ * draft 状态、提交机与本地回显，因此行为与应用里手动发送完全一致。
+ *
+ * 0.1.2 起宿主不再下发 `inputActions`，改为经会话 scope 自取：
+ * `ctx.sessions.scope(id).get('conversation').input.for(scope).actions`。
+ * 取不到时回落到 `session.prompt(content, 'queue')`（RPC 直发），再不行给出可诊断错误。
  */
 async function sendPrompt(sessionId: string, text: string): Promise<void> {
   const sessions = getSessions()
+  const actions = composerActions(sessions, sessionId)
+  logEvent('submit', 'composer', {
+    sessionId,
+    hasScope: typeof (sessions as { scope?: unknown } | null)?.scope === 'function',
+    hasSetDraft: typeof actions?.setDraft === 'function',
+    hasSubmit: typeof actions?.submit === 'function',
+  })
+  if (actions && typeof actions.setDraft === 'function' && typeof actions.submit === 'function') {
+    const { setDraft, submit } = actions as { setDraft: (text: string) => void, submit: () => void }
+    setDraft(text)
+    // 与 EasyRewrite 一致：提交放到下一个 tick，让编辑器的 draft 状态先落定。
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        try {
+          submit()
+        }
+        finally {
+          resolve()
+        }
+      }, 60)
+    })
+    return
+  }
+
   const binding = sessions && typeof sessions.binding === 'function' ? sessions.binding(sessionId) : undefined
-  logEvent('submit', 'binding', { sessionId, hasBinding: binding !== undefined, hasPrompt: typeof (binding && binding.session && binding.session.prompt) === 'function' })
   const session = (binding as { session?: unknown } | undefined)?.session as {
     prompt?: (content: unknown, mode: unknown) => Promise<unknown>
   } | undefined
   if (!session || typeof session.prompt !== 'function')
-    throw new Error('新会话已建立，但当前内核不暴露 prompt 接口：请点开新会话后手动发送改后的文本。')
+    throw new Error('新会话已建立，但当前内核既不暴露 composer 动作面也没有 prompt 接口：请点开新会话后手动发送改后的文本。')
   // mode 是 session/prompt 的必填枚举（"queue" | "steer"）：漏传会被 schema 拒绝
   // （client api: session/prompt rejected "request"）。这里要的是正常排队一轮，用 queue。
   await session.prompt([{ type: 'text', text }], 'queue')
+}
+
+/** 官方 composer 的动作面（`setDraft` / `submit` / `addAttachments`）。 */
+interface ComposerActions {
+  setDraft?: (text: string) => void
+  submit?: () => void
+}
+
+/**
+ * 经会话 scope 取官方 input 门面的 actions。
+ *
+ * 全程防御式：任一环节缺失都返回 undefined，由调用方决定回落。
+ */
+function composerActions(sessions: ReturnType<typeof getSessions>, sessionId: string): ComposerActions | undefined {
+  try {
+    const scope = (sessions as { scope?: (id: string) => unknown } | null)?.scope
+    if (typeof scope !== 'function' || sessions === null)
+      return undefined
+    const sessionScope = scope.call(sessions, sessionId) as { get?: (name: string) => unknown } | undefined
+    const conversation = sessionScope?.get?.('conversation') as {
+      input?: { for?: (scope: unknown) => { actions?: ComposerActions } }
+    } | undefined
+    const shell = conversation?.input?.for?.(sessionScope)
+    return shell?.actions
+  }
+  catch {
+    return undefined
+  }
 }
 
 /* ---------------------------------------------------------------- 安装 -- */

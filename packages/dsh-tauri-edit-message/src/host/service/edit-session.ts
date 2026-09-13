@@ -200,28 +200,35 @@ async function createChildSession(
 ): Promise<string> {
   const seed = source.events.slice(0, Math.max(0, prefixLength)) as SessionEventLike[]
   const childId = `session-${crypto.randomUUID()}`
-  // 刻意**不传** `meta.parentSession`：血缘会让内核在落盘时把父会话的日志并回子会话。
+  // 逐字对齐上游 dsh-plugin-message-edit 的做法（那是「两个来源」里唯一真正跑通的宿主实现）：
+  //   - `meta.parentSession` + `meta.isSeeded` + `inheritedEventCount`（= seed 长度）
+  //   - 建完立刻 `ctx.sessions.flush(child.agent.session)`（持久化屏障）
   //
-  // 实测（child-verify 读活会话 vs 直接解磁盘上的 session.v3.jsonl.zstd）：
-  //   - 建完立刻读回：21 events / turns:[1]                  ← 截断正确
-  //   - 落盘后：      38 events / turns:[1,2,3]              ← 被编辑掉的那轮又回来了
-  // 无论声明 `isSeeded`（继承语义）还是 `isSeeded:false`，只要带 `parentSession`，
-  // 子会话的持久化日志就会补上父会话的内容。去掉血缘后子会话是独立会话，
-  // 保留的前缀就是它自己的历史，不会再被父会话污染。
-  //
-  // 代价：子会话不会嵌套在侧栏的父会话下（只在树投影里通过 parentSessionId 体现），
-  // 但「编辑掉的那轮不再出现」是硬要求，优先保证。
-  await ctx.agents.create({
+  // 我前面三轮分别试过「去掉 isSeeded」「去掉 parentSession」，落盘结果都是父会话的完整历史；
+  // 同时对照日志：`child-verify`（活会话）永远只有保留轮，而**磁盘上**总是多出被编辑的那轮，
+  // 说明差异发生在 create 之后的持久化路径上。上游唯一多做的就是 push version 标记 + flush，
+  // 因此这一步把 flush 补上，并按上游的 branchSeedOptions 形状传继承边界。
+  const child = await ctx.agents.create({
     sessionId: childId,
     seed,
+    inheritedEventCount: seed.length,
     meta: {
       ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
+      parentSession: source.id,
+      isSeeded: true,
     },
   })
+  try {
+    await ctx.sessions.flush((child as { agent?: { session?: unknown } }).agent?.session)
+  }
+  catch (e) {
+    void logEvent('edit', 'child-flush-failed', { childId, error: String((e as Error)?.message || e) })
+  }
   void logEvent('edit', 'child-created', {
     childId,
-    parentSession: null,
+    parentSession: source.id,
     sourceSession: source.id,
+    flushed: true,
     prefixLength: seed.length,
     seedFirstSeq: seed[0]?.seq ?? null,
     seedLastSeq: seed.at(-1)?.seq ?? null,

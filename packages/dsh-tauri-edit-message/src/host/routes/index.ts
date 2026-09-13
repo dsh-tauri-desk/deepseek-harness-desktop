@@ -25,7 +25,7 @@ import {
 } from 'dsh-tauri'
 import { EDIT_MESSAGE_PLUGIN_NAME, MESSAGE_TREE_PATH } from '../../shared/constants'
 import { logEvent } from '../service/debug-log'
-import { applyEdit, readTree } from '../service/edit-session'
+import { applyEdit, planEdit, readTree } from '../service/edit-session'
 
 /** 只允许本机（回环）地址发起变更。 */
 function isLoopback(request: IncomingMessage): boolean {
@@ -96,7 +96,12 @@ export function buildRoutes(ctx: HostContext): any[] {
         throw new TypeError('必须提供 turn 或 eventSeq 来定位被编辑的消息。')
       const eventSeq = hasEventSeq ? integerOf(body.eventSeq, 'eventSeq') : undefined
       const turn = hasTurn ? integerOf(body.turn, 'turn') : undefined
-      const result = await applyEdit(ctx, sessionId, turn, eventSeq)
+      // 默认只**解析边界**（与 DSH-EasyRewrite 的 /bubble/recall 一致）：子会话由客户端用
+      // 官方 `sessions.fork({ atSeq })` 建，宿主不碰 Agent。
+      // `apply: true` 是明确的回落请求（官方 fork 不可用时），才由宿主用 agents.create 建。
+      const result = body.apply === true
+        ? await applyEdit(ctx, sessionId, turn, eventSeq)
+        : await planEdit(ctx, sessionId, turn, eventSeq)
       respond(response, result.ok ? 200 : result.code === 'turn-open' || result.code === 'no-boundary' ? 409 : 404, result)
     }
     catch (error) {

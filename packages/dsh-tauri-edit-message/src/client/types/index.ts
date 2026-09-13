@@ -11,13 +11,15 @@ export interface EditRequest {
   eventSeq?: number
   /** 改后的文本（宿主回显时用于日志，不参与边界计算）。 */
   text: string
+  /** 显式请求宿主建子会话（仅在官方 sessions.fork 不可用时的回落路径）。 */
+  apply?: boolean
 }
 
 /** 边界解析成功：该消息之前最后一个闭合回合的 turn/end seq。 */
 export interface BoundaryOk {
   ok: true
-  /** 宿主**已经建好**的截断子会话 id（内核 fork 原语 agents.create({seed})）。 */
-  childId: string
+  /** 宿主建好的截断子会话 id（仅 pply: true 路径返回）。 */
+  childId?: string
   /** 边界锚点（诊断用；首轮为 -1）。 */
   boundary: number
   turn: number

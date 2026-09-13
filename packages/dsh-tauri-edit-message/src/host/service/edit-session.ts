@@ -61,7 +61,7 @@ export function userText(message: Record<string, unknown>): string {
 
 /** 边界解析结果（与 DSH-EasyRewrite 的 /bubble/recall 语义一致）。 */
 export type BoundaryResult
-  = | { ok: true, boundary: number, turn: number, eventSeq: number, before: string, reset: boolean, prefixLength: number }
+  = | { ok: true, boundary: number, turn: number, eventSeq: number, before: string, reset: boolean, prefixLength: number, pendingInbox: number }
     | { ok: false, code: 'session-not-found' | 'invalid-target' | 'turn-open' | 'no-boundary', message: string }
 
 /**
@@ -110,16 +110,26 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
     // 用它必然把整轮复制过去（就是「旧提问又跑一遍」）。上游 DSH-EasyRewrite 对这种情况
     // 走 reset：归档原会话 + 在同一工作区开一个全新会话，只把改后的提问发出去。
     void logEvent('boundary', 'ok-reset(first turn)', { sessionId: record.id, turn: turn.turn })
-    return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true, prefixLength: 0 }
+    return { ok: true, boundary: -1, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: true, prefixLength: 0, pendingInbox: countPendingInbox(preambleOf(record.events)) }
   }
-  // 预测官方 fork 的结果，写进日志：boundary = 第一个 seq >= anchor 的 turn/end，
-  // cut = 从 boundary 之后推进到下一个 turn/start。这样日志能直接说明子会话会保留
-  // 哪几轮，不必再猜「晚了一个节点」是保留多了还是少了。
+  // 切点 = 目标轮的 `turn/start`（官方 cut 的等价物），但也**必须**知道 seed 里留下了几条
+  // 悬挂的 inbox 入队项，交给 createChildSession 在**建完之后**用一条 live append 排空。
+  //
+  // 实测（源 4abe75f9 / 子 ade7c58a 的逐事件对比）：
+  //   [19] turn/end(turn 1)
+  //   [21] inbox inserted=1 start=1      ← 目标轮 2 的提问已入队
+  //   [22] turn/start(turn 2)
+  //   [23] inbox removed=1               ← 它的排空在 turn/start 之后（不在 seed 里）
+  //   [26] USER "没什么"                  ← 子会话把它当自己的第 2 轮**重新运行**了
+  // 因此只切在 turn/end 不够（会把 [21] 带进来），切在 turn/start 又会丢掉排空；
+  // 两者都必须做：seed 切在 turn/start 之前（长度与 inheritedEventCount 严格相等、不追加），
+  // 悬挂项在建完后作为普通事件排空。
   const boundaryEvent = record.events.find(event => event.type === 'turn/end' && event.seq >= boundary)
   let cut = boundaryEvent === undefined ? -1 : boundaryEvent.seq + 1
   while (cut >= 0 && cut < record.events.length && record.events[cut]?.type !== 'turn/start')
     cut += 1
-  const keptTurns = closedTurns(record.events as SessionEventLike[]).filter(candidate => cut >= 0 && candidate.endSeq < cut).map(candidate => candidate.turn)
+  const pendingInSeed = countPendingInbox(record.events.slice(0, Math.max(0, cut)))
+  const keptTurns = turns.filter(candidate => candidate.turn <= turn.turn - 1).map(candidate => candidate.turn)
   void logEvent('boundary', 'ok-fork', {
     sessionId: record.id,
     targetTurn: turn.turn,
@@ -127,10 +137,11 @@ export function resolveBoundary(record: SessionRecordLike, turnNumber: number, e
     boundarySeq: boundaryEvent?.seq ?? null,
     cutSeq: cut,
     cutEvent: cut >= 0 ? record.events[cut]?.type : null,
+    pendingInSeed,
     keptTurns,
     childWillShowTurns: keptTurns,
   })
-  return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false, prefixLength: cut }
+  return { ok: true, boundary, turn: turn.turn, eventSeq: turn.user.seq, before: userText(turn.user.data), reset: false, prefixLength: cut, pendingInbox: pendingInSeed }
 }
 
 /** 读一条会话并解析边界。 */
@@ -175,6 +186,102 @@ export async function planEdit(ctx: HostContext, sessionId: string, turnNumber: 
 
 /* --------------------------------------------------------- 子会话创建 -- */
 
+/** 源会话所在的侧栏工作区 id（找不到返回 undefined）。 */
+function workspaceIdOf(ctx: HostContext, sessionId: string): string | undefined {
+  return workspaceFor(ctx, sessionId)?.id
+}
+
+/** 源会话所在的工作区实例（registry.list() 里 sessionIds 命中的那个）。 */
+function workspaceFor(ctx: HostContext, sessionId: string): { id?: string, attachSession?: (id: string) => Promise<unknown> } | undefined {
+  try {
+    const registry = ctx.get('workspaceRegistry')
+    const list = registry?.list?.()
+    if (!Array.isArray(list))
+      return undefined
+    return list.find((workspace: { sessionIds?: readonly string[] }) => Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId))
+  }
+  catch {
+    return undefined
+  }
+}
+
+/** 累计 seed 里未排空的 inbox 入队项数（`inserted - removedCount`）。 */
+function countPendingInbox(events: readonly SessionEventLike[]): number {
+  let pending = 0
+  for (const event of events) {
+    if (event.type !== 'agent/inbox/spliced')
+      continue
+    const data = event.data as { inserted?: unknown[], removedCount?: number } | undefined
+    const inserted = Array.isArray(data?.inserted) ? data.inserted.length : 0
+    const removed = typeof data?.removedCount === 'number' ? data.removedCount : 0
+    pending = Math.max(0, pending + inserted - removed)
+  }
+  return pending
+}
+
+/** 回合开始之前的系统前言（首轮编辑的 seed）。 */
+function preambleOf(events: readonly SessionEventLike[]): SessionEventLike[] {
+  const firstTurn = events.findIndex(event => event.type === 'turn/start')
+  return events.slice(0, Math.max(0, firstTurn)) as SessionEventLike[]
+}
+
+/**
+ * 从会话历史解析模型路由（与 REF A `agentOptions` 同一判据：最后一次 `request/header`）。
+ *
+ * 两端参考实现建子会话时都显式传 `agentOptions:{provider,model}`；不传会让子会话悄悄
+ * 掉回全局默认模型，用户编辑后看到的回答可能换了模型。
+ */
+function modelRouteOptions(events: readonly SessionEventLike[]): Record<string, unknown> | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type !== 'request/header')
+      continue
+    const config = (event.data.header as { config?: { provider?: string, model?: string, maxTokens?: number } } | undefined)?.config
+    if (config?.provider === undefined || config.model === undefined)
+      return undefined
+    return {
+      provider: config.provider,
+      model: config.model,
+      ...(config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens }),
+    }
+  }
+  return undefined
+}
+
+/**
+ * 排空 seed 末尾悬挂的 inbox 插入（见 createChildSession 里的长注释）。
+ *
+ * 扫描 seed 里 `agent/inbox/spliced` 的净入队量：`inserted.length - removedCount` 的累计。
+ * 若末尾仍有未排空的项，就补一条 `removedCount = 未排空数` 的 spliced 事件把它清掉，
+ * 使子会话的 inbox 从零开始（改后的文本才会成为第一轮）。
+ */
+function drainPendingInbox(seed: SessionEventLike[]): SessionEventLike[] {
+  let pending = 0
+  for (const event of seed) {
+    if (event.type !== 'agent/inbox/spliced')
+      continue
+    const data = event.data as { inserted?: unknown[], removedCount?: number } | undefined
+    const inserted = Array.isArray(data?.inserted) ? data.inserted.length : 0
+    const removed = typeof data?.removedCount === 'number' ? data.removedCount : 0
+    pending = Math.max(0, pending + inserted - removed)
+  }
+  if (pending === 0)
+    return seed
+  const last = seed[seed.length - 1]
+  const start = typeof (last?.data as { start?: number } | undefined)?.start === 'number'
+    ? (last?.data as { start: number }).start
+    : 0
+  const drain: SessionEventLike = {
+    type: 'agent/inbox/spliced',
+    seq: seed.length,
+    time: Date.now(),
+    data: { target: 'next-turn', start: 0, removedCount: pending, inserted: [] },
+    ignorable: true,
+  } as unknown as SessionEventLike
+  void start
+  return [...seed, drain]
+}
+
 /**
  * 用**内核自己的 fork 原语**建子会话：`ctx.agents.create({ seed })`。
  *
@@ -197,41 +304,116 @@ async function createChildSession(
   ctx: HostContext,
   source: SessionRecordLike,
   prefixLength: number,
+  pendingInbox = 0,
 ): Promise<string> {
   const seed = source.events.slice(0, Math.max(0, prefixLength)) as SessionEventLike[]
   const childId = `session-${crypto.randomUUID()}`
-  // 逐字对齐上游 dsh-plugin-message-edit 的做法（那是「两个来源」里唯一真正跑通的宿主实现）：
-  //   - `meta.parentSession` + `meta.isSeeded` + `inheritedEventCount`（= seed 长度）
-  //   - 建完立刻 `ctx.sessions.flush(child.agent.session)`（持久化屏障）
+  // 恢复**继承通道**（用户要求）：与官方 `session/fork` 和上游 dsh-plugin-message-edit
+  // 完全同形——seed 只带「目标轮之前」的前缀，并把继承边界一并声明。
   //
-  // 我前面三轮分别试过「去掉 isSeeded」「去掉 parentSession」，落盘结果都是父会话的完整历史；
-  // 同时对照日志：`child-verify`（活会话）永远只有保留轮，而**磁盘上**总是多出被编辑的那轮，
-  // 说明差异发生在 create 之后的持久化路径上。上游唯一多做的就是 push version 标记 + flush，
-  // 因此这一步把 flush 补上，并按上游的 branchSeedOptions 形状传继承边界。
-  const child = await ctx.agents.create({
-    sessionId: childId,
-    seed,
-    inheritedEventCount: seed.length,
-    meta: {
-      ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
-      parentSession: source.id,
-      isSeeded: true,
-    },
+  // 首轮（prefixLength = 0）不能退回「前 4 条事件」：那 4 条里最后一条可能正是
+  // `agent/inbox/spliced`（原始第一条提问），于是它又会被子会话当成第一轮排空。
+  // 首轮只保留**回合开始之前的系统前言**（permission/preset、sandbox/mode、approval/policy…），
+  // 一条 user/message 与 inbox 事件都不带；空 seed 无法持久化，前言正好保证有内容。
+  const preamble = source.events.slice(0, Math.max(0, source.events.findIndex(event => event.type === 'turn/start')))
+  const effectiveSeed = seed.length > 0 ? seed : (preamble as SessionEventLike[])
+  // seed 就是切好的前缀，**绝不追加**：内核断言 `inheritedEventCount === log.length`
+  // （dsh-session/lib/index.js:1084），往 seed 里塞事件会让持久化重建直接 400。
+  const drainedSeed = effectiveSeed
+  const modelRoute = modelRouteOptions(source.events)
+  // 工作区：只有 workspaceId 会 attachSession（cwd 只决定运行时目录），
+  // 但 workspaceId 与 cwd 互斥——优先 workspaceId，解析不到才用 cwd。
+  const workspaceId = workspaceIdOf(ctx, source.id)
+  void logEvent('edit', 'child-create-start', {
+    childId,
+    sourceSession: source.id,
+    workspaceId: workspaceId ?? null,
+    cwd: source.header.cwd ?? null,
+    prefixLength,
+    seedEvents: effectiveSeed.length,
+    drainedEvents: drainedSeed.length,
+    lastSeedEvent: drainedSeed.at(-1)?.type ?? null,
+    lastSeedSeq: drainedSeed.at(-1)?.seq ?? null,
+    firstSeedSeq: drainedSeed[0]?.seq ?? null,
   })
+  let child: unknown
   try {
-    await ctx.sessions.flush((child as { agent?: { session?: unknown } }).agent?.session)
+    child = await ctx.agents.create({
+      sessionId: childId,
+      seed: drainedSeed,
+      // 必须等于**实际交给 create 的** seed 长度（含末尾那条排空事件）：内核断言
+      // `seeded session constructor seed must equal its inherited prefix`。
+      inheritedEventCount: drainedSeed.length,
+      ...(modelRoute === undefined ? {} : { agentOptions: modelRoute }),
+      meta: {
+        ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
+        parentSession: source.id,
+        isSeeded: true,
+        ...(workspaceId === undefined ? {} : { workspaceId }),
+      },
+    })
+  }
+  catch (error) {
+    // 创建失败必须留证据：客户端「历史加载失败：session … not found」正是创建没成
+    // （或被立刻回滚）时的表现。把内核报错原文落盘，避免再靠现象猜。
+    void logEvent('edit', 'child-create-failed', {
+      childId,
+      sourceSession: source.id,
+      workspaceId: workspaceId ?? null,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack?.slice(0, 400) : null,
+    })
+    throw error
+  }
+  void logEvent('edit', 'child-create-ok', { childId, hasSession: (child as { agent?: { session?: unknown } })?.agent?.session !== undefined })
+  const childSession = (child as { agent?: { session?: unknown } }).agent?.session
+  // 注意：**不再重放**保留轮。seed 已经把它们带进子会话（与官方 session/fork 同一路径），
+  // 再 append 一遍会把同一段对话写两次（重复轮次）。
+  // ★ 排空 seed 里悬挂的 inbox 入队项 —— 必须作为**建完之后的普通事件**追加，不能塞进 seed。
+  //
+  // 提问的内核形态：`agent/inbox/spliced {inserted:[提问]}` 入队 → `turn/start` → 之后才排空。
+  // 切点在目标轮 `turn/start` 之前时，入队在 seed 里、排空不在 → 子会话 inbox 重建
+  // （dsh-agent-loop `inboxProjectionDefinition.apply`：`inbox.toSpliced(start, removedCount, ...inserted)`）
+  // 会把这条旧提问「复活」并当成自己的第一轮消费掉 —— 就是「原本的消息又跑了一遍」。
+  //
+  // 这条 splice 放在 create 之后 append（而不是 seed 里），既把悬挂项清掉，又不改变
+  // `inheritedEventCount` 与 seed 长度的对应关系，因此不会触发那个 400 断言。
+  if (pendingInbox > 0) {
+    try {
+      ;(childSession as { append?: (type: string, data: Record<string, unknown>) => unknown } | undefined)
+        ?.append?.('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: pendingInbox, inserted: [] })
+      void logEvent('edit', 'child-inbox-drained', { childId, removedCount: pendingInbox })
+    }
+    catch (e) {
+      void logEvent('edit', 'child-inbox-drain-failed', { childId, error: String((e as Error)?.message || e) })
+    }
+  }
+  try {
+    await ctx.sessions.flush(childSession)
   }
   catch (e) {
     void logEvent('edit', 'child-flush-failed', { childId, error: String((e as Error)?.message || e) })
+  }
+  // 工作区归属（审计更正）：`meta.workspaceId` 是**惰性元数据**——成员关系存在
+  // workspace 记录的 `sessionIds` 里，只有 `attachSession` 会改它；没有内核代码读会话头里的
+  // workspaceId。所以无论创建时传没传，都必须显式 attach 一次（官方 fork 也是建完再 attach）。
+  try {
+    const workspace = workspaceFor(ctx, source.id)
+    await workspace?.attachSession?.(childId)
+    void logEvent('edit', 'child-attached', { childId, workspace: workspace?.id ?? null, attached: workspace !== undefined })
+  }
+  catch (e) {
+    void logEvent('edit', 'child-attach-failed', { childId, error: String((e as Error)?.message || e) })
   }
   void logEvent('edit', 'child-created', {
     childId,
     parentSession: source.id,
     sourceSession: source.id,
-    flushed: true,
-    prefixLength: seed.length,
-    seedFirstSeq: seed[0]?.seq ?? null,
-    seedLastSeq: seed.at(-1)?.seq ?? null,
+    workspaceId: workspaceId ?? null,
+    inheritedEventCount: drainedSeed.length,
+    seedFirstSeq: drainedSeed[0]?.seq ?? null,
+    seedLastSeq: drainedSeed.at(-1)?.seq ?? null,
+    pendingInbox,
   })
   // 立刻核对子会话**实际**的事件数量：内核若忽略 seed，这里就会远大于 seed.length。
   // 这是判定「截断是否真的生效」的唯一权威读数（不依赖任何客户端）。
@@ -250,6 +432,20 @@ async function createChildSession(
   }
   catch (e) {
     void logEvent('edit', 'child-verify-failed', { childId, error: String((e as Error)?.message || e) })
+  }
+  // 记录服务端复读结果，但**不再**据此把编辑判死：
+  // 会话在内存里可读、可打开、可发送；「持久化重建复读」的校验失败只是提示信息，
+  // 让编辑失败会把用户卡在错误里（此前就是这样：新会话建好了，却没发送、没切过去）。
+  try {
+    await ctx.sessionQuery.readSession(childId)
+    void logEvent('edit', 'child-server-ok', { childId })
+  }
+  catch (error) {
+    void logEvent('edit', 'child-server-read-warning', {
+      childId,
+      error: error instanceof Error ? error.message : String(error),
+      note: 'continuing anyway',
+    })
   }
   return childId
 }
@@ -275,7 +471,7 @@ export async function applyEdit(
   const result = resolveBoundary(record, turn, eventSeq)
   if (!result.ok)
     return result
-  const childId = await createChildSession(ctx, record, result.prefixLength)
+  const childId = await createChildSession(ctx, record, result.prefixLength, result.pendingInbox)
   return {
     ok: true,
     childId,

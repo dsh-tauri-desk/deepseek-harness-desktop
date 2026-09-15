@@ -1,7 +1,7 @@
 {
   "name": "dsh-tauri-tsdown",
   "type": "module",
-  "version": "0.6.7",
+  "version": "1.0.0",
   "private": true,
   "exports": {
     ".": "./src/index.ts"

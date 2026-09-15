@@ -1,69 +1,45 @@
-/**
- * host/apply.ts — 调度器插件装配。
- *
- * 装配顺序与 reasons：
- *   1. 注册 Agent 工具（通过 Chat 创建/管理定时任务）；
- *   2. 启动自愈（把上次进程中断的 running 记录标记为 failed）；
- *   3. 注册 HTTP 路由（/api/dsh-scheduler/*，客户端 UI 经此调用）；
- *   4. 启动调度引擎 tick（宿主即 Node，setInterval 节拍驱动到期任务）。
- *   卸载时统一释放定时器与路由。
- */
-
 import type { HostContext } from './types'
-import { SCHEDULER_TICK_MS } from './constants'
-import { createSchedulerHooks } from './hooks'
-import { buildRoutes } from './routes'
-import { recoverInterruptedRuns } from './service/run'
-import { SchedulerEngine } from './service/scheduler'
-import { createToolSet } from './tools'
+import {
+  SCHEDULER_RECOVER_EFFECT,
+  SCHEDULER_ROUTES_EFFECT,
+  SCHEDULER_RUNTIME_EFFECT,
+  SCHEDULER_TICK_EFFECT,
+  SCHEDULER_TICK_MS,
+} from './config/constants'
+import { clearHostRuntime, setCurrentHostInstance } from './config/runtime'
+import { routes } from './routes'
+import { recovery } from './service/recovery'
+import { scheduler } from './service/scheduler'
+import { createTaskTool } from './tools/create-task'
+import { deleteTaskTool } from './tools/delete-task'
+import { listTasksTool } from './tools/list-tasks'
+import { runTaskTool } from './tools/run-task'
+import { toggleTaskTool } from './tools/toggle-task'
 
-export type { SchedulerLifecycleHooks } from './hooks'
-
-/** 可选配置。 */
 export interface Config {
-  /** 调度 tick 间隔（毫秒）；默认 SCHEDULER_TICK_MS。 */
   tickMs?: number
 }
 
-/**
- * 插件体：注册工具、HTTP 路由与调度引擎。
- * @param ctx - 宿主根上下文（注入 tools/webServer/agents/workspaceRegistry/connection）。
- * @param config - 插件行配置。
- */
 export function apply(ctx: HostContext, config: Config = {}): void {
+  setCurrentHostInstance(ctx)
+
+  ctx.tools.register(createTaskTool())
+  ctx.tools.register(listTasksTool())
+  ctx.tools.register(toggleTaskTool())
+  ctx.tools.register(deleteTaskTool())
+  ctx.tools.register(runTaskTool())
+
   const tickMs = Number.isFinite(config?.tickMs) && (config.tickMs as number) > 0
     ? (config.tickMs as number)
     : SCHEDULER_TICK_MS
 
-  const hooks = createSchedulerHooks()
-  const engine = new SchedulerEngine(ctx, hooks)
-
-  // 1) Agent 工具注册。
-  for (const tool of createToolSet(engine))
-    ctx.tools.register(tool)
-
-  // 2) 启动自愈：上次进程中断留下的 running 记录标记为 failed。
   ctx.effect(() => {
-    void recoverInterruptedRuns().catch((error: unknown) => {
+    void recovery.recover().catch((error: unknown) => {
       ctx.logger?.warn?.('dsh-tauri-panel-scheduler: recover interrupted runs failed', error)
     })
-  }, 'dsh-tauri-panel-scheduler: recover interrupted runs')
+  }, SCHEDULER_RECOVER_EFFECT)
 
-  // 3) HTTP 路由注册（卸载统一释放）。
-  ctx.effect(() => {
-    const disposers = buildRoutes(ctx, engine).map(route => ctx.webServer.register(route))
-    return () => {
-      for (const dispose of disposers) dispose()
-    }
-  }, 'dsh-tauri-panel-scheduler: http routes')
-
-  // 4) 调度引擎 tick。
-  ctx.effect(() => {
-    const timer = setInterval(() => {
-      void engine.tick().catch((error: unknown) => {
-        ctx.logger?.warn?.('dsh-tauri-panel-scheduler: tick failed', error)
-      })
-    }, tickMs)
-    return () => clearInterval(timer)
-  }, 'dsh-tauri-panel-scheduler: tick')
+  ctx.effect(() => scheduler.start(tickMs), SCHEDULER_TICK_EFFECT)
+  ctx.effect(() => routes(ctx), SCHEDULER_ROUTES_EFFECT)
+  ctx.effect(() => () => clearHostRuntime(), SCHEDULER_RUNTIME_EFFECT)
 }

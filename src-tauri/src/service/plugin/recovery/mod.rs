@@ -237,4 +237,24 @@ mod tests {
         assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
         assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-client-ui-chat"));
     }
+
+    #[test]
+    fn recovery_info_serializes_camel_case_fields() {
+        let info = PluginRecoveryInfo {
+            plugins: vec!["dsh-tauri".to_string()],
+            reason: "load_failed".to_string(),
+            detail: String::new(),
+            raw_error: "failed to apply loader entry 644301cc (dsh-tauri)".to_string(),
+        };
+        let json = serde_json::to_value(&info).expect("serialize recovery info");
+
+        assert_eq!(
+            json["rawError"],
+            "failed to apply loader entry 644301cc (dsh-tauri)"
+        );
+        assert_eq!(json["plugins"][0], "dsh-tauri");
+        assert_eq!(json["reason"], "load_failed");
+        // 前端只认 camelCase：snake_case 字段一旦出现，修复界面的原始错误将被静默丢弃
+        assert!(json.get("raw_error").is_none());
+    }
 }

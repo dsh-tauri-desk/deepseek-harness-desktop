@@ -1,96 +1,56 @@
 import type { ReactElement } from 'react'
-import type { TurnChangesCardProps, TurnFileChange } from '../types'
+import type { TurnFileChange } from '../types'
+import type { TurnChangesCardProps } from './turn-changes-card.types'
 import { ArrowUturnCcwLeft, ChevronDown, ChevronUp, FilePlus, Icon, useMountStyle } from 'dsh-tauri-ui/client'
+import { useStore } from 'dsh-tauri/client'
 /**
  * turn-changes-card.tsx — 一轮结束时渲染的变更卡片（视觉对齐官方 deliverables 行）。
  *
- * 职责拆分：槽位注册在 register/turn-tail.ts，数据在 store/，样式在 .cssr.ts，
- * 纯函数判定与格式化在 utils/format.ts（本文件只做组合与交互）。
+ * 职责拆分：槽位注册在 register/turn-tail.ts，数据在 store/ 与 service/，样式在 .cssr.ts，
+ * 纯函数判定与格式化在 utils/format.ts，点击决策在 ./turn-changes-card.utils.ts。
  *
- * 交互边界（需求明确）：
- *   - **真功能**：「撤销」、「再显示 N 个文件 / 收起文件」、**点击文件打开**、
- *     **「审核」（新核心打开侧边栏文件树）**；
- *   - **占位**：`📝 文件`（图标块）无点击处理（`data-placeholder` 标注）；
- *     hover 的「查看更改」整体停用（`TODO(view-changes-hover)`；开放打开/审核功能**未**附带 hover 视觉）。
- *
- * 两处按内核能力分流（判据与理由见 client/capabilities/index.ts）：
- *   - 「点击文件打开」：新核心经 owner props 的 `openFile` 在应用内右侧边栏打开文本预览页签；
- *     旧核心虽然也派发 `openFile`（会交给宿主/系统打开），但需求要求那里**静默**；
- *   - 「审核」：新核心经 `sidebarRight.openTab('files')` 打开侧边栏文件树（会话工作区根目录）；
- *     旧核心**不显示该按钮**——它连 `sidebarRightTabs` 服务都没有。
- *
- * 单文件与多文件的差异：单文件时标题就是文件名、不渲染清单，
- * hover 时副行的计数换成「查看更改 ↗」（当前停用）；多文件时标题是文件数、
- * 副行固定显示总计数，清单最多三行。
+ * 交互边界（需求明确）：「撤销」、「再显示 N 个文件 / 收起文件」、点击文件打开、
+ * 「审核」（新核心打开侧边栏文件树）是真功能；`📝 文件` 图标块是占位。
+ * 两处按内核能力分流（判据与理由见 service/capabilities.ts）。
  */
 import { useEffect, useState } from 'react'
-import { hasSidebarFileTree, hasSidebarPreview, readSidebarRight } from '../capabilities'
-import {
-  TURNREWIND_CARD_STYLE_ID,
-  TURNREWIND_COUNTS_STYLE_ID,
-  TURNREWIND_SIDEBAR_FILES_KIND,
-  TURNREWIND_SUMMARY_MAX_RETRIES,
-  TURNREWIND_SUMMARY_RETRY_DELAY_MS,
-  TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS,
-  TURNREWIND_VISIBLE_FILE_ROWS,
-} from '../constants'
-import { text, useLocale } from '../locales'
-import { ensureSummary, requestUndo, retrySummaryForTurn, useTurnrewindSession } from '../store'
+import { TURNREWIND_CARD_STYLE_ID, TURNREWIND_COUNTS_STYLE_ID, TURNREWIND_SIDEBAR_FILES_KIND, TURNREWIND_VISIBLE_FILE_ROWS } from '../constants'
+import { locale } from '../locales'
+import { expectTurn } from '../service/summary'
+import { undoTurn } from '../service/undo'
+import { store } from '../store'
+import { sessionStateOf } from '../store/modules/session.utils'
 import countsStyle from '../styles/counts.cssr'
-import { cardTitle, fileListWindow, formatCounts, formatTotals, hasTurnRecord, reasonKey, resolveCardState, summaryRetryDelayMs } from '../utils/format'
-import { fileOpenHandler } from '../utils/open-file'
-import { reviewOpenHandler } from '../utils/review'
+import { cardTitle, fileListWindow, formatCounts, formatTotals, reasonKey, resolveCardState } from '../utils/format'
 import { ChangeCounts } from './change-counts'
 import cardStyle from './turn-changes-card.cssr'
+import { fileOpenHandler, reviewOpenHandler } from './turn-changes-card.utils'
 
 export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | null {
   useMountStyle(cardStyle, TURNREWIND_CARD_STYLE_ID)
   useMountStyle(countsStyle, TURNREWIND_COUNTS_STYLE_ID)
-  useLocale()
+  locale.useLocale()
   const sessionId = props.sessionId
   const turn = props.matched?.turn ?? props.turn?.turn
-  const state = useTurnrewindSession(sessionId)
+  const capabilities = props.capabilities
+  const state = sessionStateOf(useStore(store.turnrewind), sessionId)
   // 展开态按 turn 记账，而不是「effect 里复位布尔量」：卡片会被复用渲染下一轮，
   // 用 turn 作为天然的复位键（也避开 set-state-in-effect 的多余渲染）。
   const [expandedTurn, setExpandedTurn] = useState<number | undefined>(undefined)
   const expanded = expandedTurn !== undefined && expandedTurn === turn
 
+  // keep:effect 摘要 Query 需要由卡片在第一帧发起（本轮是否已落账只有组件知道）
   useEffect(() => {
-    void ensureSummary(sessionId)
-  }, [sessionId])
+    void expectTurn({ sessionId, turn })
+  }, [sessionId, turn])
 
   const card = resolveCardState(state.summary, turn)
-  const attempts = turn === undefined ? 0 : (state.attempts[turn] ?? 0)
-  // after 快照在 turn/end 之后**后台结算**（还要排在同一条队列的实时读数之后），大仓库上
-  // 可能十几秒才落账。这里等的判据是「账本还没有这一轮」，而不是「卡片不可见」——
-  // 该轮确实没有改动时账本会写一条空记录，那种情况不该继续重试。
-  const waiting = card.kind === 'hidden'
-    && state.status === 'ready'
-    && state.summary !== null
-    && state.summary.isGit
-    && sessionId !== undefined
-    && turn !== undefined
-    && !hasTurnRecord(state.summary, turn)
-    && attempts < TURNREWIND_SUMMARY_MAX_RETRIES
-
-  useEffect(() => {
-    if (!waiting || sessionId === undefined || turn === undefined)
-      return
-    const timer = setTimeout(
-      () => {
-        void retrySummaryForTurn(sessionId, turn)
-      },
-      summaryRetryDelayMs(attempts, TURNREWIND_SUMMARY_RETRY_DELAY_MS, TURNREWIND_SUMMARY_RETRY_MAX_DELAY_MS),
-    )
-    return () => clearTimeout(timer)
-  }, [waiting, sessionId, turn, attempts])
-
   if (card.kind === 'hidden')
     return null
 
   const record = card.kind === 'ready' || card.kind === 'undone' ? card.record : null
   const files = record?.files ?? []
-  // 单文件：标题即文件名、不渲染清单，副行 hover 可换成「查看更改」。
+  // 单文件：标题即文件名、不渲染清单。
   const single = record !== null && files.length === 1
   // 清单窗口：hiddenCount 恒按折叠态计算，展开后按钮仍在（否则无法收起）。
   const window = files.length > 1
@@ -100,16 +60,16 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const blocked = card.kind === 'failed' || card.kind === 'unavailable'
 
   const title = record !== null
-    ? cardTitle(record, name => text('editedOne', { name }), count => text('editedMany', { count }))
-    : text('unavailableTitle')
+    ? cardTitle(record, name => locale.text('editedOne', { name }), count => locale.text('editedMany', { count }))
+    : locale.text('unavailableTitle')
 
   /**
-   * 原因码 → 人话。已知码走文案键；未知码（内核/宿主更新）原样显示——宁可显示一个
-   * 生码，也不能显示空白或假装成功。
+   * 原因码 → 人话。已知码走文案键；未知码（内核/宿主更新）原样显示——宁可显示一个生码，
+   * 也不能显示空白或假装成功。
    */
   const explain = (reason: string | null | undefined): string => {
     const key = reasonKey(reason)
-    return key !== null ? text(key) : (reason ?? '')
+    return key !== null ? locale.text(key) : (reason ?? '')
   }
   const unavailableReason = card.kind === 'failed' || card.kind === 'unavailable' ? card.reason : null
   // 「不在撤销范围内」的路径：宿主回传的条数有上限，因此只报数量，路径放在 title 里备查。
@@ -119,29 +79,16 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const onUndo = (): void => {
     if (blocked || state.undoing || turn === undefined)
       return
-    void requestUndo(sessionId, turn)
+    void undoTurn({ sessionId, turn })
   }
 
-  /*
-    「打开文件」：只在**具备应用内右侧边栏能力**的内核上生效（新核心 = 侧边栏预览页签）。
-    旧核心虽然也派发 openFile，但它会把路径交给宿主/系统去打开，需求要求那里保持静默；
-    判据与理由见 client/capabilities/index.ts 与 client/utils/open-file.ts。
-    能力缺席时标题与清单行渲染成不可点的普通元素（不给「点了没反应」的假交互）。
-  */
-  const onOpenFile = fileOpenHandler({ openFile: props.openFile, sidebarPreview: hasSidebarPreview() })
+  const onOpenFile = fileOpenHandler({ openFile: props.openFile, sidebarPreview: capabilities?.sidebarPreview ?? false })
   const singlePath = single ? files[0]?.path : undefined
-  const openLabel = (path: string): string => text('openFile', { name: path })
+  const openLabel = (path: string): string => locale.text('openFile', { name: path })
 
-  /*
-    「审核」：只在新核心出现。判据取「右侧边栏注册表里有文件树页类型」，比「有没有
-    sidebarRight」更严格——`openTab('files')` 在类型未注册时会直接抛
-    `no tab type is registered as "files"`，渲染一个点下去必然失败的按钮就是假交互。
-    旧核心连 `sidebarRightTabs` 都没有，据此**不渲染按钮**（需求：旧版本不显示）。
-    判据与理由见 client/capabilities/index.ts 与 client/utils/review.ts。
-  */
   const onReview = reviewOpenHandler({
-    sidebar: readSidebarRight(),
-    fileTree: hasSidebarFileTree(),
+    sidebar: capabilities?.sidebar,
+    fileTree: capabilities?.fileTree ?? false,
     kind: TURNREWIND_SIDEBAR_FILES_KIND,
   })
 
@@ -152,7 +99,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
   const renderFileRow = (file: TurnFileChange): ReactElement => {
     const deleted = file.status === 'D' ? ' dshp-turnrewind__file--deleted' : ''
     const className = `dshp-turnrewind__file${deleted}${onOpenFile === undefined ? '' : ' dshp-turnrewind__file--open'}`
-    const label = `${file.path}  ${formatCounts(file, text('binary'))}`
+    const label = `${file.path}  ${formatCounts(file, locale.text('binary'))}`
     const content = (
       <>
         <span className="dshp-turnrewind__file-path">{file.path}</span>
@@ -161,7 +108,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
             insertions={file.insertions}
             deletions={file.deletions}
             binary={file.binary}
-            binaryLabel={text('binary')}
+            binaryLabel={locale.text('binary')}
           />
         </span>
       </>
@@ -196,7 +143,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
       >
         <div className="dshp-turnrewind__head">
           {/* 占位：📝 文件图标块不做任何事（需求：文件按钮仅做占位）。 */}
-          <span className="dshp-turnrewind__icon" title={text('fileButton')} aria-label={text('fileButton')} data-placeholder="file">
+          <span className="dshp-turnrewind__icon" title={locale.text('fileButton')} aria-label={locale.text('fileButton')} data-placeholder="file">
             <Icon as={FilePlus} size={18} />
           </span>
           <div className="dshp-turnrewind__meta">
@@ -216,32 +163,14 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
             <span className="dshp-turnrewind__sub">
               {record !== null
                 ? (
-                    <>
-                      <span className="dshp-turnrewind__counts" title={formatTotals(record)}>
-                        <ChangeCounts
-                          insertions={record.insertions}
-                          deletions={record.deletions}
-                          binary={false}
-                          binaryLabel={text('binary')}
-                        />
-                      </span>
-                      {/*
-                        TODO(view-changes-hover): hover 显示「查看更改」暂时整体停用（需求方要求），
-                        当前只显示 +xx -x。注意：「打开文件」已单独开放（点击标题 / 清单行即可），
-                        但**没有**因此加回任何 hover 视觉——恢复本项时要保持这两件事彼此独立。
-                        恢复时注意三条：
-                          1. 单文件与**多文件**的 __head 都要有该 hover 效果（不再用 single 条件限定）；
-                          2. 重新从 dsh-tauri-ui/client 引入 ArrowUpRight 图标；
-                          3. cssr 里把 `.dshp-turnrewind__card:hover` 下的
-                             `__counts` 隐藏 / `__hint` 显示两条规则恢复（现在已注释）。
-                        {single && (
-                          <span className="dshp-turnrewind__hint" data-placeholder="view-changes">
-                            {text('viewChanges')}
-                            <Icon as={ArrowUpRight} size={14} />
-                          </span>
-                        )}
-                      */}
-                    </>
+                    <span className="dshp-turnrewind__counts" title={formatTotals(record)}>
+                      <ChangeCounts
+                        insertions={record.insertions}
+                        deletions={record.deletions}
+                        binary={false}
+                        binaryLabel={locale.text('binary')}
+                      />
+                    </span>
                   )
                 : (
                     <span className="dshp-turnrewind__hint-text">
@@ -253,7 +182,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
           <span className="dshp-turnrewind__spacer" />
           {/* 已撤销：只留「已撤销」徽标，撤销与「审核」都不再出现（没有可撤 / 可审的变更）。 */}
           {undone
-            ? <span className="dshp-turnrewind__badge">{text('undoneBadge')}</span>
+            ? <span className="dshp-turnrewind__badge">{locale.text('undoneBadge')}</span>
             : (
                 <>
                   <button
@@ -261,24 +190,20 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
                     className="dshp-turnrewind__undo"
                     disabled={blocked || state.undoing}
                     onClick={onUndo}
-                    title={text('undo')}
+                    title={locale.text('undo')}
                   >
-                    {state.undoing ? text('undoing') : text('undo')}
+                    {state.undoing ? locale.text('undoing') : locale.text('undo')}
                     <Icon as={ArrowUturnCcwLeft} size={14} />
                   </button>
-                  {/*
-                    「审核」：点击在应用内右侧边栏打开**文件树**（会话工作区根目录），
-                    用户可以逐层翻看这一轮改过哪些文件。能力缺席（旧核心）时 `onReview`
-                    为 undefined，整个按钮不渲染——不给「点了没反应」的假交互。
-                  */}
+                  {/* 能力缺席（旧核心）时 `onReview` 为 undefined，整个按钮不渲染。 */}
                   {onReview !== undefined && (
                     <button
                       type="button"
                       className="dshp-turnrewind__review"
                       onClick={onReview}
-                      title={text('review')}
+                      title={locale.text('review')}
                     >
-                      {text('review')}
+                      {locale.text('review')}
                     </button>
                   )}
                 </>
@@ -294,7 +219,7 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
         {/* 折叠控件始终存在（展开后是「收起文件」），否则展开就没有回头路。 */}
         {window.hiddenCount > 0 && (
           <button type="button" className="dshp-turnrewind__more" onClick={() => setExpandedTurn(current => (current === turn ? undefined : turn))}>
-            {expanded ? text('collapseFiles') : text('moreFiles', { count: window.hiddenCount })}
+            {expanded ? locale.text('collapseFiles') : locale.text('moreFiles', { count: window.hiddenCount })}
             <Icon as={expanded ? ChevronUp : ChevronDown} size={12} />
           </button>
         )}
@@ -304,12 +229,12 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
           <div className="dshp-turnrewind__notice dshp-turnrewind__notice--skip">
             {skippedOversized.length > 0 && (
               <div data-skipped="oversized" title={skippedOversized.join('\n')}>
-                {text('skippedOversized', { count: skippedOversized.length })}
+                {locale.text('skippedOversized', { count: skippedOversized.length })}
               </div>
             )}
             {skippedNestedRepos.length > 0 && (
               <div data-skipped="nested" title={skippedNestedRepos.join('\n')}>
-                {text('skippedNestedRepos', { count: skippedNestedRepos.length })}
+                {locale.text('skippedNestedRepos', { count: skippedNestedRepos.length })}
               </div>
             )}
           </div>
@@ -317,10 +242,10 @@ export function TurnChangesCard(props: TurnChangesCardProps): ReactElement | nul
 
         {state.undoError !== null && (
           <div className="dshp-turnrewind__notice dshp-turnrewind__notice--error">
-            <div>{text('undoFailed', { reason: explain(state.undoError) })}</div>
+            <div>{locale.text('undoFailed', { reason: explain(state.undoError) })}</div>
             {state.undoConflicts.length > 0 && (
               <>
-                <div>{text('conflictTitle')}</div>
+                <div>{locale.text('conflictTitle')}</div>
                 <ul className="dshp-turnrewind__conflict-list">
                   {state.undoConflicts.map(conflict => (
                     <li key={conflict.path} className="dshp-turnrewind__conflict-item" title={conflict.path}>{conflict.path}</li>

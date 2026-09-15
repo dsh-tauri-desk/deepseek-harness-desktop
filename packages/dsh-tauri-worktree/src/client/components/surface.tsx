@@ -1,20 +1,16 @@
 import type { ReactElement } from 'react'
-import type { SurfaceBarProps } from '../types'
+import type { SurfaceBarProps } from './surface.types'
 import { CircleTree, Icon, useMountStyle } from 'dsh-tauri-ui/client'
-/**
- * surface.tsx — 聊天框正上方、仅会话内容区内的工作树状态条。
- *
- * 职责拆分：slot 注册在 register/surface.ts，样式在 styles.ts。
- */
 import { useState } from 'react'
 import { SURFACE_STYLE_ID } from '../constants'
-import { text, useLocale } from '../locales'
-import { patchSession, useWorktreeSession } from '../store'
+import { useWorktreeSession } from '../hooks/use-worktree-session'
+import { locale } from '../locales'
+import { store } from '../store'
 import surfaceStyle from './surface.cssr'
 
 export function WorktreeSurface({ sessionId }: SurfaceBarProps): ReactElement | null {
   useMountStyle(surfaceStyle, SURFACE_STYLE_ID)
-  useLocale()
+  locale.useLocale()
   const state = useWorktreeSession(sessionId)
   const [logOpen, setLogOpen] = useState(false)
 
@@ -26,12 +22,12 @@ export function WorktreeSurface({ sessionId }: SurfaceBarProps): ReactElement | 
   const failed = state.phase === 'error'
   const bound = state.mode === 'worktree'
   const label = creating
-    ? state.loadingLabel || text('progressCreating')
+    ? state.loadingLabel || locale.text('progressCreating')
     : deleting
-      ? text('progressDeleting')
+      ? locale.text('progressDeleting')
       : failed
-        ? `${text('progressError')}${state.error ? `: ${state.error}` : ''}`
-        : text('surfaceWorktree')
+        ? `${locale.text('progressError')}${state.error ? `: ${state.error}` : ''}`
+        : locale.text('surfaceWorktree')
 
   return (
     <div className="dshp-worktree">
@@ -45,18 +41,18 @@ export function WorktreeSurface({ sessionId }: SurfaceBarProps): ReactElement | 
             </span>
             {bound && state.log.length > 0 && (
               <button type="button" className={`${'dshp-worktree__action'} ${'dshp-worktree__action--log'}`} onClick={() => setLogOpen(value => !value)}>
-                {text('progressViewLogs')}
+                {locale.text('progressViewLogs')}
               </button>
             )}
           </div>
           <span className="dshp-worktree__spacer" />
           {bound && !deleting && (
             <>
-              <button type="button" className="dshp-worktree__action" onClick={() => patchSession(sessionId, { checkoutOpen: true })}>
-                {text('surfaceCheckout')}
+              <button type="button" className="dshp-worktree__action" onClick={() => store.worktree.patch(sessionId, { checkoutOpen: true })}>
+                {locale.text('surfaceCheckout')}
               </button>
-              <button type="button" className={`${'dshp-worktree__action'} ${'dshp-worktree__action--danger'}`} onClick={() => patchSession(sessionId, { abandonOpen: true })}>
-                {text('surfaceAbandon')}
+              <button type="button" className={`${'dshp-worktree__action'} ${'dshp-worktree__action--danger'}`} onClick={() => store.worktree.patch(sessionId, { abandonOpen: true })}>
+                {locale.text('surfaceAbandon')}
               </button>
             </>
           )}
@@ -67,7 +63,7 @@ export function WorktreeSurface({ sessionId }: SurfaceBarProps): ReactElement | 
   )
 }
 
-export function Logs({ log, open }: { log: string[], open: boolean }): ReactElement {
+export function Logs({ log, open }: { log: readonly string[], open: boolean }): ReactElement {
   return (
     <div
       aria-hidden={!open}

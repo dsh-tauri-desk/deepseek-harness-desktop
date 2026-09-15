@@ -1,7 +1,7 @@
 {
   "name": "dsh-tauri",
   "type": "module",
-  "version": "0.6.7",
+  "version": "1.0.0",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -31,7 +31,6 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "README.md",
     "cordis.patch.yml",
     "dist"
   ],
@@ -54,6 +53,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "h3": "catalog:",
     "hookable": "catalog:utils",
     "ofetch": "catalog:utils",
     "unstorage": "catalog:utils"
@@ -63,9 +63,14 @@
     "@deepseek-ai/dsh-api-workspace-controller": "catalog:dsh",
     "@deepseek-ai/dsh-client-ui-renderer": "catalog:dsh",
     "@deepseek-ai/dsh-client-ui-slots": "catalog:dsh",
+    "@reause/core": "catalog:runtime",
+    "@types/lodash-es": "catalog:types",
     "css-render": "catalog:ui",
     "date-fns": "catalog:utils",
     "dsh-tauri-tsdown": "workspace:*",
-    "tsdown": "catalog:cli"
+    "lodash-es": "catalog:utils",
+    "tsdown": "catalog:cli",
+    "valtio": "catalog:",
+    "valtio-define": "catalog:runtime"
   }
 }

@@ -1,9 +1,3 @@
-/**
- * Gravity UI icon barrel.
- *
- * Keep this file as a path-based re-export only. The shared `Icon` component
- * owns sizing; upstream components remain the authoritative SVG implementation.
- */
 export { default as ArrowDownToLine } from '@gravity-ui/icons/ArrowDownToLine'
 export { default as ArrowLeft } from '@gravity-ui/icons/ArrowLeft'
 export { default as ArrowRight } from '@gravity-ui/icons/ArrowRight'

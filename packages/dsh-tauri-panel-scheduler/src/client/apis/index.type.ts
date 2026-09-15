@@ -1,4 +1,4 @@
-import type { RunView, SchedulerOptions, TaskView } from '../types'
+import type { RunView, SchedulerOptions, TaskInput, TaskView } from '../types'
 
 export type { RunView, SchedulerOptions, TaskView }
 
@@ -36,12 +36,12 @@ export interface GetHistoryQuery {
 }
 
 /** POST /tasks/create 请求体（宿主任务表单字段平铺）。 */
-export type PostTasksCreateBody = Record<string, unknown>
+export type PostTasksCreateBody = TaskInput
 
 /** POST /tasks/update 请求体（id 不可被 input 覆盖）。 */
 export interface PostTasksUpdateBody {
   id: string
-  input: Record<string, unknown>
+  input: TaskInput
 }
 
 /** POST /tasks/toggle 请求体。 */

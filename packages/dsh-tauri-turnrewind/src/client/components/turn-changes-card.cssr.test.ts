@@ -4,7 +4,7 @@ import cardStyle from './turn-changes-card.cssr'
 
 // dsh-tauri-ui/client 的 dist bundle 以 `window.__ModuleLoader__.load(...)` 包裹，
 // 脱离宿主加载器后无法在 node 环境求值；把该导入 mock 到同一 cssr 实例的源文件，
-// 使样式树能在测试里直接 render() 核对选择器形态（与 dsh-tauri-panel 同款做法）。
+// 使样式树能在测试里直接 render() 核对选择器形态。
 vi.mock('dsh-tauri-ui/client', async () => {
   const mod = await import('../../../../dsh-tauri-ui/src/client/utils/cssr.ts')
   return { cssr: mod.cssr }

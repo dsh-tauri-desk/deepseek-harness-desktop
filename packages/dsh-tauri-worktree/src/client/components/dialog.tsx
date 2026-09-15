@@ -1,65 +1,44 @@
 import type { ReactElement } from 'react'
-import type { WorkspacesRuntime, WorktreeDialogProps } from '../types'
+import type { WorkspacesRuntime } from '../service/session-switch.types'
+import type { WorktreeDialogProps } from './dialog.types'
 import { useMountStyle } from 'dsh-tauri-ui/client'
-/**
- * dialog.tsx — 检出本地 / 放弃更改 两个模态框（shell.overlay 条目）。
- *
- * 需求：
- *   - 检出本地：标题「将更改带回本地检出并继续」；分支名输入框预填 `dsh/`；
- *     显示「当前关联路径 [hash]/[dirname]」与「目标项目路径 [项目路径]」；
- *     按钮「确认检出并合并 / 取消」。
- *   - 放弃更改：标题「放弃工作树更改」；确认文本「确认放弃吗？这将删除当前会话及
- *     对应的临时工作树。」；按钮「确认放弃（危险）/ 取消」。
- *
- * 两个弹窗由 store 的 checkoutOpen / abandonOpen 驱动；均渲染为 shell.overlay
- * 下的居中模态（层本身 click-through，条目 opt-in pointer events）。
- *
- * 职责拆分：slot 注册在 register/dialog.ts，工作区顶部插入逻辑在 lib/worktree.ts。
- */
-import { useEffect } from 'react'
+import { find, useEventListener } from 'dsh-tauri/client'
+import { useRef } from 'react'
 import { DIALOG_STYLE_ID } from '../constants'
-import { text, useLocale } from '../locales'
-import { applyCheckout, applyDiscard } from '../service/actions'
-import { patchSession, useWorktreeSession } from '../store'
-import { resolveWorkspaceTopInsertion } from '../utils/worktree'
+import { useDiscard } from '../hooks/use-discard'
+import { useWaiter } from '../hooks/use-waiter'
+import { useWorktreeSession } from '../hooks/use-worktree-session'
+import { locale } from '../locales'
+import { openSession, waitForSessionListed } from '../service/session-switch'
+import { checkout } from '../service/worktree'
+import { store } from '../store'
 import dialogStyle from './dialog.cssr'
 
-/**
- * 检出本地 / 放弃 弹窗组件（读 store 的 checkoutOpen / abandonOpen 决定渲染哪个）。
- * @param props - 复合槽位 props。
- * @param props.useSessions - 标准钩子：会话列表快照（取当前会话 id）。
- * @param props.workspacesRuntime - 宿主工作区运行时（归档会话）。
- * @param props.sessionsRuntime - 宿主会话运行时（打开继承会话）。
- * @returns 居中模态（无打开项时返回 null）。
- */
 export function WorktreeDialog({ useSessions, workspacesRuntime, sessionsRuntime }: WorktreeDialogProps): ReactElement | null {
-  useLocale()
+  locale.useLocale()
   useMountStyle(dialogStyle, DIALOG_STYLE_ID)
   const sessionId = useSessions(state => state.current)
   const state = useWorktreeSession(sessionId)
-  const checkout = state.checkoutOpen
-  const abandon = state.abandonOpen
-  const closeAll = (): void => patchSession(sessionId, { checkoutOpen: false, abandonOpen: false })
+  const discardWorktree = useDiscard(sessionId)
+  const checkoutOpen = state.checkoutOpen
+  const abandonOpen = state.abandonOpen
+  const closeAll = (): void => store.worktree.patch(sessionId, { checkoutOpen: false, abandonOpen: false })
 
-  // Hook 必须在所有 render 中保持相同顺序；仅打开弹窗时安装 Esc 监听。
-  useEffect(() => {
-    if (!sessionId || (!checkout && !abandon))
-      return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape')
-        closeAll()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [sessionId, checkout, abandon])
+  const documentRef = useRef<Document | null | undefined>(
+    typeof document === 'undefined' ? undefined : document,
+  )
+  useEventListener(documentRef, 'keydown', (event: KeyboardEvent) => {
+    if ((checkoutOpen || abandonOpen) && event.key === 'Escape')
+      closeAll()
+  })
 
-  if (!sessionId || (!checkout && !abandon))
+  if (!sessionId || (!checkoutOpen && !abandonOpen))
     return null
 
   return (
     <div className="dshp-worktree">
       <div className="dshp-worktree__modal" data-dsh-worktree-dialog="1" onClick={closeAll}>
-        {checkout && (
+        {checkoutOpen && (
           <CheckoutDialog
             sessionId={sessionId}
             worktreeKey={state.worktreeKey}
@@ -71,12 +50,13 @@ export function WorktreeDialog({ useSessions, workspacesRuntime, sessionsRuntime
             onCancel={closeAll}
           />
         )}
-        {abandon && (
+        {abandonOpen && (
           <AbandonDialog
             sessionId={sessionId}
             worktreeKey={state.worktreeKey}
             error={state.error}
             workspacesRuntime={workspacesRuntime}
+            discardWorktree={discardWorktree}
             onCancel={closeAll}
           />
         )}
@@ -100,68 +80,40 @@ function CheckoutDialog(props: {
   onCancel: () => void
 }): ReactElement {
   const { sessionId, worktreeKey, projectPath, workspacesRuntime, sessionsRuntime, onCancel } = props
+  const { wait } = useWaiter()
   const branchName = props.branchName || 'dsh/'
   const disabled = branchName.trim() === '' || branchName.trim().endsWith('/')
 
-  const updateBranch = (value: string): void => patchSession(sessionId, { branchName: value })
-  const waitUntilListed = async (targetSessionId: string): Promise<boolean> => {
-    for (let attempt = 0; attempt < 30; attempt++) {
-      try {
-        await sessionsRuntime.refresh()
-        if (sessionsRuntime.list.getSnapshot().ids.includes(targetSessionId))
-          return true
-      }
-      catch {}
-      await new Promise(resolve => setTimeout(resolve, 250))
-    }
-    return false
-  }
-  const openAndConfirm = async (targetSessionId: string): Promise<boolean> => {
-    for (let attempt = 0; attempt < 10; attempt++) {
-      try {
-        sessionsRuntime.open(targetSessionId)
-        if (sessionsRuntime.list.getSnapshot().current === targetSessionId)
-          return true
-      }
-      catch {
-        await sessionsRuntime.refresh().catch(() => {})
-      }
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    return false
-  }
+  const updateBranch = (value: string): void => store.worktree.patch(sessionId, { branchName: value })
+
   const promoteToWorkspaceTop = async (targetSessionId: string): Promise<void> => {
-    const insertion = resolveWorkspaceTopInsertion(
-      workspacesRuntime.list.getSnapshot().items,
-      projectPath,
-      targetSessionId,
-    )
-    if (!insertion)
+    const workspace = find(workspacesRuntime.list.getSnapshot().items, item => item.path === projectPath)
+    if (!workspace)
       return
     await workspacesRuntime.insertSessionBefore(
-      insertion.workspaceId,
+      workspace.workspaceId,
       targetSessionId,
-      insertion.beforeSessionId,
+      find(workspace.sessionIds, id => id !== targetSessionId),
     )
   }
-  const checkout = async (): Promise<void> => {
-    const result = await applyCheckout(sessionId, worktreeKey, branchName.trim())
-    if (!result.ok)
+
+  const confirm = async (): Promise<void> => {
+    const result = await checkout({ sessionId, worktreeKey, branchName: branchName.trim() })
+    if (!result.ok || !result.targetSessionId)
       return
-    if (!result.targetSessionId) {
-      patchSession(sessionId, { checkoutOpen: false })
+    const targetSessionId = result.targetSessionId
+    try {
+      await waitForSessionListed({ sessions: sessionsRuntime, sessionId: targetSessionId, wait, attempts: 30, delayMs: 250 })
+    }
+    catch {
+      store.worktree.patch(sessionId, { error: `Local session ${targetSessionId} was created but did not appear in the session list.` })
       return
     }
-    const listed = await waitUntilListed(result.targetSessionId)
-    if (!listed) {
-      patchSession(sessionId, { error: `Local session ${result.targetSessionId} was created but did not appear in the session list.` })
-      return
-    }
-    await promoteToWorkspaceTop(result.targetSessionId).catch(() => {})
-    await workspacesRuntime.archiveSession(sessionId)
-    const opened = await openAndConfirm(result.targetSessionId)
+    await promoteToWorkspaceTop(targetSessionId).catch(() => {})
+    await workspacesRuntime.archiveSession(sessionId).catch(() => {})
+    const opened = await openSession({ sessions: sessionsRuntime, sessionId: targetSessionId, wait, attempts: 10, delayMs: 100 })
     if (!opened)
-      patchSession(sessionId, { error: `Local session ${result.targetSessionId} could not be selected.` })
+      store.worktree.patch(sessionId, { error: `Local session ${targetSessionId} could not be selected.` })
   }
 
   return (
@@ -169,40 +121,40 @@ function CheckoutDialog(props: {
       className="dshp-worktree__dialog-card"
       role="dialog"
       aria-modal="true"
-      aria-label={text('checkoutTitle')}
+      aria-label={locale.text('checkoutTitle')}
       onClick={event => event.stopPropagation()}
     >
-      <h2 className="dshp-worktree__dialog-title">{text('checkoutTitle')}</h2>
+      <h2 className="dshp-worktree__dialog-title">{locale.text('checkoutTitle')}</h2>
       <div className="dshp-worktree__dialog-field">
-        <label className="dshp-worktree__dialog-field-label" htmlFor="wt-checkout-branch">{text('checkoutBranchLabel')}</label>
+        <label className="dshp-worktree__dialog-field-label" htmlFor="wt-checkout-branch">{locale.text('checkoutBranchLabel')}</label>
         <div className="dshp-worktree__dialog-input-wrap">
           <input
             id="wt-checkout-branch"
             className="dshp-worktree__dialog-input"
             value={branchName}
-            placeholder="dsh/feature-xyz"
+            placeholder={locale.text('branchPlaceholder')}
             onChange={event => updateBranch(event.target.value)}
           />
         </div>
       </div>
       <div className="dshp-worktree__dialog-path-row">
-        <span className="dshp-worktree__dialog-path-key">{text('checkoutCurrentPath')}</span>
+        <span className="dshp-worktree__dialog-path-key">{locale.text('checkoutCurrentPath')}</span>
         <span className="dshp-worktree__dialog-path-value">{worktreeKey || '—'}</span>
       </div>
       <div className="dshp-worktree__dialog-path-row">
-        <span className="dshp-worktree__dialog-path-key">{text('checkoutTargetPath')}</span>
+        <span className="dshp-worktree__dialog-path-key">{locale.text('checkoutTargetPath')}</span>
         <span className="dshp-worktree__dialog-path-value">{projectPath.replaceAll('\\', '/') || '—'}</span>
       </div>
       {props.error && <div className="dshp-worktree__dialog-error">{props.error}</div>}
       <div className="dshp-worktree__dialog-footer">
-        <button type="button" className={`${'dshp-worktree__dialog-button'} ${'dshp-worktree__dialog-button--ghost'}`} onClick={onCancel}>{text('checkoutCancel')}</button>
+        <button type="button" className={`${'dshp-worktree__dialog-button'} ${'dshp-worktree__dialog-button--ghost'}`} onClick={onCancel}>{locale.text('checkoutCancel')}</button>
         <button
           type="button"
           className={`${'dshp-worktree__dialog-button'} ${'dshp-worktree__dialog-button--primary'} ${disabled ? 'dshp-worktree__dialog-button--disabled' : ''}`}
           disabled={disabled}
-          onClick={() => void checkout()}
+          onClick={() => void confirm()}
         >
-          {text('checkoutConfirm')}
+          {locale.text('checkoutConfirm')}
         </button>
       </div>
     </div>
@@ -214,15 +166,14 @@ function AbandonDialog(props: {
   worktreeKey: string
   error: string
   workspacesRuntime: Pick<WorkspacesRuntime, 'archiveSession'>
+  discardWorktree: (input: { worktreeKey: string }) => Promise<{ ok: boolean, error?: string }>
   onCancel: () => void
 }): ReactElement {
-  const { sessionId, worktreeKey, workspacesRuntime, onCancel } = props
+  const { sessionId, worktreeKey, workspacesRuntime, discardWorktree, onCancel } = props
   const abandon = async (): Promise<void> => {
-    const result = await applyDiscard(sessionId, worktreeKey)
+    const result = await discardWorktree({ worktreeKey })
     if (!result.ok)
       return
-    // 不显式打开源会话：官方 archiveSession 投影会清空当前选择，回到
-    // 「选择一个工作区开始」默认界面；显式 open 会触发工作区新建/复用 blank 会话。
     await workspacesRuntime.archiveSession(sessionId)
   }
   return (
@@ -230,20 +181,20 @@ function AbandonDialog(props: {
       className="dshp-worktree__dialog-card"
       role="dialog"
       aria-modal="true"
-      aria-label={text('abandonTitle')}
+      aria-label={locale.text('abandonTitle')}
       onClick={event => event.stopPropagation()}
     >
-      <h2 className="dshp-worktree__dialog-title">{text('abandonTitle')}</h2>
-      <p className="dshp-worktree__dialog-body">{text('abandonBody')}</p>
+      <h2 className="dshp-worktree__dialog-title">{locale.text('abandonTitle')}</h2>
+      <p className="dshp-worktree__dialog-body">{locale.text('abandonBody')}</p>
       {props.error && <div className="dshp-worktree__dialog-error">{props.error}</div>}
       <div className="dshp-worktree__dialog-footer">
-        <button type="button" className={`${'dshp-worktree__dialog-button'} ${'dshp-worktree__dialog-button--ghost'}`} onClick={onCancel}>{text('abandonCancel')}</button>
+        <button type="button" className={`${'dshp-worktree__dialog-button'} ${'dshp-worktree__dialog-button--ghost'}`} onClick={onCancel}>{locale.text('abandonCancel')}</button>
         <button
           type="button"
           className={`${'dshp-worktree__dialog-button'} ${'dshp-worktree__dialog-button--danger'}`}
           onClick={() => void abandon()}
         >
-          {text('abandonConfirm')}
+          {locale.text('abandonConfirm')}
         </button>
       </div>
     </div>

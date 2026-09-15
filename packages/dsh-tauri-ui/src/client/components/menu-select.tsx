@@ -1,18 +1,14 @@
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ReactElement } from 'react'
-import type { MenuSelectProps } from '../types'
+import type { MenuSelectProps } from './menu-select.types'
 import { IconChevronDownOutline14 as ChevronDown, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import { compact } from 'dsh-tauri/client'
 import { useState } from 'react'
 import { MENU_SELECT_STYLE_ID } from '../constants'
-import { useMountStyle } from '../utils/style'
+import { useMountStyle } from '../hooks/use-mount-style'
 import { Icon } from './icon'
 import menuSelectStyle from './menu-select.cssr'
 
-/**
- * Shared official-style select pattern: a button anchored to the primitives
- * Menu. `triggerClassName` keeps existing plugin class contracts stable while
- * the variant records the two official visual forms (pill/default).
- */
 export function MenuSelect({
   value,
   options,
@@ -27,11 +23,11 @@ export function MenuSelect({
   useMountStyle(menuSelectStyle, MENU_SELECT_STYLE_ID)
   const current = options.find(option => option.id === value)
   const items: MenuEntry[] = options.map(option => ({ id: option.id, label: option.label }))
-  const triggerClass = [
+  const triggerClass = compact([
     'dshp-menu-select',
-    variant === 'pill' ? 'dshp-menu-select--pill' : '',
+    variant === 'pill' && 'dshp-menu-select--pill',
     triggerClassName,
-  ].filter(Boolean).join(' ')
+  ]).join(' ')
 
   return (
     <Menu

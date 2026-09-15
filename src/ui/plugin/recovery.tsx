@@ -131,7 +131,7 @@ export function Recovery({ fullScreen = false }: { fullScreen?: boolean }) {
           {/* 错误信息默认展示（含原始错误，便于排查） */}
           <div className="mb-4 max-h-48 overflow-auto rounded-md bg-black/5 p-3">
             <pre className="m-0 whitespace-pre-wrap break-all font-mono text-[11px] text-muted">
-              {info.raw_error || '—'}
+              {info.rawError || '—'}
             </pre>
           </div>
 

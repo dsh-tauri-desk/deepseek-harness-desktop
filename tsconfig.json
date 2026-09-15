@@ -23,5 +23,5 @@
     "skipLibCheck": true
   },
   "references": [{ "path": "./tsconfig.node.json" }],
-  "include": ["src", "packages/*/src", "types"]
+  "include": ["src", "packages/*/src", "types", "packages/.test/test-utils.ts"]
 }

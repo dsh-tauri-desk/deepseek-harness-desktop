@@ -1,4 +1,4 @@
-import type { EventCallback, Options, UnlistenFn } from '../types'
+import type { EventCallback, Options, UnlistenFn } from '../types/tauri'
 import { useEffect, useRef } from 'react'
 import { listen } from '../service/listen'
 

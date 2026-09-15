@@ -1,4 +1,5 @@
-import type { InvokeArgs, InvokeOptions } from '../types'
+/* eslint-disable react/set-state-in-effect */
+import type { InvokeArgs, InvokeOptions } from '../types/tauri'
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '../service/invoke'
 

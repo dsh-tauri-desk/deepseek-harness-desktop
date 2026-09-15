@@ -193,12 +193,12 @@ describe('pasteInto — contenteditable', () => {
     expect(execCommand).toHaveBeenCalledWith('insertText', false, 'X')
   })
 
-  it('execCommand 也失败时退回原 DOM 写入（选区未知则抛 editPositionUnknown）', () => {
+  it('execCommand 也失败时退回原 DOM 写入（选区未知则返回 false）', () => {
     stubContentEditableGlobals()
     vi.stubGlobal('document', { execCommand: vi.fn(() => false) })
     vi.stubGlobal('getSelection', () => ({ rangeCount: 0 }))
     const stub = contentEditableStub('ab')
 
-    expect(() => pasteInto(stub as unknown as HTMLElement, 'X')).toThrow('Could not determine the editing position')
+    expect(pasteInto(stub as unknown as HTMLElement, 'X')).toBe(false)
   })
 })

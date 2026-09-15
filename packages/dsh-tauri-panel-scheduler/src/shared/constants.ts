@@ -16,6 +16,3 @@ export const SCHEDULE_KINDS = ['once', 'hourly', 'daily', 'interval', 'workdays'
 
 /** 星期枚举（IATA 三字母，与 DSH automation 一致）。 */
 export const WEEKDAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'] as const
-
-/** 工作日（周一至周五）。 */
-export const WORKDAY_SET: ReadonlySet<string> = new Set(['MO', 'TU', 'WE', 'TH', 'FR'])

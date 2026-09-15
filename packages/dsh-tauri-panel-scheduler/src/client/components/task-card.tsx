@@ -1,19 +1,12 @@
-/**
- * components/task-card.tsx — 任务列表卡片：名称 + 计划·下次运行 + [...] 菜单。
- *
- * [...] 菜单用官方 primitives `Menu`（portal，align=end），条目：立即运行 /
- * 暂停或恢复 / 删除（danger）。删除经官方 `Modal` 二次确认（与 dsh-tauri-session
- * 的归档删除一致）。
- */
-
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ReactElement } from 'react'
-import type { TaskView, Translate } from '../types'
+import type { LocaleKey, Translate } from '../locales/index.types'
+import type { TaskView } from '../types'
 import { Menu, Modal, Toast, IconWarningOutline16 as Warning } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CirclePause, CirclePlay, EllipsisVertical, Icon, TrashBin, useMountStyle } from 'dsh-tauri-ui/client'
 import { useRef, useState } from 'react'
 import { TASK_CARD_STYLE_ID } from '../constants'
-import { applyDeleteTask, applyRunTask, applyToggleTask } from '../service/scheduler'
+import { deleteTask, runTask, toggleTask } from '../service/scheduler'
 import taskCardStyle from './task-card.cssr'
 
 export interface TaskCardProps {
@@ -22,7 +15,6 @@ export interface TaskCardProps {
   describe: string
   nextRun?: string
   paused: boolean
-  /** 点击卡片主体 → 打开编辑弹窗（复用创建弹窗）。 */
   onEdit: (task: TaskView) => void
 }
 
@@ -36,7 +28,7 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
 
   async function runAction(
     action: () => Promise<{ ok: boolean, error?: string }>,
-    errorKey: 'runFailed' | 'toggleFailed' | 'deleteFailed',
+    errorKey: LocaleKey,
   ): Promise<void> {
     const result = await action()
     if (!result.ok) {
@@ -51,7 +43,7 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
 
   async function onRun(): Promise<void> {
     try {
-      await runAction(() => applyRunTask(task.id), 'runFailed')
+      await runAction(() => runTask(task.id), 'runFailed')
     }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -61,11 +53,11 @@ export function TaskCard({ task, t, describe, nextRun, paused, onEdit }: TaskCar
     }
   }
   async function onToggle(): Promise<void> {
-    await runAction(() => applyToggleTask(task.id, paused), 'toggleFailed')
+    await runAction(() => toggleTask(task.id, paused), 'toggleFailed')
   }
   async function onDelete(): Promise<void> {
     setConfirmOpen(false)
-    const result = await applyDeleteTask(task.id)
+    const result = await deleteTask(task.id)
     if (!result.ok) {
       const message = result.error ?? t('deleteFailed')
       setActionError(message)

@@ -1,7 +1,7 @@
 {
   "name": "dsh-tauri-worktree",
   "type": "module",
-  "version": "0.6.7",
+  "version": "1.0.0",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -27,7 +27,6 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "README.md",
     "cordis.patch.yml",
     "dist"
   ],
@@ -59,10 +58,13 @@
     "dsh-tauri": "workspace:*",
     "dsh-tauri-ui": "workspace:*",
     "hookable": "catalog:utils",
+    "lodash-es": "catalog:utils",
     "pathe": "catalog:utils",
-    "simple-git": "catalog:utils"
+    "simple-git": "catalog:utils",
+    "unstorage": "catalog:utils"
   },
   "devDependencies": {
+    "@types/lodash-es": "catalog:types",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli"
   }

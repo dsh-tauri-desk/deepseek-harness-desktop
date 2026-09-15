@@ -1,254 +1,147 @@
-/**
- * menu.ts — 右键菜单控制器：按目标（会话行 / 工作区行 / 可编辑元素 / 选中文本 /
- * 链接 / 对话内容区）解析并组装菜单，处理键盘导航与外部点击关闭。
- *
- * 职责边界：
- *   - DOM 构建（菜单项/分隔线/定位）→ ../dom/menu-item.ts；
- *   - 选区操作（替换/全选）→ ../utils/editable.ts；
- *   - 业务动作（RPC/剪贴板/官方菜单转交）→ ./actions.ts；
- * 本文件只保留「目标解析 + 菜单组装 + 生命周期」，不再混入 DOM 细节。
- *
- * 会话与工作区的官方操作全部转交官方组件（officialSelect）；插件只补充
- * 宿主能力（资源管理器、剪贴板、默认浏览器、刷新）。
- */
-import type { ClientContext } from 'dsh-tauri/client'
 import type {
+  ActionOutcome,
+  SessionId,
   SessionsRuntimeLike,
+  WorkspaceId,
   WorkspacesRuntimeLike,
+  WorkspaceViewLike,
 } from '../types'
-import { compat, createLifecycleController } from 'dsh-tauri/client'
-import {
-  CONTEXT_MENU_EVENT,
-} from '../constants'
-import { editableFrom, externalUrl, officialAction, resolveSession, rowFrom, selectedText, selectedUrl, ungroupedRowFrom, workspaceForSession, workspaceFrom } from '../dom/locate'
-import { createMenuItem, createMenuRoot, createSeparator, positionMenu } from '../dom/menu-item'
-import { text } from '../locales'
-import { copyText, readClipboard } from '../utils/clipboard'
-import { toast } from '../utils/dialog'
-import { pasteInto, replaceSelection, selectAll, selectionSurface, selectSurface } from '../utils/editable'
-import {
-  archiveSession,
-  archiveUngroupedSessions,
-  archiveWorkspaceSessions,
-  deleteWorkspaceAction,
-  forkSession,
-  officialSelect,
-  openExternalUrl,
-  openInExplorer,
-  renameSession,
-} from './actions'
-import { holdRegistryLease, registry } from './registry'
+import { difference, filter, get } from 'dsh-tauri/client'
+import { postOpenPath, postOpenUrl } from '../apis'
+import { locale } from '../locales'
+import { externalUrl } from '../utils/url'
 
-/**
- * 安装右键菜单。返回卸载函数（关闭菜单并 dispose 生命周期控制器）。
- * @param ctx - 客户端根上下文（须已注入 sessions/workspaces）。
- */
-export function registerContextMenu(ctx: ClientContext): () => void {
-  const cx = compat(ctx)
-  const sessions = cx.sessions as unknown as SessionsRuntimeLike
-  const workspaces = cx.workspaces as unknown as WorkspacesRuntimeLike
-  const extensionsRegistry = registry()
-  const controller = createLifecycleController()
-  // 注册表租约：apply 时持有、dispose 时释放（哪怕 listeners 先失效）。
-  controller.add(holdRegistryLease())
-
-  let menu: HTMLElement | null = null
-  const close = (): void => {
-    menu?.remove()
-    menu = null
+/** Action：用系统默认浏览器打开外链（只放行 http/https）。 */
+export async function openExternalUrl(input: { url: string }): Promise<ActionOutcome> {
+  const url = externalUrl(input.url)
+  if (!url)
+    return { ok: false, error: locale.text('openFailed', { reason: locale.text('invalidLink') }) }
+  try {
+    const result = await postOpenUrl({ url })
+    if (!result?.ok)
+      return { ok: false, error: locale.text('openFailed', { reason: result?.error || locale.text('unknownError') }) }
+    return { ok: true }
   }
-  controller.add(close)
-
-  /** 追加菜单项（含 close + 错误 toast 包装；run 可为异步）。 */
-  const add = (root: HTMLElement, label: string, run: () => void | Promise<void>, shortcut = '', danger = false): void => {
-    root.appendChild(createMenuItem({
-      label,
-      shortcut,
-      danger,
-      onClick: async () => {
-        close()
-        try {
-          await run()
-        }
-        catch (error) {
-          toast(error instanceof Error ? error.message : String(error))
-        }
-      },
-    }))
+  catch (error) {
+    return fail(error)
   }
-  /** 追加分隔线（已有条目且末项不是分隔线时才加）。 */
-  const split = (root: HTMLElement): void => {
-    if (!root.childElementCount || root.lastElementChild?.classList.contains('dshp-menu__separator'))
-      return
-    root.appendChild(createSeparator())
+}
+
+/** Action：在系统文件管理器中打开目录（插件自家宿主路由，不依赖核心 Remote）。 */
+export async function openInExplorer(input: { path: string }): Promise<ActionOutcome> {
+  try {
+    const result = await postOpenPath({ path: input.path })
+    if (!result?.ok)
+      return { ok: false, error: locale.text('openFailed', { reason: result?.error || locale.text('unknownError') }) }
+    return { ok: true }
   }
-
-  const onContextMenu = (event: MouseEvent): void => {
-    if (event.defaultPrevented)
-      return
-    const row = rowFrom(event.target)
-    const ungroupedRow = !row ? ungroupedRowFrom(event.target) : null
-    const domSessionWorkspace = row ? workspaceFrom(event.target, workspaces) : null
-    const session = row ? resolveSession(sessions, row, domSessionWorkspace?.workspace ?? null) : null
-    // The visible blank “New Session” is only a provisional composer target.
-    if (session?.blank === true)
-      return
-    const resolvedWorkspace = domSessionWorkspace?.workspace || workspaceForSession(workspaces, session)
-    const sessionWorkspace = resolvedWorkspace ? { workspace: resolvedWorkspace } : null
-    const workspaceTarget = !row && !ungroupedRow ? workspaceFrom(event.target, workspaces) : null
-    const editable = editableFrom(event.target)
-    const selection = selectedText(editable).trim()
-    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null
-    const surface = selectionSurface(event.target)
-    if (!row && !ungroupedRow && !workspaceTarget && !editable && !selection && !link && !surface)
-      return
-    event.preventDefault()
-    event.stopPropagation()
-    close()
-    const root = createMenuRoot()
-    document.body.appendChild(root)
-    menu = root
-
-    const registeredExtensions = extensionsRegistry.list()
-    globalThis.dispatchEvent(new CustomEvent(CONTEXT_MENU_EVENT, {
-      detail: {
-        row: row || ungroupedRow || workspaceTarget?.targetRow || null,
-        action: row ? officialAction(row) : null,
-        session,
-        workspace: workspaceTarget?.workspace || null,
-        target: event.target,
-        x: event.clientX,
-        y: event.clientY,
-        extensions: registeredExtensions,
-      },
-    }))
-
-    if (row) {
-      add(root, text('renameSession'), () => renameSession(sessions, row, session))
-      add(root, text('archiveSession'), () => archiveSession(workspaces, row, session))
-      const cwd = session?.cwd || sessionWorkspace?.workspace.path
-      if (cwd) {
-        split(root)
-        add(root, text('openInExplorer'), () => openInExplorer(cwd))
-        add(root, text('copyWorkingDirectory'), () => copyText(cwd, 'copiedWorkingDirectory'))
-      }
-      if (session)
-        add(root, text('copySessionId'), () => copyText(session.id, 'copiedSessionId'))
-
-      split(root)
-      add(root, text('forkSession'), () => forkSession(sessions, row, session))
-
-      const extensions = session
-        ? registeredExtensions.filter(entry => entry.visible?.({ session, row }) !== false)
-        : []
-      if (extensions.length) {
-        split(root)
-        for (const entry of extensions)
-          add(root, entry.label || entry.id, () => entry.run({ session, row, sessions, workspaces, close }))
-      }
-      split(root)
-      add(root, text('refresh'), () => globalThis.location.reload(), 'Ctrl+R')
-    }
-    else if (ungroupedRow) {
-      add(root, text('archiveUngroupedSessions'), () => archiveUngroupedSessions(workspaces, sessions))
-      split(root)
-      add(root, text('refresh'), () => globalThis.location.reload(), 'Ctrl+R')
-    }
-    else if (workspaceTarget) {
-      const workspace = workspaceTarget.workspace
-      add(root, text('newSession'), () => workspaces.startSession?.(workspace.workspaceId as unknown as Parameters<NonNullable<typeof workspaces.startSession>>[0]))
-      add(root, text('openInExplorer'), () => openInExplorer(workspace.path))
-      split(root)
-      add(root, text('renameWorkspace'), () => officialSelect(
-        workspaceTarget.row,
-        [/^重命名$/, /^rename$/i],
-        text('officialWorkspaceRenameUnavailable'),
-        { workspace: true, schedule: (fn, ms) => controller.timeout(fn, ms) },
-      ))
-      add(root, text('copyWorkspacePath'), () => copyText(workspace.path, 'copiedWorkspacePath'))
-      split(root)
-      add(root, text('archiveWorkspaceSessions'), () => archiveWorkspaceSessions(workspaces, workspace))
-      add(root, text('deleteWorkspace'), () => deleteWorkspaceAction(workspaces, workspace), '', true)
-
-      split(root)
-      add(root, text('refresh'), () => globalThis.location.reload(), 'Ctrl+R')
-    }
-    else if (editable) {
-      add(root, text('undo'), () => {
-        editable.focus()
-        if (!document.execCommand('undo'))
-          throw new Error(text('useUndoShortcut'))
-      }, 'Ctrl+Z')
-      add(root, text('redo'), () => {
-        editable.focus()
-        if (!document.execCommand('redo'))
-          throw new Error(text('useRedoShortcut'))
-      }, 'Ctrl+Y')
-      split(root)
-      add(root, text('cut'), async () => {
-        if (selection)
-          await copyText(selection, 'cutDone')
-        replaceSelection(editable, '')
-      }, 'Ctrl+X')
-      add(root, text('copy'), () => copyText(selection, 'copied'), 'Ctrl+C')
-      add(root, text('paste'), async () => pasteInto(editable, await readClipboard()), 'Ctrl+V')
-      split(root)
-      add(root, text('selectAll'), () => selectAll(editable), 'Ctrl+A')
-      split(root)
-      add(root, text('refresh'), () => globalThis.location.reload(), 'Ctrl+R')
-    }
-    else {
-      if (selection)
-        add(root, text('copySelectedText'), () => copyText(selection, 'copied'), 'Ctrl+C')
-      const url = externalUrl(link?.href || '') || selectedUrl(selection)
-      if (url) {
-        if (selection)
-          split(root)
-        add(root, text('openInDefaultBrowser'), () => openExternalUrl(url))
-        add(root, text('copyLink'), () => copyText(url, 'linkCopied'))
-      }
-      if (surface) {
-        if (selection || url)
-          split(root)
-        const surfaceNode = surface
-        add(root, text('selectCurrentContent'), () => selectSurface(surfaceNode), 'Ctrl+A')
-      }
-      split(root)
-      add(root, text('refresh'), () => globalThis.location.reload(), 'Ctrl+R')
-    }
-    positionMenu(root, event.clientX, event.clientY)
+  catch (error) {
+    return fail(error)
   }
+}
 
-  const outside = (event: PointerEvent): void => {
-    if (menu && !menu.contains(event.target as Node))
-      close()
+/** Action：重命名会话（官方重命名不可用时的回退路径）。 */
+export async function renameSession(input: {
+  sessions: SessionsRuntimeLike
+  sessionId: SessionId
+  title: string
+}): Promise<ActionOutcome> {
+  const binding = input.sessions.binding(input.sessionId)
+  if (!binding)
+    return { ok: false, error: locale.text('sessionServiceUnavailable') }
+  try {
+    const result = await binding.session.rename(input.title)
+    if (!result.ok)
+      return { ok: false, error: result.error?.message || locale.text('renameFailed') }
+    return { ok: true }
   }
-  const keyboard = (event: KeyboardEvent): void => {
-    if (!menu)
-      return
-    if (event.key === 'Escape') {
-      close()
-      return
-    }
-    const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-    const current = items.indexOf(document.activeElement as HTMLElement)
-    let next: Element | null = null
-    if (event.key === 'ArrowDown')
-      next = items[(current + 1 + items.length) % items.length]
-    else if (event.key === 'ArrowUp')
-      next = items[(current - 1 + items.length) % items.length]
-    else if (event.key === 'Home')
-      next = items[0]
-    else if (event.key === 'End')
-      next = items.at(-1) ?? null
-    if (next) {
-      event.preventDefault()
-      ;(next as HTMLElement).focus()
-    }
+  catch (error) {
+    return fail(error)
   }
-  controller.listen('contextmenu', onContextMenu, { capture: true })
-  controller.listen('pointerdown', outside, { capture: true })
-  controller.listen('keydown', keyboard, { capture: true })
+}
 
-  return () => controller.dispose()
+/** Action：归档单个会话（官方归档不可用时的回退路径）。 */
+export async function archiveSession(input: {
+  workspaces: WorkspacesRuntimeLike
+  sessionId: SessionId
+}): Promise<ActionOutcome> {
+  try {
+    await input.workspaces.archiveSession(input.sessionId)
+    return { ok: true }
+  }
+  catch (error) {
+    return fail(error)
+  }
+}
+
+/** Action：分叉会话（官方分叉不可用时的回退路径）。 */
+export async function forkSession(input: {
+  sessions: SessionsRuntimeLike
+  sessionId: SessionId
+}): Promise<ActionOutcome> {
+  try {
+    const childId = await input.sessions.fork({ sessionId: input.sessionId, increaseTitle: true })
+    input.sessions.open(childId)
+    return { ok: true }
+  }
+  catch (error) {
+    return fail(error)
+  }
+}
+
+/** Query：未分组中的正式会话 id（排除已归档、已归属工作区与空白会话）。 */
+export async function loadUngroupedSessions(input: {
+  workspaces: WorkspacesRuntimeLike
+  sessions: SessionsRuntimeLike
+}): Promise<SessionId[]> {
+  const snapshot = input.workspaces.list.getSnapshot()
+  const assigned = snapshot.items.flatMap(workspace => workspace.sessionIds)
+  const sessionSnapshot = input.sessions.list.getSnapshot()
+  return filter(
+    difference(sessionSnapshot.ids, assigned, snapshot.archivedSessionIds),
+    id => sessionSnapshot.byId[id]?.blank !== true,
+  )
+}
+
+/** Query：工作区中尚未归档的会话 id。 */
+export async function loadWorkspaceSessions(input: {
+  workspaces: WorkspacesRuntimeLike
+  workspace: WorkspaceViewLike
+}): Promise<SessionId[]> {
+  return difference(input.workspace.sessionIds, input.workspaces.list.getSnapshot().archivedSessionIds)
+}
+
+/** Action：逐个归档会话。 */
+export async function archiveSessions(input: {
+  workspaces: WorkspacesRuntimeLike
+  sessionIds: SessionId[]
+}): Promise<ActionOutcome> {
+  try {
+    for (const sessionId of input.sessionIds)
+      await input.workspaces.archiveSession(sessionId)
+    return { ok: true }
+  }
+  catch (error) {
+    return fail(error)
+  }
+}
+
+/** Action：删除工作区（官方非破坏性删除：仅移除注册，文件夹与会话记录保留）。 */
+export async function deleteWorkspace(input: {
+  workspaces: WorkspacesRuntimeLike
+  workspaceId: WorkspaceId
+}): Promise<ActionOutcome> {
+  try {
+    await input.workspaces.delete(input.workspaceId)
+    return { ok: true }
+  }
+  catch (error) {
+    return fail(error)
+  }
+}
+
+// --- internal ---
+
+function fail(error: unknown): ActionOutcome {
+  return { ok: false, error: get(error, 'message') || String(error) }
 }

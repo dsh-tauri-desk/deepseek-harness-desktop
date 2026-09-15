@@ -1,100 +1,76 @@
-import type { ReactElement } from 'react'
-import type { SettingsSidebarProps } from '../types'
+import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
+import type { SettingsSidebarProps } from './sidebar.types'
 import { SlotOutlet } from '@deepseek-ai/dsh-client-ui-renderer'
-/**
- * sidebar.tsx — shell.overlay 里的设置侧边栏（id 'dsh-tauri-ui-settings'）。
- *
- * 布局即需求方 ASCII：整窗左侧停靠 —— 左栏（← 返回应用 / 🔍 搜索设置…
- * / 设置项导航，只过滤左栏列表）+ 右侧内容区。内容区渲染当前激活分区：
- *
- *   <SlotOutlet slotKey={SETTINGS_SECTION_SLOT} ownerProps={{ close }} opts={{ only: activeId }} />
- *
- * 与官方 SettingsPanel 的渲染调用逐参数一致（owner={close}，only=active）。
- * shell.overlay 是 list/root 且层本身 click-through，本条目 opt-in pointer
- * events。Esc 与“返回应用”都走 closeSettings()；打开时聚焦搜索框。
- *
- * 视觉对齐官方（用户反馈 m00308/m00310）：
- *   1. 左栏背景 = 官方 sidebar（.hHd-Xa_root）的 --dsw-specific-sidebar-fill；
- *   2. 内容区背景 = 主界面（.wSkVaW_root / .wSkVaW_scrollBody）的 --dsw-alias-bg-base；
- *   3. 左栏宽度可拖拽调整（镜像官方 DragHandle：pointer capture + rAF 节流），
- *      开通与官方一致的合约区间 clamp [264, 420]（官方默认 280、关闭即忘）；
- *      打开时按官方 sidebar 槽（[data-slot="sidebar"]）的实际渲染宽度做一次同步。
- *   4. 内容区宽度与主界面 hero 行一致：
- *      min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%)
- *      （这些 --dsh-composer-* 变量定义域在官方 .wSkVaW_root 容器，overlay 在其外，
- *      由本组件在根节点自带相同定义），左右留空与主界面对齐。
- *   无“最小化/折叠 rail”模式：返回应用/Esc 即整体隐藏（与 codex 同思路）。
- *
- * 职责边界：拖拽交互 → hooks/use-rail-drag.ts；下层/外部表面隐藏 →
- * dom/settings-obstructions.ts；本文件只保留组件状态 + JSX + 打开期副作用。
- */
-import { useEffect, useRef } from 'react'
+import { clamp, isEmpty, useEventListener, useStore } from 'dsh-tauri/client'
+import { useEffect, useRef, useState } from 'react'
 import {
+  RAIL_WIDTH_DEFAULT,
+  RAIL_WIDTH_MAX,
+  RAIL_WIDTH_MIN,
   SETTINGS_SECTION_SLOT,
+  SETTINGS_SIDEBAR_CLASS,
   SETTINGS_STYLE_ID,
 } from '../constants'
-import { concealSettingsObstructions } from '../dom/settings-obstructions'
-import { useSettingsSectionRows } from '../hooks/sections'
-import { useRailDrag } from '../hooks/use-rail-drag'
-import { settingsText, useSettingsLocale } from '../locales'
-import {
-  clampRailWidth,
-  closeSettings,
-  RAIL_WIDTH_DEFAULT,
-  selectSection,
-  setRailWidth,
-  settingsStore,
-  useSettingsUi,
-} from '../store'
-import { useMountStyle } from '../utils/style'
+import { useMountStyle } from '../hooks/use-mount-style'
+import { locale } from '../locales'
+import { store } from '../store'
 import { Icon } from './icon'
 import { ArrowLeft } from './icons'
 import { SettingsNavIcon } from './nav-icon'
 import settingsSidebarStyle from './sidebar.cssr'
 
-/**
- * 侧边栏组件：整窗 docked 左栏 + 右侧官方设置分区内容。
- * @param _props - 标准钩子（当前未消费 useSessions，保留以符合合成 props）。
- * @returns 侧边栏，或 null（未打开时 shell.overlay 条目不占位、不挡点击）。
- */
 export function SettingsSidebar(_props: SettingsSidebarProps): ReactElement | null {
-  const ui = useSettingsUi()
-  const rows = useSettingsSectionRows()
-  useSettingsLocale()
+  const ui = useStore(store.settings, { sync: true })
+  const { rows } = useStore(store.sections)
+  locale.useLocale()
   useMountStyle(settingsSidebarStyle, SETTINGS_STYLE_ID)
   const searchRef = useRef<HTMLInputElement>(null)
-  const { dragging, onHandlePointerDown } = useRailDrag()
+  const [dragging, setDragging] = useState(false)
+  const draggingRef = useRef(false)
+  const originRef = useRef({ width: RAIL_WIDTH_DEFAULT, x: 0 })
+  const documentRef = useRef<Document | null | undefined>(
+    typeof document === 'undefined' ? undefined : document,
+  )
 
-  // Esc 关闭（仅打开期间挂载监听，与官方 SettingsPanel 同生命周期）。
-  useEffect(() => {
-    if (!ui.open)
-      return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape')
-        closeSettings()
+  const onHandlePointerDown = (event: ReactPointerEvent<HTMLElement>): void => {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    originRef.current = {
+      width: store.settings.railWidth ?? RAIL_WIDTH_DEFAULT,
+      x: event.clientX,
     }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [ui.open])
+    draggingRef.current = true
+    setDragging(true)
+  }
 
-  // 打开时聚焦搜索框；并按官方 sidebar 槽的实际渲染宽度同步左栏宽度（item 3）。
+  useEventListener('pointermove', (event) => {
+    if (!draggingRef.current)
+      return
+    store.settings.setRailWidth(
+      clamp(originRef.current.width + event.clientX - originRef.current.x, RAIL_WIDTH_MIN, RAIL_WIDTH_MAX),
+    )
+  })
+
+  useEventListener('pointerup', () => {
+    if (!draggingRef.current)
+      return
+    draggingRef.current = false
+    setDragging(false)
+  })
+
+  useEventListener(documentRef, 'keydown', (event: KeyboardEvent) => {
+    if (ui.open && event.key === 'Escape')
+      store.settings.close()
+  })
+
   useEffect(() => {
     if (!ui.open)
       return
     const el = document.querySelector('[data-slot="sidebar"]')
     const width = el?.getBoundingClientRect().width
-    if (typeof width === 'number' && width >= 264)
-      setRailWidth(clampRailWidth(width))
+    if (typeof width === 'number' && width >= RAIL_WIDTH_MIN)
+      store.settings.setRailWidth(clamp(width, RAIL_WIDTH_MIN, RAIL_WIDTH_MAX))
     searchRef.current?.focus()
-  }, [ui.open])
-
-  // 自定义主题可能让设置页背景半透明，独立挂载到 body 的第三方 overlay 也可能
-  // 建立自己的层叠上下文。设置打开期间隐藏并禁用这些下层/外部表面，关闭时由
-  // disposer 精确恢复插件或主题原先拥有的内联状态。
-  useEffect(() => {
-    if (!ui.open)
-      return
-    return concealSettingsObstructions()
   }, [ui.open])
 
   if (!ui.open)
@@ -113,57 +89,56 @@ export function SettingsSidebar(_props: SettingsSidebarProps): ReactElement | nu
     : visible[0]?.id
 
   return (
-    <div className="dshp-settings-sidebar" data-slot-sidebar="dsh-tauri-ui">
+    <div className={SETTINGS_SIDEBAR_CLASS} data-slot-sidebar="dsh-tauri-ui">
       <div
-        className="dshp-settings-sidebar__rail"
-        style={{ '--dsh-settings-rail-width': `${railWidth}px` } as React.CSSProperties}
+        className={`${SETTINGS_SIDEBAR_CLASS}__rail`}
+        style={{ '--dsh-settings-rail-width': `${railWidth}px` } as CSSProperties}
       >
         <button
           type="button"
-          className="dshp-settings-sidebar__back"
-          onClick={() => closeSettings()}
+          className={`${SETTINGS_SIDEBAR_CLASS}__back`}
+          onClick={() => store.settings.close()}
         >
           <Icon as={ArrowLeft} />
-          {settingsText('back')}
+          {locale.text('back')}
         </button>
         <input
           ref={searchRef}
-          className="dshp-settings-sidebar__search"
+          className={`${SETTINGS_SIDEBAR_CLASS}__search`}
           value={ui.query}
-          placeholder={settingsText('search')}
-          aria-label={settingsText('search')}
-          onChange={event =>
-            settingsStore.set(state => ({ ...state, query: event.target.value }))}
+          placeholder={locale.text('search')}
+          aria-label={locale.text('search')}
+          onChange={event => store.settings.setQuery(event.target.value)}
         />
-        <nav className="dshp-settings-sidebar__nav" aria-label={settingsText('settings')}>
+        <nav className={`${SETTINGS_SIDEBAR_CLASS}__nav`} aria-label={locale.text('settings')}>
           {visible.map(row => (
             <button
               key={row.id}
               type="button"
-              className={`dshp-settings-sidebar__nav-item${row.id === activeId ? ' dshp-settings-sidebar__nav-item--active' : ''}`}
+              className={`${SETTINGS_SIDEBAR_CLASS}__nav-item${row.id === activeId ? ` ${SETTINGS_SIDEBAR_CLASS}__nav-item--active` : ''}`}
               aria-current={row.id === activeId ? 'true' : undefined}
-              onClick={() => selectSection(row.id)}
+              onClick={() => store.settings.select(row.id)}
             >
               <SettingsNavIcon id={row.id} />
-              <span className="dshp-settings-sidebar__nav-label">{row.label}</span>
+              <span className={`${SETTINGS_SIDEBAR_CLASS}__nav-label`}>{row.label}</span>
             </button>
           ))}
-          {visible.length === 0 && <div className="dshp-settings-sidebar__empty">{settingsText('noResults')}</div>}
+          {isEmpty(visible) && <div className={`${SETTINGS_SIDEBAR_CLASS}__empty`}>{locale.text('noResults')}</div>}
         </nav>
       </div>
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label={settingsText('settings')}
-        className={`dshp-settings-sidebar__handle${dragging ? ' dshp-settings-sidebar__handle--dragging' : ''}`}
+        aria-label={locale.text('settings')}
+        className={`${SETTINGS_SIDEBAR_CLASS}__handle${dragging ? ` ${SETTINGS_SIDEBAR_CLASS}__handle--dragging` : ''}`}
         onPointerDown={onHandlePointerDown}
       />
-      <div className="dshp-settings-sidebar__content-outer">
-        <div className="dshp-settings-sidebar__content-inner">
+      <div className={`${SETTINGS_SIDEBAR_CLASS}__content-outer`}>
+        <div className={`${SETTINGS_SIDEBAR_CLASS}__content-inner`}>
           {activeId !== undefined && (
             <SlotOutlet
               slotKey={SETTINGS_SECTION_SLOT}
-              ownerProps={{ close: () => closeSettings() }}
+              ownerProps={{ close: () => store.settings.close() }}
               opts={{ only: activeId }}
             />
           )}

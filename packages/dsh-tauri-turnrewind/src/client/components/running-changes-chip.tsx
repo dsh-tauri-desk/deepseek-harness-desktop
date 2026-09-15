@@ -1,17 +1,16 @@
 import type { ReactElement } from 'react'
-import type { RunningChangesChipProps } from '../types'
+import type { RunningChangesChipProps } from './running-changes-chip.types'
 /**
  * running-changes-chip.tsx — 会话运行中的实时变更提示条。
  *
- * 位置：`conversation.input.dock`（输入框上方独占一行）。宿主侧在 turn 进行期间
- * 定时刷新「当前工作区 vs before 快照」的读数，本组件只读那份缓存；
- * turn 结束（宿主停表 + active=false）后提示条自行消失 —— 与官方
- * 「N 个文件已更改」提示条一致，收尾信息由 turn 尾部的变更卡片承担。
+ * 位置：`conversation.input.dock`（输入框上方独占一行）。宿主侧在 turn 进行期间定时刷新
+ * 「当前工作区 vs before 快照」的读数，本组件只读那份缓存；turn 结束（宿主停表 + active=false）
+ * 后提示条自行消失——收尾信息由 turn 尾部的变更卡片承担。
  */
 import { useMountStyle } from 'dsh-tauri-ui/client'
 import { TURNREWIND_CHIP_STYLE_ID, TURNREWIND_COUNTS_STYLE_ID } from '../constants'
 import { useLiveChanges } from '../hooks/use-live-changes'
-import { text, useLocale } from '../locales'
+import { locale } from '../locales'
 import countsStyle from '../styles/counts.cssr'
 import { ChangeCounts } from './change-counts'
 import chipStyle from './running-changes-chip.cssr'
@@ -19,7 +18,7 @@ import chipStyle from './running-changes-chip.cssr'
 export function RunningChangesChip(props: RunningChangesChipProps): ReactElement | null {
   useMountStyle(chipStyle, TURNREWIND_CHIP_STYLE_ID)
   useMountStyle(countsStyle, TURNREWIND_COUNTS_STYLE_ID)
-  useLocale()
+  locale.useLocale()
   const sessionId = props.sessionId
   // owner 份额（InputZone.session）明确说「没在跑」时连轮询都不开；
   // 不同内核的会话快照字段可能不齐，缺失（undefined）时按「可能在跑」处理。
@@ -37,8 +36,8 @@ export function RunningChangesChip(props: RunningChangesChipProps): ReactElement
   return (
     <div className="dshp-turnrewind-running">
       <div className="dshp-turnrewind-running__chip" data-turnrewind-running={String(live.turn ?? '')}>
-        <span className="dshp-turnrewind-running__label">{text('runningChanged', { count: live.fileCount })}</span>
-        <ChangeCounts insertions={live.insertions} deletions={live.deletions} binary={false} binaryLabel={text('binary')} />
+        <span className="dshp-turnrewind-running__label">{locale.text('runningChanged', { count: live.fileCount })}</span>
+        <ChangeCounts insertions={live.insertions} deletions={live.deletions} binary={false} binaryLabel={locale.text('binary')} />
       </div>
     </div>
   )

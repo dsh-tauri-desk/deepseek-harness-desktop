@@ -8,6 +8,7 @@ export default antfu({
   ignores: [
     'AGENTS.*',
     'docs',
+    'archive',
   ],
 }, {
   // 插件包是库包而非应用壳：client 侧文件按 host/client 双面设计，

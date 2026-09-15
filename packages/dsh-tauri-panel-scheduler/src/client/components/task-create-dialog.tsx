@@ -10,12 +10,15 @@
  */
 
 import type { ReactElement } from 'react'
-import type { ModelTranslate, ScheduleForm, SchedulerOptions, TaskFormState, Translate, Weekday } from '../types'
+import type { LocaleKey, Translate } from '../locales/index.types'
+import type { ScheduleForm, ScheduleKind, SchedulerOptions, TaskFormState, TaskInput, Weekday } from '../types'
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { MenuSelect, useMountStyle } from 'dsh-tauri-ui/client'
+import { isEmpty, map, omitBy, pick, range } from 'dsh-tauri/client'
 import { useRef, useState } from 'react'
+import { SCHEDULE_KINDS } from '../../shared/constants'
 import { TASK_CREATE_DIALOG_STYLE_ID } from '../constants'
-import { applyCreateTask, applyUpdateTask } from '../service/scheduler'
+import { createTask, updateTask } from '../service/scheduler'
 import { MenuHostProvider } from './menu'
 import { ModelPicker } from './model-picker'
 import taskCreateDialogStyle from './task-create-dialog.cssr'
@@ -32,12 +35,12 @@ export interface TaskCreateDialogProps {
 }
 
 const WEEKDAYS: Weekday[] = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
-const PERMISSION_LABEL_KEYS: Record<string, string> = {
+const PERMISSION_LABEL_KEYS: Record<string, LocaleKey> = {
   'read-only': 'permissionReadOnly',
   'workspace-write': 'permissionWrite',
   'danger-full-access': 'permissionFullAccess',
 }
-const WEEKDAY_KEYS: Record<Weekday, string> = {
+const WEEKDAY_KEYS: Record<Weekday, LocaleKey> = {
   MO: 'dayMon',
   TU: 'dayTue',
   WE: 'dayWed',
@@ -46,19 +49,30 @@ const WEEKDAY_KEYS: Record<Weekday, string> = {
   SA: 'daySat',
   SU: 'daySun',
 }
+const SCHEDULE_KIND_KEYS: Record<ScheduleKind, LocaleKey> = {
+  once: 'scheduleOnce',
+  hourly: 'scheduleHourly',
+  daily: 'scheduleDaily',
+  interval: 'scheduleInterval',
+  workdays: 'scheduleWorkdays',
+  weekly: 'scheduleWeekly',
+  monthly: 'scheduleMonthly',
+  custom: 'scheduleCustom',
+}
 
 /** 时间段选项：00:00 ~ 23:45，每 15 分钟一档。 */
-const TIME_OPTIONS = Array.from({ length: 96 }, (_, index) => {
+const TIME_OPTIONS = range(96).map((index) => {
   const total = index * 15
   const h = String(Math.floor(total / 60)).padStart(2, '0')
   const m = String(total % 60).padStart(2, '0')
   return `${h}:${m}`
 })
 
+/** 表单里「空串即缺省」的可选字段（写入宿主前剔除）。 */
+const OPTIONAL_INPUT_FIELDS = ['workspaceId', 'permission', 'provider', 'model', 'reasoningEffort'] as const
+
 /** 间隔时长选项（分钟）。 */
 const INTERVAL_OPTIONS = [5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 720, 1440]
-
-const SCHEDULE_KINDS = ['once', 'hourly', 'daily', 'interval', 'workdays', 'weekly', 'monthly', 'custom'] as const
 
 /** 各计划模式的默认参数（切换模式时初始化，保证字段齐整）。 */
 function defaultScheduleFor(kind: ScheduleForm['kind']): ScheduleForm {
@@ -79,22 +93,6 @@ function defaultScheduleFor(kind: ScheduleForm['kind']): ScheduleForm {
       return { kind: 'workdays', time: '09:00' }
     default:
       return { kind: 'daily', time: '09:00' }
-  }
-}
-
-function kindLabelKey(kind: (typeof SCHEDULE_KINDS)[number]): string {
-  return `schedule${kind.charAt(0).toUpperCase()}${kind.slice(1)}`
-}
-
-/** 照搬 dsh-automation 的 modelT：{x} 参数插值（我们的 t 不带参数）。 */
-function makeModelT(t: Translate): ModelTranslate {
-  return (key, params) => {
-    let text = t(key)
-    if (params) {
-      for (const [name, value] of Object.entries(params))
-        text = text.replaceAll(`{${name}}`, String(value))
-    }
-    return text
   }
 }
 
@@ -131,18 +129,13 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
   async function onSave(): Promise<void> {
     setSaving(true)
     setError('')
-    const schedule = { ...form.schedule } as Record<string, unknown>
-    const input = {
+    const input: TaskInput = {
       name: form.name,
-      schedule,
+      schedule: form.schedule,
       prompt: form.prompt,
-      workspaceId: form.workspaceId || undefined,
-      permission: form.permission || undefined,
-      provider: form.provider || undefined,
-      model: form.model || undefined,
-      reasoningEffort: form.reasoningEffort || undefined,
+      ...omitBy(pick(form, ...OPTIONAL_INPUT_FIELDS), isEmpty),
     }
-    const result = await (taskId ? applyUpdateTask(taskId, input) : applyCreateTask(input))
+    const result = await (taskId ? updateTask(taskId, input) : createTask(input))
     setSaving(false)
     if (!result.ok) {
       setError(result.error ?? t('createFailed'))
@@ -167,17 +160,16 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
     { id: 'workspace-write', label: t('permissionWrite') },
     { id: 'danger-full-access', label: t('permissionFullAccess') },
   ]
-  const permissionOptions = (options.permissions ?? []).length > 0
-    ? options.permissions.map(option => ({
+  const permissionOptions = isEmpty(options.permissions)
+    ? fallbackPermissions
+    : map(options.permissions, option => ({
         id: option.value,
         label: PERMISSION_LABEL_KEYS[option.value] ? t(PERMISSION_LABEL_KEYS[option.value]) : option.name,
       }))
-    : fallbackPermissions
   // 编辑旧任务：当前值不在选项里时补一项，避免显示空值。
   if (form.permission && !permissionOptions.some(option => option.id === form.permission))
     permissionOptions.unshift({ id: form.permission, label: form.permission })
 
-  const modelT = makeModelT(t)
   const modelKey = form.provider && form.model ? `${form.provider}::${form.model}` : 'default'
 
   return (
@@ -220,7 +212,7 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
                 onChange={event => setForm(state => ({ ...state, schedule: defaultScheduleFor(event.target.value as ScheduleForm['kind']) }))}
               >
                 {SCHEDULE_KINDS.map(kind => (
-                  <option key={kind} value={kind}>{t(kindLabelKey(kind))}</option>
+                  <option key={kind} value={kind}>{t(SCHEDULE_KIND_KEYS[kind])}</option>
                 ))}
               </select>
 
@@ -314,7 +306,7 @@ export function TaskCreateDialog({ t, options, onClose, taskId, initial }: TaskC
                 />
                 <div style={{ flex: 1 }} />
                 <ModelPicker
-                  modelT={modelT}
+                  t={t}
                   models={options.models ?? []}
                   failures={options.failures ?? []}
                   modelKey={modelKey}

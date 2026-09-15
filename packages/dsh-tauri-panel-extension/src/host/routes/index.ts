@@ -1,47 +1,48 @@
-/**
- * host/routes/index.ts — HTTP 路由装配：按业务领域把路由分派给 routes/ 下的四个模块
- * （skills / mcp / repositories / restart），统一做连接鉴权包装。
- *
- * 选型（antfu 平铺范式）：skills.ts（技能路由 + 打开目录）、mcp.ts（MCP 行 +
- * 跨目录导入）、repositories.ts（自定义技能仓库）、restart.ts（进程自重启）；
- * 每个模块导出一个 `registerXxxRoutes(register, ...)` 注册器，本文件只做组合。
- */
+import type { ExtensionRouteDeps } from './index.types'
+import { defineRoutes } from 'dsh-tauri'
+import { API_PREFIX } from '../../shared/constants'
+import importApply from './import/apply/post'
+import importScan from './import/scan/get'
+import mcpCheck from './mcp/check/post'
+import mcpCopy from './mcp/copy/post'
+import mcp from './mcp/get'
+import mcpRemove from './mcp/remove/post'
+import mcpSave from './mcp/save/post'
+import mcpToggle from './mcp/toggle/post'
+import open from './open/post'
+import restart from './restart/post'
+import rootsAdd from './roots/add/post'
+import roots from './roots/get'
+import rootsRemove from './roots/remove/post'
+import skillDelete from './skill/delete/post'
+import skill from './skill/get'
+import skillPolicy from './skill/policy/post'
+import skillSave from './skill/save/post'
+import skills from './skills/get'
+import skillsRefresh from './skills/refresh/post'
 
-import type { PanelExtensionHost, RouteRegistrar } from '../types/index.ts'
-import { withConnectionAuth } from 'dsh-tauri'
-import { dirname } from 'pathe'
-import { PLUGIN_NAME } from '../../shared/constants.ts'
-import { registerMcpRoutes } from './mcp.ts'
-import { registerRepositoryRoutes } from './repositories.ts'
-import { registerRestartRoute } from './restart.ts'
-import { registerSkillRoutes } from './skills.ts'
+export const routes = defineRoutes<ExtensionRouteDeps>((disposer) => {
+  disposer.get({ kind: 'exact', path: `${API_PREFIX}/skills` }, skills)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/skills/refresh` }, skillsRefresh)
+  disposer.get({ kind: 'exact', path: `${API_PREFIX}/skill` }, skill)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/skill/save` }, skillSave)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/skill/delete` }, skillDelete)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/skill/policy` }, skillPolicy)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/open` }, open)
 
-export interface PanelExtensionRoutesConfig {
-  profileDirPath: string
-  /** Remount the host-plane skill provider after root-set changes. */
-  remountProvider: () => Promise<void>
-}
+  disposer.get({ kind: 'exact', path: `${API_PREFIX}/mcp` }, mcp)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/mcp/save` }, mcpSave)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/mcp/toggle` }, mcpToggle)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/mcp/remove` }, mcpRemove)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/mcp/check` }, mcpCheck)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/mcp/copy` }, mcpCopy)
 
-/** Register the manager's routes; returns the disposer removing them all. */
-export function mountPanelExtensionRoutes(host: PanelExtensionHost, config: PanelExtensionRoutesConfig): () => void {
-  const register: RouteRegistrar = route => host.webServer.register({
-    ...route,
-    handler: withConnectionAuth(host.connection, route.handler, PLUGIN_NAME),
-  })
+  disposer.get({ kind: 'exact', path: `${API_PREFIX}/import/scan` }, importScan)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/import/apply` }, importApply)
 
-  const disposers = [
-    ...registerSkillRoutes(register, host, { remountProvider: config.remountProvider }),
-    ...registerMcpRoutes(register, {
-      profileDirPath: config.profileDirPath,
-      // profileDirPath is always <DSH_HOME>/profiles/<profile>.
-      dshHomePath: dirname(dirname(config.profileDirPath)),
-    }),
-    ...registerRepositoryRoutes(register, { remountProvider: config.remountProvider }),
-    ...registerRestartRoute(register),
-  ]
+  disposer.get({ kind: 'exact', path: `${API_PREFIX}/roots` }, roots)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/roots/add` }, rootsAdd)
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/roots/remove` }, rootsRemove)
 
-  return () => {
-    for (const dispose of disposers)
-      dispose()
-  }
-}
+  disposer.post({ kind: 'exact', path: `${API_PREFIX}/restart` }, restart)
+})

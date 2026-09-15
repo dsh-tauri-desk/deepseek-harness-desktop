@@ -2,7 +2,6 @@ import { cssr } from 'dsh-tauri-ui/client'
 
 const { bem: { b, e, m } } = cssr
 
-/** 检出/放弃工作树弹窗（dialog.tsx）：遮罩 + 卡片表单。 */
 export default b('worktree', [
   e('modal', {
     position: 'absolute',

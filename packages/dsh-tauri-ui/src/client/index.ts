@@ -1,115 +1,42 @@
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-/**
- * dsh-tauri-ui 客户端插件体（browser half）：定制化 Tauri UI 的未来载体。
- *
- * 第一项功能：把 dsh 的设置弹窗（dialog）改为左侧停靠的侧边栏
- * （左栏 = 返回应用 + 搜索 + 设置项导航；右侧 = 官方各设置分区内容）。
- *
- * 关系：`dsh-tauri` 是纯消息桥（无 UI、无运行时依赖），只负责把宿主导航栏
- * 命令转发给 iframe 内的 dsh 应用并回报状态；本插件是它的 **UI 半区**——
- * 桌面风格的自定义 chrome 作为插件加载进 `shell.overlay` 帧级浮动层。
- *
- * 本功能的结构（全部 slot-shadow，零结构补丁，零新增依赖）：
- *   - components/trigger.tsx  注册进 sidebar.settings（priority -1）
- *     shadow 官方 SettingsRoot：齿轮按钮 + onboarding 宿主；官方 dialog 被抑制。
- *     （槽位注册在 register/trigger.ts）
- *   - components/sidebar.tsx  注册进 shell.overlay（id dsh-tauri-ui-settings）：
- *     整窗 docked 左栏 + 内容区，经 <SlotOutlet slotKey="settings.section"/>
- *     渲染官方各分区（SlotOutlet 由 renderer 的一行导出补丁提供）。
- *     （槽位注册在 register/sidebar.ts；拖拽交互在 hooks/use-rail-drag.ts；
- *     下层/外部表面隐藏补丁在 dom/settings-obstructions.ts）
- *   - store/      触发器与侧边栏共享 {open, activeId, query}。
- *   - hooks/sections.ts + register/sections.ts   'settings.section' /
- *     'settings.onboarding' 注册条目的导航行投影（hooks 订阅槽位与 locale
- *     变更；installer 持有 slotsRef）。
- *   - locales/     本插件文案（返回应用/搜索设置…）双语注册。
- *
- * 保留了骨架期的 `shell.overlay` 条目（id dsh-tauri-ui）作为未来 chrome
- * 的落点，与设置侧边栏（id dsh-tauri-ui-settings）并行不冲突。
- */
 import type { ClientContext } from 'dsh-tauri/client'
-import { SlotOutlet } from '@deepseek-ai/dsh-client-ui-renderer'
-import { TauriUiSeat } from './components/seat'
+import { PLUGIN_NAME } from '../shared/constants'
 import {
-  SETTINGS_REGISTRANT,
-  SETTINGS_SHELL_OVERLAY_SLOT,
-  SETTINGS_SHELL_SEAT_ID,
-  SETTINGS_UI_PLUGIN,
-  TURN_NAVIGATION_STYLE_ID,
+  LOCALE_EFFECT,
+  OBSTRUCTIONS_EFFECT,
+  SEAT_EFFECT,
+  SECTIONS_EFFECT,
+  SETTINGS_EFFECT,
+  STYLES_EFFECT,
 } from './constants'
-import { registerSettingsLocale } from './locales'
+import { locale } from './locales'
+import { registerSettingsObstructions } from './register/obstructions'
+import { registerShellSeat } from './register/seat'
 import { registerSettingsSections } from './register/sections'
-import { registerSettingsSidebar } from './register/sidebar'
-import { registerSettingsTrigger } from './register/trigger'
-import globalStyle from './styles/global.cssr'
-import turnNavigationStyle from './styles/index.cssr'
-import { mountStyle } from './utils/style'
+import { registerSettings } from './register/settings'
+import { registerStyles } from './register/styles'
 
-/** 插件显示名（诊断元数据）。 */
-export const name = SETTINGS_UI_PLUGIN
+export * from './components'
+export type * from './components/menu-select.types'
+export type * from './components/sidebar.types'
+export type * from './components/trigger.types'
+export * from './constants/theme'
+export * from './hooks/use-mount-style'
+export type * from './store/modules/sections.types'
+export type * from './store/modules/settings.types'
+export type * from './types/sections'
+export type * from './types/selector'
+export * from './utils/cssr'
+export * from './utils/style'
 
-/** 需要的客户端服务：slots（注册点位）、layout（未来 chrome 的面板动作）、locale（双语文案）。 */
+export const name = PLUGIN_NAME
 export const inject = ['slots', 'layout', 'locale']
 
-// The client entry is also the workspace-wide shared UI surface.
-export * from './components'
-export { styles } from './theme'
-export type * from './types'
-export { cssr } from './utils/cssr'
-export { mountStyle, useMountStyle } from './utils/style'
-
-/**
- * 插件体：注册未来 chrome 的落点座位 + 设置侧边栏功能。
- * @param ctx - 客户端根上下文。
- */
 export function apply(ctx: ClientContext): void {
-  // 骨架期落点：未来桌面 chrome（顶部导航/窗口控件等）在此渲染。
-  // alpha 的 slot 必须先由父条目的 children 表声明才能注册进入；shell.overlay
-  // 由 ui-layout 的 AppFrame 声明，故通过 inject 等其声明（live）后再注册，
-  // 避免 `slot "shell.overlay" is not declared` 运行时报错。
-  ctx.effect(
-    () =>
-      ctx.slots.inject(SETTINGS_SHELL_OVERLAY_SLOT, () =>
-        ctx.slots.register(
-          {
-            name: SETTINGS_SHELL_OVERLAY_SLOT,
-            id: SETTINGS_SHELL_SEAT_ID,
-            registrant: SETTINGS_REGISTRANT,
-          },
-          TauriUiSeat,
-        )),
-    'dsh-tauri-ui: shell.overlay seat',
-  )
-
-  // 第一项功能：设置弹窗 → 侧边栏。
-  // 侧边栏依赖 renderer 补丁导出的 <SlotOutlet>（任意槽渲染的入口）。核心未带
-  // 补丁时（旧安装），SlotOutlet 为 undefined —— 此时降级：不注册侧边栏与
-  // 触发条目，官方设置 dialog 原样工作，绝不白屏（功能整体不生效即可）。
-  // 设置侧边栏/触发器/导航图标样式由各自组件 useMountStyle 自动挂载。
-  // The core turn rail is rendered inside a clipped conversation column. Keep
-  // its semantic nav visible in the 56px sidebar rail by patching only the
-  // stable bilingual aria label; core-owned children and scrolling stay intact.
-  ctx.effect(
-    () => mountStyle(turnNavigationStyle, TURN_NAVIGATION_STYLE_ID),
-    'dsh-tauri-ui: turn navigation styles',
-  )
-  ctx.effect(
-    () => mountStyle(globalStyle, 'dsh-tauri-ui-global-styles'),
-    'dsh-tauri-ui: global styles',
-  )
-  registerSettingsLocale(ctx)
-  // 设置分区投影：引用清理也走 effect（插件卸载后 slotsRef 复位，避免跨实例残留）。
-  ctx.effect(
-    () => registerSettingsSections(ctx.slots as never),
-    'dsh-tauri-ui: settings sections projection',
-  )
-  if (typeof SlotOutlet === 'function') {
-    registerSettingsSidebar(ctx)
-    registerSettingsTrigger(ctx)
-  }
-  else {
-    console.warn(
-      '[dsh-tauri-ui] <SlotOutlet> unavailable (renderer patch missing) — settings sidebar disabled, official dialog stays.',
-    )
-  }
+  ctx.effect(locale.registerLocale, LOCALE_EFFECT)
+  ctx.effect(registerStyles, STYLES_EFFECT)
+  ctx.effect(registerShellSeat, SEAT_EFFECT)
+  ctx.effect(registerSettingsSections, SECTIONS_EFFECT)
+  ctx.effect(registerSettings, SETTINGS_EFFECT)
+  ctx.effect(registerSettingsObstructions, OBSTRUCTIONS_EFFECT)
 }

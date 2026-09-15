@@ -1,5 +1,7 @@
-import type { ParentMessage, ParentMessageContext, ParentMessageTypes, UnlistenFn } from '../types'
+import type { ParentMessage, ParentMessageContext, ParentMessageTypes } from '../types/iframe'
+import type { UnlistenFn } from '../types/tauri'
 
+/** `type` 过滤：字符串精确匹配，数组按成员匹配。 */
 function matchesType(type: string | undefined, types: ParentMessageTypes): boolean {
   return typeof types === 'string' ? type === types : types.includes(type ?? '')
 }
@@ -14,6 +16,9 @@ function matchesType(type: string | undefined, types: ParentMessageTypes): boole
  *
  * 所有自定义桥（导航、错误上报、插件自有协议）都必须经本函数收消息，
  * 不要各自写 `window.addEventListener('message', …)`。
+ *
+ * 参数序与桌面宿主侧契约一致：`(handler, types?)`（见 `docs/AGENTS.plugins.md` 的父窗口桥表）。
+ * 不要把 `types` 放到第一位——它既与文档相悖，也会让「按 type 过滤」在传数组时静默失效。
  *
  * @returns 取消监听的函数（与 `@tauri-apps/api/event` 的 `listen` 返回形态一致）
  */

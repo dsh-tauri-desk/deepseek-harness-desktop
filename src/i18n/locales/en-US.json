@@ -156,6 +156,7 @@
   "nav.maximize": "Maximize",
   "nav.background": "Background",
   "messages.logs_copied": "Logs copied to clipboard",
+  "messages.logs_read_failed": "Failed to read logs. Please try again.",
   "app.help": "Help",
   "profiles.title": "Profiles",
   "profiles.tooltip": "Profiles are isolated bundles of plugins, patches and settings in dsh. The desktop runs in the default web profile; create new profiles to trial different plugin combinations without affecting the current setup.",

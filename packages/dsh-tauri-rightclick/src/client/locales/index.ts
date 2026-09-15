@@ -1,16 +1,7 @@
-/**
- * locales/index.ts — 本插件自有文案（右键菜单 / Toast / 确认框 / 错误提示）。
- * 走 locale 服务的非类型化注册面（register(ns, locale, dict)），zh/en 双语齐备，
- * 语言自动跟随宿主 UI；`text()` 支持 `{name}` 插值（如归档确认框的标题/数量）。
- */
-import type { ClientContext } from 'dsh-tauri/client'
-import type { LocaleKey } from '../types'
-import { RIGHTCLICK_CLIENT_NS as NS } from '../constants'
+import { defineLocale } from 'dsh-tauri/client'
+import { RIGHTCLICK_PLUGIN_NAME } from '../constants'
 
-export { RIGHTCLICK_CLIENT_NS as NS } from '../constants'
-
-/** zh 字典（键集合的权威）。 */
-const DICT_ZH = {
+const zh = {
   renameSession: '重命名会话',
   archiveSession: '归档会话',
   openInExplorer: '在资源管理器中打开',
@@ -74,10 +65,9 @@ const DICT_ZH = {
   sessionServiceUnavailable: '无法取得官方会话服务',
   renameFailed: '重命名失败',
   editPositionUnknown: '无法确定编辑位置',
-} as const satisfies Record<LocaleKey, string>
+} as const satisfies Record<string, string>
 
-/** en 字典，与 zh 键集完全一致（locale 运行时强制双语平衡）。 */
-const DICT_EN: Record<LocaleKey, string> = {
+const en: Record<keyof typeof zh, string> = {
   renameSession: 'Rename session',
   archiveSession: 'Archive session',
   openInExplorer: 'Open in File Explorer',
@@ -143,28 +133,4 @@ const DICT_EN: Record<LocaleKey, string> = {
   editPositionUnknown: 'Could not determine the editing position',
 }
 
-/** 活跃语言 id（module 级缓存，apply 时初始化并由订阅推进）。 */
-let activeLocale = 'en'
-
-/**
- * 在 apply 里安装：注册双语字典，并桥接 locale 变更到 module 级缓存。
- * @param ctx - 客户端根上下文（须已注入 locale 服务）。
- */
-export function registerLocale(ctx: ClientContext): void {
-  activeLocale = ctx.locale.getLocale().active
-  ctx.locale.register(NS, 'zh', DICT_ZH)
-  ctx.locale.register(NS, 'en', DICT_EN)
-  ctx.locale.subscribe(() => {
-    activeLocale = ctx.locale.getLocale().active
-  })
-}
-
-/**
- * 按当前活跃语言取一条文案，并做 `{name}` 插值（缺失的值替换为空串）。
- * @param key - 文案键。
- * @param values - 插值表。
- */
-export function text(key: LocaleKey, values: Record<string, string | number> = {}): string {
-  const dict = activeLocale === 'en' ? DICT_EN : DICT_ZH
-  return (dict[key] || DICT_EN[key] || key).replace(/\{(\w+)\}/g, (_, name: string) => String(values[name] ?? ''))
-}
+export const locale = defineLocale(RIGHTCLICK_PLUGIN_NAME, { zh, en })

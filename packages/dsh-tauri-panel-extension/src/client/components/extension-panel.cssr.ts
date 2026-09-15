@@ -1,16 +1,14 @@
-import { cssr, styles as sharedStyles } from 'dsh-tauri-ui/client'
+import { cssr, panelContainer, styles as sharedStyles } from 'dsh-tauri-ui/client'
 
 const { c, bem: { b, e } } = cssr
 const { primary, tertiary, borderL2: border, business } = sharedStyles
 
-/** 扩展面板外壳（extension-panel.tsx）：Tabs 布局。 */
 export default b('extension', [
   e('section', {
+    ...panelContainer,
     display: 'flex',
     flexDirection: 'column',
     gap: '14px',
-    width: '100%',
-    maxWidth: '760px',
     color: primary,
   }),
   e('tabs', {

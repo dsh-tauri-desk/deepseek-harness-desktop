@@ -156,6 +156,7 @@
   "nav.maximize": "最大化",
   "nav.background": "后台化",
   "messages.logs_copied": "日志已复制到剪贴板",
+  "messages.logs_read_failed": "读取日志失败，请稍后重试",
   "app.help": "帮助",
   "profiles.title": "档案",
   "profiles.tooltip": "档案是 dsh 中一组相互隔离的配置集合，包含各自的插件、补丁与设置。桌面端运行在默认的 web 档案中；新建档案可试用不同的插件组合而不影响当前配置。",

@@ -200,6 +200,62 @@ pub(super) fn is_local_link_dep(spec: &str) -> bool {
     spec.starts_with("link:") || spec.starts_with("file:")
 }
 
+/// 收集「本地链接目标已不存在、且不再是当前内置预设」的依赖名（排序后返回）。
+///
+/// 已删除的内置包不会出现在 `load_presets` 的预设清单里，孤儿分支永远碰不到它，
+/// 其 `link:` 悬空依赖与 `dsh.profile.bundles` 引用会永久留在 profile，令 dsh 每次
+/// 启动都报 `cannot resolve profile bundle <name>`。`keep`（当前预设的包名）必须
+/// 排除：预设的链接目标可能因应用升级/切分支而移动，那条路径要重装而不是卸载。
+/// 只认 `link:`/`file:` 本地链接；registry/git 引用缺产物属安装问题，绝不在此清理。
+pub(super) fn collect_dangling_local_link_deps(
+    manifest: &serde_json::Value,
+    keep: &HashSet<&str>,
+    profile: &Path,
+) -> Vec<String> {
+    let Some(dependencies) = manifest
+        .get("dependencies")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut dangling: Vec<String> = dependencies
+        .iter()
+        .filter(|(name, spec)| {
+            !keep.contains(name.as_str())
+                && spec.as_str().is_some_and(|spec| {
+                    is_local_link_dep(spec) && !local_link_target_exists(spec, profile)
+                })
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    dangling.sort();
+    dangling
+}
+
+/// 本地链接依赖的目标目录是否存在（相对值按 profile 目录解析，容忍 verbatim 前缀）。
+fn local_link_target_exists(spec: &str, profile: &Path) -> bool {
+    let Some(raw) = spec
+        .strip_prefix("link:")
+        .or_else(|| spec.strip_prefix("file:"))
+    else {
+        return true;
+    };
+    let trimmed = raw.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return false;
+    }
+    // pnpm 在 Windows 上可能写入 `\\?\` / `//?/` verbatim 前缀，先经 dunce 归一化，
+    // 否则对同一目录的判存会因前缀不同而假阴性。
+    let normalized = trimmed.replace('/', std::path::MAIN_SEPARATOR_STR);
+    let path = dunce::simplified(Path::new(&normalized)).to_path_buf();
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        profile.join(path)
+    };
+    resolved.is_dir()
+}
+
 /// 判断 pnpm 写入 profile 的依赖值与期望的 `link:` 捆绑路径是否一致。
 ///
 /// 容忍：`link:`/`file:` 前缀缺失或两者混写（历史遗留 `file:` 安装值）；Windows
@@ -396,6 +452,48 @@ mod tests {
         assert!(!is_local_link_dep("github:dsh-market/dshmarket"));
         assert!(!is_local_link_dep("workspace:*"));
         assert!(!is_local_link_dep(""));
+    }
+
+    #[test]
+    fn dangling_local_link_deps_exclude_presets_and_registry_specs() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-dangling-link-deps-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let profile = root.join("profile");
+        let alive = root.join("packages/dsh-tauri-ui");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&alive).unwrap();
+        let alive_spec = format!("link:{}", alive.to_string_lossy());
+
+        let manifest = serde_json::json!({
+            "dependencies": {
+                "dsh-tauri-panel": "link:D:/gone/packages/dsh-tauri-panel",
+                "dsh-tauri-ui": alive_spec,
+                "dsh-tauri": "link:D:/gone/packages/dsh-tauri",
+                "dshmarket": "github:dsh-market/dshmarket",
+                "dsh-better-sidebar": "1.0.0",
+                "dsh-tauri-pet": "link:missing-sibling-package"
+            }
+        });
+        let keep = HashSet::from(["dsh-tauri"]);
+
+        let dangling = collect_dangling_local_link_deps(&manifest, &keep, &profile);
+
+        assert_eq!(
+            dangling,
+            vec!["dsh-tauri-panel".to_string(), "dsh-tauri-pet".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dangling_local_link_deps_ignore_manifests_without_dependencies() {
+        let profile = std::env::temp_dir();
+        let manifest = serde_json::json!({ "name": "dsh-profile-web", "private": true });
+
+        assert!(collect_dangling_local_link_deps(&manifest, &HashSet::new(), &profile).is_empty());
     }
 
     #[test]

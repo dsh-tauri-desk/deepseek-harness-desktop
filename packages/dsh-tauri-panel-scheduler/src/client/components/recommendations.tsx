@@ -1,30 +1,23 @@
 import type { IconComponent } from 'dsh-tauri-ui/client'
 import type { ReactElement } from 'react'
-import type { ScheduleForm, TaskFormState, TaskView, Translate } from '../types'
+import type { LocaleKey, Translate } from '../locales/index.types'
+import type { ScheduleForm, TaskFormState, TaskView } from '../types'
 import { Calendar, Icon, useMountStyle } from 'dsh-tauri-ui/client'
 import { RECOMMENDATIONS_STYLE_ID } from '../constants'
-import { applyCreateTask } from '../service/scheduler'
-import { recommendationMatchesTask } from '../utils/recommendations'
-import { describeSchedule } from '../utils/schedule'
+import { createTask } from '../service/scheduler'
 import recommendationsStyle from './recommendations.cssr'
-
-/**
- * components/recommendations.tsx — 推荐（预置）定时任务，展示在任务列表下方。
- *
- * 推荐消费状态由任务记录中的 recommendationId 持久化承载；对旧版本创建的任务，
- * 仍用名称、计划和指令做兼容匹配。这样刷新页面或重新打开面板时，已添加项不会回到列表。
- */
+import { recommendationMatchesTask } from './recommendations.utils'
+import { describeSchedule } from './schedule.utils'
 
 type IconLike = IconComponent
 
 export interface Recommendation {
   id: string
-  nameKey: string
-  promptKey: string
+  nameKey: LocaleKey
+  promptKey: LocaleKey
   schedule: ScheduleForm
   accent: string
   icon: IconLike
-  /** 构造可直接创建的表单（名称/计划/指令，其余取默认）。 */
   form: (t: Translate) => TaskFormState
 }
 
@@ -51,7 +44,8 @@ export const RECOMMENDATIONS: Recommendation[] = [
 
 export interface RecommendationsProps {
   t: Translate
-  tasks: TaskView[]
+  /** 只读：直接消费 store snapshot。 */
+  tasks: readonly TaskView[]
 }
 
 /** 推荐（预置）定时任务列表：点击直接创建，成功后该项从任务列表中消失。 */
@@ -59,7 +53,7 @@ export function Recommendations({ t, tasks }: RecommendationsProps): ReactElemen
   useMountStyle(recommendationsStyle, RECOMMENDATIONS_STYLE_ID)
   async function add(rec: Recommendation): Promise<void> {
     const form = rec.form(t)
-    await applyCreateTask({
+    await createTask({
       name: form.name,
       schedule: form.schedule,
       prompt: form.prompt,

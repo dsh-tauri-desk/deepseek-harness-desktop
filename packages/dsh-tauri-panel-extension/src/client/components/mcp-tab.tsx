@@ -1,26 +1,19 @@
-/**
- * components/mcp-tab.tsx — Settings → Plugins “MCP” tab：管理 profile 的
- * mcp-client 行。Mutations 改写 profile patch 并需要 dsh 重启——banner 在有
- * 桌面壳时把重启交给壳层。
- *
- * 职责拆分：纯解析/分组逻辑在 lib/mcp.ts，受控表单/导入弹窗在
- * components/mcp-editor-form.tsx 与 mcp-import-dialog.tsx，定时器管理在
- * hooks/use-timers.ts；本组件只保留列表状态与业务编排。
- */
-
 import type { ReactElement } from 'react'
-import type { McpEditorMode, McpEditorState, McpImportItem, McpRow, McpTabProps } from '../types'
+import type { McpRow } from '../apis/index.type'
+import type { McpEditorMode, McpEditorState, McpImportItem, McpTabProps } from './mcp-tab.types'
 import { Button, Modal, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ArrowRotateRight, Icon, PlugConnection, useMountStyle } from 'dsh-tauri-ui/client'
+import { compact } from 'dsh-tauri/client'
 import { useEffect, useState } from 'react'
 import { getMcp, getMcpImportScan, postMcpCheck, postMcpImportApply, postMcpRemove, postMcpSave, postMcpToggle } from '../apis'
 import { MCP_RESTART_INITIAL_DELAY_MS, MCP_RESTART_POLL_INTERVAL_MS, MCP_RESTART_TIMEOUT_MS, MCP_TAB_STYLE_ID } from '../constants'
 import { useTimers } from '../hooks/use-timers'
-import { handlePostMcpRestart, isMcpDesktop } from '../service/handle-post-mcp-restart'
-import { mapToPairs, parseMcpJson, parsePairs } from '../utils/mcp'
+import { restartHost } from '../service/restart'
+import { isDesktopHost } from '../service/restart.utils'
 import { McpEditorForm } from './mcp-editor-form'
 import { McpImportDialog } from './mcp-import-dialog'
 import mcpTabStyle from './mcp-tab.cssr'
+import { mapToPairs, parseMcpJson, parsePairs } from './mcp-tab.utils'
 
 export function McpTab({ t }: McpTabProps): ReactElement {
   useMountStyle(mcpTabStyle, MCP_TAB_STYLE_ID)
@@ -146,7 +139,6 @@ export function McpTab({ t }: McpTabProps): ReactElement {
     })
   }
 
-  /** Fill the form from pasted JSON (mcpServers wrapper, bare entry, dsh row). */
   const doPasteFill = (): void => {
     if (editor === null || pasteJson.trim() === '')
       return
@@ -155,8 +147,6 @@ export function McpTab({ t }: McpTabProps): ReactElement {
       setPasteError(parsed.error)
       return
     }
-    // Existing rows keep their identity (serverName + transport); a pasted
-    // config of the other transport cannot apply to them.
     const lockIdentity = editor.id !== ''
     if (lockIdentity && parsed.transport !== editor.transport) {
       setPasteError(t('pasteTransportMismatch'))
@@ -209,7 +199,7 @@ export function McpTab({ t }: McpTabProps): ReactElement {
         ...(editor.transport === 'stdio'
           ? {
               command: editor.command.trim(),
-              args: editor.args.split(/\r?\n/).map(line => line.trim()).filter(line => line !== ''),
+              args: compact(editor.args.split(/\r?\n/).map(line => line.trim())),
               env: parsePairs(editor.env, '='),
             }
           : {
@@ -271,9 +261,8 @@ export function McpTab({ t }: McpTabProps): ReactElement {
   const doRestart = (): void => {
     setRestartConfirm(false)
     setRestarting(true)
-    void handlePostMcpRestart()
-    // 桌面模式：壳层重启完成后会重载窗口。独立模式：轮询本源，恢复即刷新。
-    if (isMcpDesktop())
+    void restartHost()
+    if (isDesktopHost())
       return
     const deadline = Date.now() + MCP_RESTART_TIMEOUT_MS
     const poll = (): void => {
@@ -296,8 +285,8 @@ export function McpTab({ t }: McpTabProps): ReactElement {
         <span>{restarting ? t('restarting') : t('restartNeeded')}</span>
         <span className="dshp-extension__banner-hint">
           {restarting
-            ? (!isMcpDesktop() && t('restartPortHint'))
-            : isMcpDesktop()
+            ? (!isDesktopHost() && t('restartPortHint'))
+            : isDesktopHost()
               ? (
                   <>
                     {t('restartDesktopHint')}
@@ -312,7 +301,7 @@ export function McpTab({ t }: McpTabProps): ReactElement {
   )
 
   return (
-    <div className="dshp-extension__section">
+    <div className="dshp-extension__section" style={{ margin: '0' }}>
       <div className="dshp-extension__head">
         <Icon as={PlugConnection} />
         <h3>{t('mcpTitle')}</h3>

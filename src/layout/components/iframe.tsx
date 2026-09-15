@@ -19,7 +19,6 @@ import { useZoomFactor } from '@/hooks/use-zoom-factor'
 import { store } from '@/store'
 import { nextZoomFactor, zoomActionFromBridgeMessage, zoomActionFromShortcut } from '@/utils/zoom'
 import { Loadable } from './loadable'
-
 /** 可见性兜底轮询间隔：主路径是窗口 focus/resize 事件，5s 足以覆盖任务栏切换等场景 */
 const VISIBILITY_POLL_INTERVAL = 5000
 

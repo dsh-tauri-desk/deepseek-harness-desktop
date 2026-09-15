@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
-import { REASON_GIT_REQUIRED, REASON_UNSAFE_WORKSPACE } from '../constants'
-import { isSystemSensitivePath, probeWorkspace, workspaceHash, workspaceKey } from './workspace'
+import { REASON_GIT_REQUIRED, REASON_UNSAFE_WORKSPACE } from '../config/constants'
+import { clearHostRuntime, setCurrentHostInstance } from '../config/runtime'
+import { workspaceKey } from '../utils/workspace'
+import { workspace } from './workspace'
 
 const run = promisify(execFile)
 
@@ -21,39 +23,27 @@ async function initRepo(path: string): Promise<void> {
   await run('git', ['-c', 'init.defaultBranch=main', 'init', '--quiet', path], { windowsHide: true })
 }
 
+/** 绑一个假宿主：`workspace.resolve` 的 cwd 只能来自宿主 SessionStore（get 优先，list 兜底）。 */
+function bindSessions(cwds: Record<string, string | undefined>): void {
+  const rows = Object.entries(cwds).map(([id, cwd]) => ({ id, header: cwd === undefined ? {} : { cwd } }))
+  setCurrentHostInstance({
+    sessions: {
+      get: (id: string) => rows.find(row => row.id === id),
+      list: () => rows,
+    },
+  })
+}
+
 afterEach(async () => {
+  clearHostRuntime()
   await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
-describe('isSystemSensitivePath', () => {
-  it('rejects the home directory, its ancestors, and drive roots', () => {
-    expect(isSystemSensitivePath(process.env.USERPROFILE ?? process.env.HOME ?? '')).toBe(true)
-    const home = process.env.USERPROFILE ?? process.env.HOME ?? ''
-    if (home.length > 0)
-      expect(isSystemSensitivePath(join(home, '..'))).toBe(true)
-    if (process.platform === 'win32')
-      expect(isSystemSensitivePath('C:\\')).toBe(true)
-  })
-
-  it('accepts an ordinary project directory', async () => {
-    const root = await tempRoot()
-    expect(isSystemSensitivePath(root)).toBe(false)
-  })
-})
-
-describe('workspaceKey', () => {
-  it('folds casing on Windows so one directory cannot spawn two snapshot domains', () => {
-    const key = workspaceKey('C:\\Repo\\Sub')
-    if (process.platform === 'win32')
-      expect(key).toBe(workspaceKey('c:\\repo\\sub'))
-    expect(workspaceHash('C:\\Repo')).toBe(workspaceHash('C:\\Repo'))
-  })
-})
-
-describe('probeWorkspace', () => {
+describe('workspace.resolve', () => {
   it('reports TURNREWIND_GIT_REQUIRED outside a Git worktree', async () => {
     const root = await tempRoot()
-    const probe = await probeWorkspace(root)
+    bindSessions({ session: root })
+    const probe = await workspace.resolve('session')
     expect(probe).toEqual({ ok: false, reason: REASON_GIT_REQUIRED })
   })
 
@@ -61,7 +51,8 @@ describe('probeWorkspace', () => {
     const home = process.env.USERPROFILE ?? process.env.HOME ?? ''
     if (home.length === 0)
       return
-    const probe = await probeWorkspace(home)
+    bindSessions({ session: home })
+    const probe = await workspace.resolve('session')
     expect(probe).toEqual({ ok: false, reason: REASON_UNSAFE_WORKSPACE })
   })
 
@@ -71,8 +62,9 @@ describe('probeWorkspace', () => {
     await mkdir(join(root, 'packages', 'app'), { recursive: true })
     await writeFile(join(root, 'packages', 'app', 'index.ts'), 'export {}\n', 'utf8')
 
-    const fromRoot = await probeWorkspace(root)
-    const fromSubdir = await probeWorkspace(join(root, 'packages', 'app'))
+    bindSessions({ 'session-root': root, 'session-subdir': join(root, 'packages', 'app') })
+    const fromRoot = await workspace.resolve('session-root')
+    const fromSubdir = await workspace.resolve('session-subdir')
     expect(fromRoot.ok).toBe(true)
     expect(fromSubdir.ok).toBe(true)
     if (fromRoot.ok && fromSubdir.ok)
@@ -80,7 +72,8 @@ describe('probeWorkspace', () => {
   })
 
   it('treats a missing cwd as not-a-Git-workspace instead of guessing process.cwd()', async () => {
-    expect(await probeWorkspace(undefined)).toEqual({ ok: false, reason: REASON_GIT_REQUIRED })
-    expect(await probeWorkspace('')).toEqual({ ok: false, reason: REASON_GIT_REQUIRED })
+    bindSessions({ 'session-missing': undefined, 'session-empty': '' })
+    expect(await workspace.resolve('session-missing')).toEqual({ ok: false, reason: REASON_GIT_REQUIRED })
+    expect(await workspace.resolve('session-empty')).toEqual({ ok: false, reason: REASON_GIT_REQUIRED })
   })
 })

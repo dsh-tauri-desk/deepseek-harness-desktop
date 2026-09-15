@@ -26,9 +26,9 @@ use super::process::{new_process_owner, ProcessOwner};
 use crate::config;
 
 use manifest::{
-    dedupe_profile_bundles, dep_matches_spec, internal_plugin_entry_is_ready, is_local_link_dep,
-    remove_duplicate_bundle_entries_from_patch, remove_internal_plugins_from_manifest,
-    remove_stale_plugin_entry, write_profile_manifest,
+    collect_dangling_local_link_deps, dedupe_profile_bundles, dep_matches_spec,
+    internal_plugin_entry_is_ready, is_local_link_dep, remove_duplicate_bundle_entries_from_patch,
+    remove_internal_plugins_from_manifest, remove_stale_plugin_entry, write_profile_manifest,
 };
 
 mod manifest;
@@ -238,6 +238,7 @@ pub(crate) fn repair_loader_state(app_handle: &AppHandle) -> Result<(), String> 
 pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
     let presets = load_presets(app_handle);
     let internal: Vec<_> = presets.into_iter().filter(|p| p.internal).collect();
+    prune_dangling_link_deps(app_handle, &internal);
     if internal.is_empty() {
         return Ok(());
     }
@@ -258,6 +259,41 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
 
     repair_loader_state(app_handle)?;
     receive_current_or_next_flight(|| subscribe_or_start(app_handle, &internal)).await
+}
+
+/// 卸载「本地链接目标已不存在」的失效依赖（含已被删除的内置包），在服务启动前调用。
+///
+/// 已删除的包不再出现在预设清单里，孤儿分支（bundled 目录缺失）永远碰不到它，其
+/// `link:` 悬空依赖与 `dsh.profile.bundles` 引用会永久留档，令 dsh 每次启动都报
+/// `cannot resolve profile bundle <name>`。与孤儿卸载同一模式：best-effort、离线
+/// 精准（改写清单 + 删入口 + 剥 patch 层），任何失败只记告警，绝不阻断启动。
+fn prune_dangling_link_deps(app_handle: &AppHandle, internal: &[PreinstallPluginInfo]) {
+    let profile = profile_dir(app_handle);
+    let manifest_path = profile.join("package.json");
+    let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
+        return;
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        log::warn!("INTERNAL_PLUGIN_MANIFEST_PARSE_FAILED: 跳过失效链接依赖清理");
+        return;
+    };
+    let mut keep: HashSet<&str> = HashSet::new();
+    for preset in internal {
+        keep.insert(preset.id.as_str());
+        keep.insert(installed_name(preset));
+    }
+    for name in collect_dangling_local_link_deps(&manifest, &keep, &profile) {
+        if !super::recovery::is_actionable_plugin_ref(&name) {
+            log::warn!("INTERNAL_PLUGIN_DANGLING_LINK_SKIPPED: {name}（核心/官方包不执行卸载）");
+            continue;
+        }
+        log::warn!(
+            "INTERNAL_PLUGIN_DANGLING_LINK_UNINSTALLING: {name}（本地链接目标已不存在，卸载失效依赖）"
+        );
+        if let Err(e) = super::uninstall_recovery(app_handle, &name) {
+            log::warn!("INTERNAL_PLUGIN_DANGLING_LINK_UNINSTALL_FAILED: {name}: {e}");
+        }
+    }
 }
 
 async fn subscribe_or_start(

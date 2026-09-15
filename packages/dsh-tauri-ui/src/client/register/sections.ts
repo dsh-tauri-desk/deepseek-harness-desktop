@@ -1,33 +1,16 @@
-import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type { ClientContext } from 'dsh-tauri/client'
+import { defineRegister } from 'dsh-tauri/client'
+import { SETTINGS_ONBOARDING_SLOT, SETTINGS_SECTION_SLOT } from '../constants'
+import { loadOnboardingSteps, loadSections } from '../service/sections'
 
-/**
- * register/sections.ts — 'settings.section' / 'settings.onboarding' 投影的
- * 安装器半区：持有槽注册中心的模块引用（slotsRef），供 hooks/sections.ts
- * 的只读投影 hooks 在 render 期经 getSettingsSlots() 订阅。
- *
- * 引用所有权与卸载清理只存在本文件：registerSettingsSections 在 apply 时把
- * ctx.slots 写入，返回的卸载函数在插件卸载后清除模块引用，避免跨实例残留。
- */
-
-/** apply 时存入的槽注册中心（hooks/sections.ts 在 render 期经它订阅/投影）。 */
-type SettingsSlots = SlotRegistry
-
-let slotsRef: SettingsSlots | undefined
-
-/**
- * 在 apply 里安装：把 ctx.slots 引用留给投影 hooks，返回卸载清理。
- * @param slots - 客户端 slota 注册中心（ctx.slots）。
- * @returns 卸载函数（插件卸载后清除模块引用，避免跨实例残留）。
- */
-export function registerSettingsSections(slots: SettingsSlots): () => void {
-  slotsRef = slots
-  return () => {
-    if (slotsRef === slots)
-      slotsRef = undefined
+export const registerSettingsSections = defineRegister<ClientContext>((controller, ctx) => {
+  const sync = (): void => {
+    void loadSections(ctx.slots)
+    void loadOnboardingSteps(ctx.slots)
   }
-}
 
-/** 读取当前槽注册中心（hooks/sections.ts 投影只读半区用）。 */
-export function getSettingsSlots(): SettingsSlots | undefined {
-  return slotsRef
-}
+  sync()
+  controller.add(ctx.slots.subscribe(SETTINGS_SECTION_SLOT as never, sync))
+  controller.add(ctx.slots.subscribe(SETTINGS_ONBOARDING_SLOT as never, sync))
+  controller.add(ctx.locale.subscribe(sync))
+})

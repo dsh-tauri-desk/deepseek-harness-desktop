@@ -6,6 +6,18 @@
       "sourceType": "github",
       "skillPath": "skills/heroui-react/SKILL.md",
       "computedHash": "c3633cb324aef2a51a9828c96776897ec2273d8d092cfcfb4dfa754006c7b8df"
+    },
+    "reause-functions": {
+      "source": "hairyf/reause",
+      "sourceType": "github",
+      "skillPath": "skills/reause-functions/SKILL.md",
+      "computedHash": "6af682cfe55d986d4e2460807844afe687fa93062a9646a4d7a076b07cfc4e60"
+    },
+    "valtio-define": {
+      "source": "hairyf/valtio-define",
+      "sourceType": "github",
+      "skillPath": "skills/valtio-define/SKILL.md",
+      "computedHash": "f6ddb65919ff631433113733ce28ae605655340cefd64059f402a873924d2f40"
     }
   }
 }

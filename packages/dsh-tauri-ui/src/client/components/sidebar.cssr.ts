@@ -1,10 +1,9 @@
-import { styles as sharedStyles } from '../theme'
+import { styles as sharedStyles } from '../constants/theme'
 import { cssr } from '../utils/cssr'
 
 const { c, bem: { b, e, m } } = cssr
 const { primary, dimmed, borderL2, brand, layer1, hover } = sharedStyles
 
-/** 设置侧边栏：整窗 docked 左栏 + 内容区。 */
 export default b('settings-sidebar', {
   '--dsh-chat-content-width': '748px',
   '--dsh-composer-card-max-width': 'calc(var(--dsh-chat-content-width) + 32px)',
@@ -46,8 +45,6 @@ export default b('settings-sidebar', {
   }, [
     c('&:hover', { background: hover }),
   ]),
-  // 搜索框 = 官方 input 样式值（与 dsh-tauri-panel-scheduler 的 K.input 一致，
-  // 复刻 ModelsSection.zGbnIq_input；令牌化，浅/深色自动适配）。
   e('search', {
     boxSizing: 'border-box',
     border: '.5px solid var(--dsw-alias-border-l4)',

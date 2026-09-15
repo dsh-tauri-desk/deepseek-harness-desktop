@@ -1,16 +1,11 @@
-/**
- * components/mcp-import-dialog.tsx — MCP 跨目录导入弹窗（按 agent 分组勾选）。
- *
- * 纯受控组件：勾选状态由父组件（McpTab）持有，这里只渲染与回调。
- */
-
 import type { ReactElement } from 'react'
-import type { McpImportItem, Translate } from '../types'
+import type { Translate } from '../locales/index.types'
+import type { McpImportItem } from './mcp-tab.types'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useMountStyle } from 'dsh-tauri-ui/client'
 import { MCP_IMPORT_DIALOG_STYLE_ID } from '../constants'
-import { importGroups } from '../utils/mcp'
 import mcpImportDialogStyle from './mcp-import-dialog.cssr'
+import { importGroups } from './mcp-tab.utils'
 
 export interface McpImportDialogProps {
   t: Translate

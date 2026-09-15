@@ -1,25 +1,79 @@
 import type { Buffer } from 'node:buffer'
-/**
- * Minimal pure-JS tar.gz extraction (node zlib + a USTAR/GNU/PAX-path
- * reader). GitHub codeload tarballs are all we ever unpack — regular files
- * and directories, no links — so unsupported entry types are skipped rather
- * than rejected, and every name is checked against escape before it touches
- * the filesystem. No subprocess: the dsh sidecar must not spawn tar.
- */
-
+import type { ExtractOptions, TarHeader } from './tar.types'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { gunzipSync } from 'node:zlib'
+import { defineService } from 'dsh-tauri'
 import { dirname, join } from 'pathe'
+import { TAR_LIMITS } from '../config/constants'
 
-/** Guard rails for untrusted archives. */
-const LIMITS = {
-  /** Per-entry cap (a skill repo holds markdown and small assets). */
-  entryBytes: 64 * 1024 * 1024,
-  /** Whole-archive content cap. */
-  totalBytes: 256 * 1024 * 1024,
-  /** Entry count cap (also bounds loop time on corrupt input). */
-  entries: 20_000,
-} as const
+export const tar = defineService({
+  save(archive: Buffer, target: string, options: ExtractOptions = {}): number {
+    const bytes = gunzipSync(archive)
+    const strip = options.stripComponents ?? 0
+    let offset = 0
+    let written = 0
+    let total = 0
+    let pendingLongName: string | undefined
+    let pendingPath: string | undefined
+    while (offset + 512 <= bytes.length) {
+      const header = readHeader(bytes.subarray(offset, offset + 512))
+      if (header === null)
+        break
+      offset += 512
+      const contentEnd = offset + header.size
+      if (contentEnd > bytes.length)
+        throw new Error('truncated tar entry')
+      const content = bytes.subarray(offset, contentEnd)
+      offset += Math.ceil(header.size / 512) * 512
+      if (header.size > TAR_LIMITS.entryBytes)
+        throw new Error('tar entry too large')
+      total += header.size
+      if (total > TAR_LIMITS.totalBytes)
+        throw new Error('tar archive too large')
+      if (++written > TAR_LIMITS.entries)
+        throw new Error('too many tar entries')
+
+      if (header.type === 'L') {
+        pendingLongName = field(content, 0, content.length)
+        continue
+      }
+      if (header.type === 'x' || header.type === 'X') {
+        pendingPath = paxRecords(content).get('path')
+        continue
+      }
+      if (header.type === 'g')
+        continue
+
+      let name = pendingLongName ?? pendingPath ?? header.name
+      pendingLongName = undefined
+      pendingPath = undefined
+
+      const parts = name.split('/')
+      if (parts.length <= strip)
+        continue
+      name = parts.slice(strip).join('/')
+      if (name === '' || name === '/')
+        continue
+
+      const isDir = header.type === '5' || ((header.type === '0' || header.type === '\0') && name.endsWith('/'))
+      if (header.type !== '0' && header.type !== '\0' && header.type !== '5')
+        continue
+
+      const resolved = safeJoin(target, name)
+      if (resolved === null)
+        throw new Error(`unsafe tar entry name: ${name}`)
+      if (isDir) {
+        mkdirSync(resolved, { recursive: true })
+        continue
+      }
+      mkdirSync(dirname(resolved), { recursive: true })
+      writeFileSync(resolved, content)
+    }
+    return written
+  },
+})
+
+// --- internal ---
 
 function octal(block: Buffer, offset: number, length: number): number {
   const raw = block.toString('utf8', offset, offset + length).replace(/[\0 ]+$/, '')
@@ -31,20 +85,13 @@ function field(block: Buffer, offset: number, length: number): string {
   return block.toString('utf8', offset, Math.min(at === -1 ? offset + length : at, offset + length))
 }
 
-/** One parsed tar header. */
-interface TarHeader {
-  name: string
-  size: number
-  type: string
-}
-
 function readHeader(block: Buffer): TarHeader | null {
-  // A zeroed block ends the archive (the checksum of an empty block is 0).
   if (block.every(byte => byte === 0))
     return null
   const checksum = octal(block, 148, 8)
   let sum = 0
-  for (let at = 0; at < 512; at++) sum += at >= 148 && at < 156 ? 32 : block[at]
+  for (let at = 0; at < 512; at++)
+    sum += at >= 148 && at < 156 ? 32 : block[at]
   if (sum !== checksum)
     return null
   const magic = block.toString('utf8', 257, 257 + 6)
@@ -57,7 +104,6 @@ function readHeader(block: Buffer): TarHeader | null {
   return { name, size: octal(block, 124, 12), type: block.toString('utf8', 156, 157) }
 }
 
-/** Resolve one entry name under the target, rejecting escapes. */
 function safeJoin(target: string, name: string): string | null {
   const normalized = name.replace(/\\/g, '/')
   if (normalized.startsWith('/') || /^[A-Z]:/i.test(normalized))
@@ -75,7 +121,6 @@ function safeJoin(target: string, name: string): string | null {
   return join(target, ...parts)
 }
 
-/** PAX extended header records (`<len> key=value\n` lines) → key/value map. */
 function paxRecords(content: Buffer): Map<string, string> {
   const out = new Map<string, string>()
   let cursor = 0
@@ -93,83 +138,4 @@ function paxRecords(content: Buffer): Map<string, string> {
     cursor += length
   }
   return out
-}
-
-/** Number of leading path components to drop (GitHub tarballs wrap one). */
-export interface ExtractOptions {
-  stripComponents?: number
-}
-
-/**
- * Extract a gzip'd tar buffer into `target` (created when absent). Returns
- * the entry count written. Throws on structure errors and oversize archives.
- */
-export function extractTarGz(archive: Buffer, target: string, options: ExtractOptions = {}): number {
-  const tar = gunzipSync(archive)
-  const strip = options.stripComponents ?? 0
-  let offset = 0
-  let written = 0
-  let total = 0
-  let pendingLongName: string | undefined
-  let pendingPath: string | undefined
-  while (offset + 512 <= tar.length) {
-    const header = readHeader(tar.subarray(offset, offset + 512))
-    if (header === null)
-      break
-    offset += 512
-    const contentEnd = offset + header.size
-    if (contentEnd > tar.length)
-      throw new Error('truncated tar entry')
-    const content = tar.subarray(offset, contentEnd)
-    offset += Math.ceil(header.size / 512) * 512
-    if (header.size > LIMITS.entryBytes)
-      throw new Error('tar entry too large')
-    total += header.size
-    if (total > LIMITS.totalBytes)
-      throw new Error('tar archive too large')
-    if (++written > LIMITS.entries)
-      throw new Error('too many tar entries')
-
-    // Metadata entries carry the name for the entry that follows.
-    if (header.type === 'L') {
-      pendingLongName = field(content, 0, content.length)
-      continue
-    }
-    if (header.type === 'x' || header.type === 'X') {
-      pendingPath = paxRecords(content).get('path')
-      continue
-    }
-    if (header.type === 'g')
-      continue // global pax: nothing we need
-
-    let name = pendingLongName ?? pendingPath ?? header.name
-    pendingLongName = undefined
-    pendingPath = undefined
-
-    const parts = name.split('/')
-    if (parts.length <= strip)
-      continue // nothing left after stripping
-    name = parts.slice(strip).join('/')
-    // The stripped top-level directory itself ("pkg/" → "") owns nothing.
-    if (name === '' || name === '/')
-      continue
-
-    // Directories: type '5' or a trailing slash. Symlinks/hardlinks/other
-    // types are skipped — skill repos that depend on them degrade loudly
-    // elsewhere instead of planting links from untrusted input.
-    const isDir = header.type === '5' || ((header.type === '0' || header.type === '\0') && name.endsWith('/'))
-    if (header.type !== '0' && header.type !== '\0' && header.type !== '5')
-      continue
-
-    const resolved = safeJoin(target, name)
-    if (resolved === null)
-      throw new Error(`unsafe tar entry name: ${name}`)
-    if (isDir) {
-      mkdirSync(resolved, { recursive: true })
-      continue
-    }
-    mkdirSync(dirname(resolved), { recursive: true })
-    writeFileSync(resolved, content)
-  }
-  return written
 }

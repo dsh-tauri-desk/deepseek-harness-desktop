@@ -1,10 +1,9 @@
-import { styles as sharedStyles } from '../theme'
+import { styles as sharedStyles } from '../constants/theme'
 import { cssr } from '../utils/cssr'
 
 const { c, bem: { b, m } } = cssr
 const { primary, hover } = sharedStyles
 
-/** 设置触发按钮（sidebar.settings shadow 官方齿轮；rail 为窄栏圆钮）。 */
 export default b('settings-trigger', {
   boxSizing: 'border-box',
   cursor: 'pointer',

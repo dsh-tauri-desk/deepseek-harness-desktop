@@ -50,7 +50,7 @@ describe('runtime exit store', () => {
       if (command === 'read_service_logs')
         return 'Error: runtime process exited\nlast useful line'
       if (command === 'detect_plugin_recovery')
-        return { plugins: [], reason: 'unknown', detail: '', raw_error: '' }
+        return { plugins: [], reason: 'unknown', detail: '', rawError: '' }
       throw new Error(`unexpected invoke: ${command}`)
     })
 
@@ -111,7 +111,7 @@ describe('runtime exit store', () => {
       if (command === 'read_service_logs')
         return 'Error: process exited during readiness commit'
       if (command === 'detect_plugin_recovery')
-        return { plugins: [], reason: 'unknown', detail: '', raw_error: '' }
+        return { plugins: [], reason: 'unknown', detail: '', rawError: '' }
       throw new Error(`unexpected invoke: ${command}`)
     })
 

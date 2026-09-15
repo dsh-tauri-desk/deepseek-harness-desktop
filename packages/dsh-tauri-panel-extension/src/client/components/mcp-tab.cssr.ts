@@ -3,7 +3,6 @@ import { cssr, styles as sharedStyles } from 'dsh-tauri-ui/client'
 const { c, bem: { b, e } } = cssr
 const { primary, borderL2: border, business, layer1 } = sharedStyles
 
-/** MCP 列表（mcp-tab.tsx）：list-head 内的范围筛选下拉。 */
 export default b('extension', [
   e('scope', {
     boxSizing: 'border-box',

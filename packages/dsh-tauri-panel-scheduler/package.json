@@ -1,7 +1,7 @@
 {
   "name": "dsh-tauri-panel-scheduler",
   "type": "module",
-  "version": "0.6.7",
+  "version": "1.0.0",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -29,7 +29,6 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "README.md",
     "cordis.patch.yml",
     "dist"
   ],
@@ -65,7 +64,7 @@
     "cron-schedule": "catalog:utils",
     "dsh-tauri": "workspace:*",
     "dsh-tauri-ui": "workspace:*",
-    "hookable": "catalog:utils",
+    "lodash-es": "catalog:utils",
     "pathe": "catalog:utils"
   },
   "devDependencies": {
@@ -75,6 +74,7 @@
     "@deepseek-ai/dsh-tools": "catalog:dsh",
     "@deepseek-ai/dsh-user-approval": "catalog:dsh",
     "@deepseek-ai/dsh-workspace": "catalog:dsh",
+    "@types/lodash-es": "catalog:types",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli",
     "vitest": "catalog:testing"

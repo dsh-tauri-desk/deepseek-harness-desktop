@@ -30,8 +30,6 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "README.md",
-    "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
     "dist",
     "skills"

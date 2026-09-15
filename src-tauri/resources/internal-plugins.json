@@ -28,13 +28,6 @@
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-worktree"
   },
   {
-    "id": "dsh-tauri-panel",
-    "spec": "dsh-tauri-panel",
-    "name": "DSH Tauri Panel",
-    "description": "Sidebar shell for the desktop: compact logo row (32px), a panel area holding the New Session item plus third-party panel items (sidebar.panel.action slot), and the panel.protocol service (open/render/close panel content) consumed by dsh-tauri-panel-extension.",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel"
-  },
-  {
     "id": "dsh-tauri-panel-extension",
     "spec": "dsh-tauri-panel-extension",
     "name": "DSH Tauri Panel Extension",

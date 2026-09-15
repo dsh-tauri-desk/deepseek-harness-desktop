@@ -1,10 +1,9 @@
-import { styles as sharedStyles } from '../theme'
+import { styles as sharedStyles } from '../constants/theme'
 import { cssr } from '../utils/cssr'
 
 const { c, bem: { b, m } } = cssr
 const { primary, secondary, hover, modulePlatform } = sharedStyles
 
-/** 共享 MenuSelect 触发按钮（default 36px 胶囊；pill 28px 浅触发）。 */
 export default b('menu-select', {
   display: 'inline-flex',
   alignItems: 'center',
@@ -17,9 +16,6 @@ export default b('menu-select', {
   background: modulePlatform,
   color: primary,
   cursor: 'pointer',
-  // 对齐官方 .oY77xG_selector（PermissionRow.module.css）：font 简写之后需显式
-  // font-size/line-height，否则跨规则时 font:inherit 会抢占字号，导致依赖继承的
-  // default 变体（如 dshp-session__menu-select）字体异常放大。
   font: 'inherit',
   fontSize: '14px',
   lineHeight: '22px',

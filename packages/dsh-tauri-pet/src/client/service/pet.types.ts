@@ -1,0 +1,36 @@
+/** 桌宠领域动作的统一结果（Action 原型）。 */
+export type PetActionResult = { ok: true } | { ok: false, error: string }
+
+/** DTO：桌面端 Tauri 命令的请求/响应形状（invoke 层专属）。 */
+
+export interface PetStatus {
+  active_pet: string
+  enabled: boolean
+  pet_size?: number | null
+  visible: boolean
+}
+
+export type PetSource = 'chat' | 'codex'
+
+export interface PetListItem {
+  description?: string
+  id: string
+  name: string
+  source: PetSource
+  thumbnail?: string
+}
+
+/**
+ * 预设宠物清单条目（`resources/preset-pets.json` 的展示层投影）。
+ *
+ * 预设不下载/安装：清单条目本身就是桌宠组件的渲染参数，设置页只需要展示字段，
+ * 因此这里只声明投影形状，Rust 返回的其余字段前端原样忽略。
+ */
+export interface PresetPetItem {
+  desc?: string | null
+  id: string
+  image?: string | null
+  kind?: 'dsh' | 'codex' | null
+  name: string
+  size?: number | null
+}

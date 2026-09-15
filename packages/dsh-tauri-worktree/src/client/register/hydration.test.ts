@@ -1,47 +1,16 @@
-/**
- * hydration.test.ts — registerWorktreeHydration 的请求量回归测试。
- *
- * 背景：/status 复核曾把只读状态查询放大成每秒上千次请求，历经三轮收敛：
- *   1. 会话事件流逐事件复核 → 节流（每会话 ≤1 次/1.2s）；
- *   2. 未解析会话（宿主永久返回 isGit: null）被列表快照反复拉起 → 三重有界重试；
- *   3. 首轮 hydrate 为列表里每个会话各打一次 /status（实测 400 个会话 → 400 次请求）
- *      → 一次 `GET /bindings` 批量发现；事件侧改为「只在回合结束（running true→false）
- *      边沿复核一次」。
- * 本用例把「会话数、列表快照频率、流式事件频率」全部拉满，断言最终请求量与三者都无关。
- *
- * 通过 vi.mock 替换 dsh-tauri/client：既避免在 node 环境加载客户端 barrel，又把
- * fetch（HTTP 边界）与定时器收敛成可观察的替身。
- */
-import type { WorktreeBindings } from '../types'
+import type { WorktreeBindings } from '../apis/index.type'
+import { createLifecycleController } from 'dsh-tauri/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DISCARD_POLL_DELAY_MS, HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS } from '../constants'
+import { DISCARD_POLL_DELAY_MS, HYDRATION_RETRY_BUDGET_PER_SECOND, HYDRATION_RETRY_WINDOW_MS, SESSION_RECONCILE_MIN_INTERVAL_MS, WORKTREE_API_PREFIX } from '../constants'
 import { registerWorktreeHydration } from './hydration'
 
-const mocks = vi.hoisted(() => ({ fetch: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  fetch: vi.fn<(url: string, options?: { method?: string, body?: unknown }) => Promise<unknown>>(),
+}))
 
-vi.mock('dsh-tauri/client', () => ({
-  fetch: mocks.fetch,
-  createStorage: () => ({ getItem: async () => null, setItem: async () => {} }),
-  localStorageDriver: () => ({}),
-  createExternalStore: <T>(initial: T) => {
-    let state = initial
-    const listeners = new Set<() => void>()
-    return {
-      getSnapshot: () => state,
-      subscribe: (listener: () => void) => {
-        listeners.add(listener)
-        return () => listeners.delete(listener)
-      },
-      set: (next: T | ((current: T) => T)) => {
-        state = typeof next === 'function' ? (next as (current: T) => T)(state) : next
-        for (const listener of [...listeners])
-          listener()
-      },
-    }
-  },
-  // 最小生命周期控制器替身：timeout 走真实 setTimeout（测试用 vi.useFakeTimers 驱动），
-  // dispose 清理全部定时器与 disposer，与 dsh-tauri 的语义一致。
-  createLifecycleController: () => {
+vi.mock('dsh-tauri/client', async () => {
+  const lodash = await import('lodash-es')
+  const createLifecycleController = () => {
     let disposed = false
     const disposers = new Set<() => void>()
     const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -79,10 +48,85 @@ vi.mock('dsh-tauri/client', () => ({
         disposers.clear()
       },
     }
-  },
-}))
+  }
 
-/** 可订阅的最小快照源（对应 ctx.sessions.list / ctx.workspaces.list）。 */
+  const defineStore = (options: {
+    state: () => Record<string, unknown>
+    actions?: Record<string, (...args: unknown[]) => unknown>
+  }) => {
+    const state = options.state()
+    const listeners = new Set<() => void>()
+    const notify = (): void => {
+      for (const listener of [...listeners])
+        listener()
+    }
+    const store: Record<string, unknown> = { ...state, $state: state }
+    for (const [name, action] of Object.entries(options.actions ?? {})) {
+      store[name] = (...args: unknown[]) => {
+        const result = action.apply(state, args)
+        notify()
+        return result
+      }
+    }
+    store.$subscribe = (listener: () => void) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    }
+    store.$subscribeKey = () => () => {}
+    store.$patch = (patch: Record<string, unknown>) => {
+      Object.assign(state, patch)
+      notify()
+    }
+    return store
+  }
+
+  return {
+    fetch: mocks.fetch,
+    createStorage: () => ({ getItem: async () => null, setItem: async () => {} }),
+    localStorageDriver: () => ({}),
+    defineLocale: (namespace: string) => ({
+      NS: namespace,
+      text: (key: string) => key,
+      activeLocale: () => 'en',
+      isEnglishLocale: () => true,
+      useLocale: () => 'en',
+      registerLocale: () => () => {},
+    }),
+    defineStore,
+    useStore: () => ({}),
+    defineRegister: (ctxOrSetup: unknown, maybeSetup?: unknown) => {
+      const setup = (typeof maybeSetup === 'function' ? maybeSetup : ctxOrSetup) as
+        (controller: unknown, ctx: unknown, adapter: unknown) => void
+      return function registerEffect(this: unknown): () => void {
+        const controller = createLifecycleController()
+        setup(controller, this, { sessions: {}, workspaces: {} })
+        return () => controller.dispose()
+      }
+    },
+    createLifecycleController,
+    compact: lodash.compact,
+    difference: lodash.difference,
+    filter: lodash.filter,
+    find: lodash.find,
+    findKey: lodash.findKey,
+    findLast: lodash.findLast,
+    forEach: lodash.forEach,
+    get: lodash.get,
+    isEmpty: lodash.isEmpty,
+    isEqual: lodash.isEqual,
+    isString: lodash.isString,
+    keyBy: lodash.keyBy,
+    map: lodash.map,
+    partition: lodash.partition,
+    reject: lodash.reject,
+    throttle: lodash.throttle,
+    trimEnd: lodash.trimEnd,
+    uniqBy: lodash.uniqBy,
+  }
+})
+
 function snapshotSource<T>(initial: T) {
   let state = initial
   const listeners = new Set<() => void>()
@@ -100,20 +144,15 @@ function snapshotSource<T>(initial: T) {
   }
 }
 
-/** 只排空微任务队列（不推进假时钟），让首次请求的响应落到 store。 */
 async function flushMicrotasks(times = 10): Promise<void> {
   for (let i = 0; i < times; i++)
     await Promise.resolve()
 }
 
 interface HarnessOptions {
-  /** 批量 /bindings 的返回体（默认空：列表里全是本地会话）。 */
   bindings?: WorktreeBindings
-  /** true 时 /status 会挂起，直到 releaseStatus() 才返回（模拟慢请求/在途竞态）。 */
   holdStatus?: boolean
-  /** false 时不提供 `getSnapshot()`（模拟核心版本没有 running 回合位）。 */
   runningBit?: boolean
-  /** 归档会话 id（workspace 快照的 archivedSessionIds）。 */
   archived?: string[]
 }
 
@@ -136,11 +175,6 @@ interface Harness {
 
 const EMPTY_BINDINGS: WorktreeBindings = { bindings: [], jobs: [] }
 
-/**
- * 装配「多会话 + 可手动触发事件流/列表快照/回合位」的 hydration 环境。
- * @param statusFor 每个会话的 /status 返回体
- * @param sessionIds 客户端列表里的会话（模拟真实 profile：几百个历史会话）
- */
 function harness(
   statusFor: (sessionId: string) => Record<string, unknown>,
   sessionIds: string[] = ['s-1'],
@@ -186,8 +220,6 @@ function harness(
   const ctx = {
     sessions: {
       list,
-      // 每次都返回**新的** session 包装对象（真实实现下 binding() 不保证同一实例），
-      // 用于验证防重绑靠的是 sessionId 而非对象身份。
       binding: (id: string) => ids.includes(id)
         ? {
             session: {
@@ -208,9 +240,13 @@ function harness(
   }
 
   const urls = (): string[] => mocks.fetch.mock.calls.map(call => String(call[0]))
-  const dispose = registerWorktreeHydration(ctx as never)
+  const deleteCalls = (): number => mocks.fetch.mock.calls
+    .filter(call => String(call[0]) === WORKTREE_API_PREFIX && call[1]?.method === 'DELETE')
+    .length
+  const controller = createLifecycleController()
+  registerWorktreeHydration(controller as never, ctx.sessions as never, ctx.workspaces as never)
   return {
-    dispose,
+    dispose: () => controller.dispose(),
     emitSessionEvent: (sessionId = ids[0]) => notify(sessionId),
     setRunning: (sessionId: string, running: boolean) => {
       runningBySession.set(sessionId, running)
@@ -227,7 +263,7 @@ function harness(
     },
     statusCalls: () => urls().filter(url => url.includes('/status')).length,
     bindingsCalls: () => urls().filter(url => url.includes('/bindings')).length,
-    discardCalls: () => urls().filter(url => url.includes('/discard')).length,
+    discardCalls: deleteCalls,
     publishWorkspaces: () => workspaces.publish({ archivedSessionIds: [...(workspaces.getSnapshot().archivedSessionIds)] }),
     setArchived: (next: string[]) => workspaces.publish({ archivedSessionIds: [...next] }),
     callsFor: (sessionId: string) => {
@@ -243,7 +279,6 @@ function harness(
   }
 }
 
-/** 造一个「这些会话都在工作树里」的批量绑定返回体。 */
 function bindingsFor(sessionIds: string[]): WorktreeBindings {
   return {
     bindings: sessionIds.map(sessionId => ({
@@ -289,7 +324,6 @@ describe('registerWorktreeHydration 请求量', () => {
     await flushMicrotasks()
 
     expect(h.bindingsCalls()).toBe(1)
-    // 模式选择器只在当前会话渲染，只有它需要确定 isGit。
     expect(h.statusCalls()).toBe(1)
     expect(h.callsFor('s-0')).toBe(1)
     h.dispose()
@@ -301,7 +335,6 @@ describe('registerWorktreeHydration 请求量', () => {
     await flushMicrotasks()
     const before = { bindings: h.bindingsCalls(), status: h.statusCalls() }
 
-    // 10 个窗口 × 500 次快照：running/标题变化会让快照不断更新，但绑定不会变。
     for (let window = 0; window < 10; window++) {
       for (let i = 0; i < 500; i++) h.publishList()
       await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
@@ -320,7 +353,6 @@ describe('registerWorktreeHydration 请求量', () => {
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
     expect(h.bindingsCalls()).toBe(2)
 
-    // 同一集合反复发布不再触发。
     for (let i = 0; i < 50; i++) h.publishList()
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS * 3)
     expect(h.bindingsCalls()).toBe(2)
@@ -330,24 +362,19 @@ describe('registerWorktreeHydration 请求量', () => {
   it('工作树会话：一个回合只在结束时复核一次（running true → false 边沿）', async () => {
     const h = harness(() => WORKTREE_STATUS, ['s-0'], { bindings: bindingsFor(['s-0']) })
     await flushMicrotasks()
-    // 绑定已确定状态，无需 /status。
     expect(h.statusCalls()).toBe(0)
 
-    // 回合开始 + 流式输出期间的上百次事件：都不复核。
     h.setRunning('s-0', true)
     for (let i = 0; i < 300; i++) h.emitSessionEvent('s-0')
     expect(h.statusCalls()).toBe(0)
 
-    // 回合结束：复核一次。
     h.setRunning('s-0', false)
     expect(h.statusCalls()).toBe(1)
 
-    // 结束后继续有事件（running 未变）：不再复核。
     for (let i = 0; i < 300; i++) h.emitSessionEvent('s-0')
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS * 3)
     expect(h.statusCalls()).toBe(1)
 
-    // 下一个回合结束再来一次。
     h.setRunning('s-0', true)
     h.setRunning('s-0', false)
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
@@ -359,7 +386,6 @@ describe('registerWorktreeHydration 请求量', () => {
     const h = harness(() => WORKTREE_STATUS, ['s-0'], { bindings: bindingsFor(['s-0']), runningBit: false })
     await flushMicrotasks()
     for (let i = 0; i < 500; i++) h.emitSessionEvent('s-0')
-    // 前沿立即执行一次，其余合并为窗口末尾的拖尾执行。
     expect(h.statusCalls()).toBe(1)
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
     expect(h.statusCalls()).toBe(2)
@@ -385,7 +411,6 @@ describe('registerWorktreeHydration 请求量', () => {
     await flushMicrotasks()
     expect(h.statusCalls()).toBe(1)
 
-    // 窗口内的重试受「10s 窗口 + 全局 8 次/秒配额 + 次数上限」约束。
     for (let i = 0; i < 15; i++) {
       h.publishList()
       await vi.advanceTimersByTimeAsync(1000)
@@ -393,7 +418,6 @@ describe('registerWorktreeHydration 请求量', () => {
     const afterWindow = h.statusCalls()
     expect(afterWindow).toBeLessThanOrEqual(1 + HYDRATION_RETRY_BUDGET_PER_SECOND * 10 + 5)
 
-    // 越过窗口后彻底静默：再打 30s 快照 + 事件，请求与定时器都不再增长。
     for (let i = 0; i < 30; i++) {
       for (let n = 0; n < 100; n++) {
         h.publishList()
@@ -410,7 +434,6 @@ describe('registerWorktreeHydration 请求量', () => {
     const h = harness(() => ({ mode: 'local', projectPath: '', isGit: null }), ['s-0', 's-1'])
     await flushMicrotasks()
     expect(h.callsFor('s-0')).toBe(1)
-    // 越过重试窗口，让当前会话被放弃。
     await vi.advanceTimersByTimeAsync(HYDRATION_RETRY_WINDOW_MS + 5_000)
     const settled = h.callsFor('s-0')
 
@@ -438,24 +461,19 @@ describe('registerWorktreeHydration 请求量', () => {
   it('在途期间到达的复核经节流器：不会出现「上一次刚结束下一次立刻发」', async () => {
     const h = harness(() => WORKTREE_STATUS, ['s-0'], { bindings: bindingsFor(['s-0']), holdStatus: true })
     await flushMicrotasks()
-    // 绑定已确定状态 → 无初始 /status；回合结束触发的那次请求一直挂在途。
     h.setRunning('s-0', true)
     h.setRunning('s-0', false)
     expect(h.statusCalls()).toBe(1)
 
-    // 在途期间 again 触发：节流器把复核排入 queued（拖尾到期时命中 inFlight），不并发。
     h.setRunning('s-0', true)
     h.setRunning('s-0', false)
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
     expect(h.statusCalls()).toBe(1)
 
-    // 放行首个请求：finally 里的补跑必须仍经节流器 —— 此刻窗口刚被拖尾执行占用，
-    // 因此不得立刻发第二个请求（修复前这里会直接递归 reconcileSession）。
     h.releaseStatus()
     await flushMicrotasks()
     expect(h.statusCalls()).toBe(1)
 
-    // 只有等到下一个节流窗口才允许补跑。
     await vi.advanceTimersByTimeAsync(SESSION_RECONCILE_MIN_INTERVAL_MS)
     expect(h.statusCalls()).toBe(2)
     h.releaseStatus()
@@ -464,7 +482,6 @@ describe('registerWorktreeHydration 请求量', () => {
   })
 
   it('归档会话完全不参与检测：即使批量绑定里持有工作树，也零请求', async () => {
-    // 现场形态：归档集合很大，其中历史会话宿主往往已不再持有（/status 永久 isGit: null）。
     const archived = Array.from({ length: 30 }, (_, i) => `archived-${i}`)
     const ids = ['s-0', ...archived]
     const h = harness(() => LOCAL_STATUS, ids, { bindings: bindingsFor(archived), archived })
@@ -483,13 +500,11 @@ describe('registerWorktreeHydration 请求量', () => {
     await flushMicrotasks()
     expect(h.discardCalls()).toBe(0)
 
-    // 用户点击归档 s-a：本端 store 已知它是工作树会话 → 一次 fire-and-forget discard。
     h.setArchived(['s-a'])
     await flushMicrotasks()
     expect(h.discardCalls()).toBe(1)
     const statusAfterArchive = h.statusCalls()
 
-    // 归档集合反复快照：不重放、不轮询（历史实现对归档会话按 500ms 轮询最多 120 次）。
     for (let i = 0; i < 20; i++) h.publishWorkspaces()
     await vi.advanceTimersByTimeAsync(DISCARD_POLL_DELAY_MS * 10)
     expect(h.discardCalls()).toBe(1)
@@ -500,7 +515,6 @@ describe('registerWorktreeHydration 请求量', () => {
   it('dispose 取消待执行的拖尾复核', async () => {
     const h = harness(() => WORKTREE_STATUS, ['s-0'], { bindings: bindingsFor(['s-0']), runningBit: false })
     await flushMicrotasks()
-    // 首次事件经前沿立即执行一次；随后的高频事件合并为窗口末尾的拖尾执行。
     h.emitSessionEvent('s-0')
     expect(h.statusCalls()).toBe(1)
     for (let i = 0; i < 100; i++) h.emitSessionEvent('s-0')

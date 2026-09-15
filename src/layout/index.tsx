@@ -101,7 +101,7 @@ export function App() {
         plugins: ['dsh-better-sidebar'],
         reason: 'slot_conflict',
         detail: 'sidebar',
-        raw_error: 'Preview: dsh-better-sidebar reported a UI slot conflict.',
+        rawError: 'Preview: dsh-better-sidebar reported a UI slot conflict.',
       })
     }
     else if (event.code === 'Digit2') {
@@ -111,7 +111,7 @@ export function App() {
         plugins: ['dsh-better-sidebar'],
         reason: 'duplicate_loader_entry',
         detail: 'dshSidebarApi',
-        raw_error: 'Preview: duplicate loader entry id: dshSidebarApi',
+        rawError: 'Preview: duplicate loader entry id: dshSidebarApi',
       })
     }
   })

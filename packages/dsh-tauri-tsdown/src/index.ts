@@ -49,7 +49,7 @@ export const dshExternal: Array<string | RegExp> = [
 ]
 
 /**
- * 需要内联进 client bundle 的依赖（UnJS 工具库 + date-fns + css-render 系列）。
+ * 需要内联进 client bundle 的依赖（UnJS 工具库 + date-fns + lodash-es + css-render 系列）。
  *
  * client bundle 在 DSH Web ModuleLoader（dsh-client-modules）的 factory 里运行，
  * 其模块表只认识平台种子词（react / @deepseek-ai/*）与已加载的链接模块
@@ -59,7 +59,8 @@ export const dshExternal: Array<string | RegExp> = [
  * "missed the module table"（build-time externals drift）。
  * 因此 client entry 必须把它们内联；host entry 保持 external（Node 运行时按
  * 插件 dependencies 解析）。子路径（unstorage/drivers/*）一并覆盖。
- * date-fns 仅作为构建期 devDependency，并按实际使用导出 tree-shake 后内联。
+ * date-fns 仅作为构建期 devDependency，并按实际使用导出 tree-shake 后内联；
+ * lodash-es 同理（无 exports 映射，子路径 `lodash-es/<fn>.js` 一并内联）。
  *
  * css-render / @css-render/plugin-bem 与 @gravity-ui/icons 同类：纯 client UI 库，
  * 只被插件 client 样式代码消耗，声明为 dependencies 时会被 tsdown 默认 external，
@@ -68,7 +69,7 @@ export const dshExternal: Array<string | RegExp> = [
  * 消费者），只有真正直接 import 这两个包的 client bundle 才需要内联。
  */
 const dshClientInline: Array<string | RegExp> = [
-  /^(unstorage|hookable|ofetch|pathe|date-fns)([/-].*)?$/,
+  /^(unstorage|hookable|ofetch|pathe|date-fns|lodash-es)([/-].*)?$/,
   /^@gravity-ui\/icons([/-].*)?$/,
   /^css-render([/-].*)?$/,
   /^@css-render\/plugin-bem([/-].*)?$/,

@@ -1,13 +1,10 @@
 /**
- * styles/index.ts — 桌宠侧栏入口 + 设置分区样式（css-render，apply() effect 内 mount）。
+ * styles/index.cssr.ts — 侧栏入口与设置行布局的公共样式（无组件面）。
  *
- * 侧栏入口按钮复刻官方 `.rtSEdW_iconButton`（appearance/color/border-radius/
- * padding/hover/focus-visible 与 data-tip 气泡），并叠加右上角绿色激活圆点；
- * 设置行布局复刻新版 dsh 客户端 SettingsRoot 的 triggerRow（flex 行 + gap，
- * 齿轮与行内图标同一行）——规则全部拆成单选择器（不依赖 data-slot 包裹层，
- * 由补丁直接给宿主加 .dshp-pet__settings-row 并同步内联样式兜底）；
- * 设置分区遵循 issue #308 规范稿：页签 + 工具栏 + 描述 + 卡片列表，全部走
- * `--dsw-alias-*` 主题变量，明暗主题自适应。
+ * 入口按钮复刻官方 `.rtSEdW_iconButton`（appearance/color/border-radius/padding/hover/
+ * focus-visible 与 data-tip 气泡），并叠加右上角绿色激活圆点；设置行布局复刻新版 dsh
+ * 客户端 SettingsRoot 的 triggerRow（flex 行 + gap）。规则全部拆成单选择器（不依赖
+ * data-slot 包裹层，由补丁直接给宿主加 `.dshp-pet__settings-row` 并同步内联样式兜底）。
  */
 import { cssr } from 'dsh-tauri-ui/client'
 
@@ -58,8 +55,6 @@ export default c([
     zIndex: '10',
   }),
   c('.dshp-pet__icon-button:hover::after, .dshp-pet__icon-button:focus-visible::after', { opacity: '1' }),
-  // 未选择宠物提示：点击时短暂强制显示气泡（与 hover 共用同一 data-tip 气泡）。
-  c('.dshp-pet__icon-button.dshp-pet__icon-hint::after', { opacity: '1' }),
   // 激活态绿色小圆点（右上角），未激活时隐藏。
   c('.dshp-pet__icon-dot', {
     position: 'absolute',

@@ -1,38 +1,33 @@
-/**
- * components/scheduler-panel.tsx — 定时任务面板主容器。
- *
- * 布局对齐 issue #307 的 ASCII 设计图：
- *   标题 + 副标题 → 工具栏（搜索 / 刷新 / 通过 Chat 创建 / 手动创建）
- *   → Tabs（定时任务 / 执行记录）→ 任务列表（单列）→ 推荐列表。
- * 控件用官方复刻样式：搜索 = 官方 input 类；按钮 = 36px 胶囊；刷新 = iconButton。
- * 数据经 schedulerStore（uSES）订阅，轮询由本组件生命周期驱动。
- */
-
 import type { ReactElement } from 'react'
-import type { SchedulerPanelProps, TaskFormState, TaskView } from '../types'
+import type { Translate } from '../locales/index.types'
+import type { TaskFormState, TaskView } from '../types'
 import { CommentPlus, Icon, Magnifier, Plus, useMountStyle } from 'dsh-tauri-ui/client'
-import { useEffect, useState } from 'react'
+import { filter, includes, isEmpty, lowerCase, omit, useEventListener, useTimeoutPoll } from 'dsh-tauri/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { REFRESH_INTERVAL_MS, SCHEDULER_PANEL_STYLE_ID } from '../constants'
-import { applyDeleteRun, refreshScheduler } from '../service/scheduler'
-import { useSchedulerState } from '../store'
-import { describeSchedule, formatRelative, isTaskPaused } from '../utils/schedule'
+import { useScheduler } from '../hooks/use-scheduler'
+import { deleteRun, loadScheduler } from '../service/scheduler'
 import { Recommendations } from './recommendations'
 import { RunsTab } from './runs-tab'
+import { describeSchedule, formatRelative, isTaskPaused } from './schedule.utils'
 import schedulerPanelStyle from './scheduler-panel.cssr'
 import { TaskCard } from './task-card'
 import { TaskCreateDialog } from './task-create-dialog'
+
+interface SchedulerPanelProps {
+  t: Translate
+  onViaChat: () => void
+}
 
 /** 对话框状态：手动创建（无 initial/taskId）、编辑（taskId + initial）、推荐（initial）。 */
 type DialogState = { taskId?: string, initial?: TaskFormState } | null
 
 /** 由任务视图构造编辑表单（去掉 timeZone 等宿主字段）。 */
 function taskToForm(task: TaskView): TaskFormState {
-  const schedule = { ...task.schedule }
-  // ScheduleForm 不含 timeZone；仅保留 kind 相关字段。
-  delete (schedule as Partial<typeof schedule> & { timeZone?: string }).timeZone
   return {
     name: task.name,
-    schedule: schedule as TaskFormState['schedule'],
+    // ScheduleForm 不含 timeZone；仅保留 kind 相关字段。
+    schedule: omit(task.schedule, 'timeZone') as TaskFormState['schedule'],
     prompt: task.prompt,
     workspaceId: task.workspaceId ?? '',
     permission: task.permission || 'read-only',
@@ -45,36 +40,39 @@ function taskToForm(task: TaskView): TaskFormState {
 
 export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElement {
   useMountStyle(schedulerPanelStyle, SCHEDULER_PANEL_STYLE_ID)
-  const state = useSchedulerState()
+  const state = useScheduler()
   const [tab, setTab] = useState<'tasks' | 'runs'>('tasks')
   const [search, setSearch] = useState('')
   const [dialog, setDialog] = useState<DialogState>(null)
   // 相对「下次运行」以刷新时刻为基准，避免每次渲染抖动。
   const [now, setNow] = useState(() => Date.now())
 
-  // 轮询刷新：任务下次运行时间与执行记录跟随；同时推进相对时间基准。
+  // 首帧载入：面板打开时拉一次全量（含对话框选项）。轮询只做增量刷新。
   useEffect(() => {
-    void refreshScheduler(true)
-    const timer = window.setInterval(() => {
-      void refreshScheduler(false)
-      setNow(Date.now())
-    }, REFRESH_INTERVAL_MS)
-    const refreshOnResume = (): void => {
-      if (document.visibilityState === 'visible')
-        void refreshScheduler(false)
-    }
-    document.addEventListener('visibilitychange', refreshOnResume)
-    window.addEventListener('focus', refreshOnResume)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', refreshOnResume)
-      window.removeEventListener('focus', refreshOnResume)
-    }
+    void loadScheduler(true)
   }, [])
 
-  const filtered = search
-    ? state.tasks.filter(task => `${task.name} ${task.prompt}`.toLowerCase().includes(search.toLowerCase()))
-    : state.tasks
+  // 轮询刷新：任务下次运行时间与执行记录跟随；同时推进相对时间基准。
+  // useTimeoutPoll 默认 immediate（首个回调在 interval 之后触发），与迁移前的
+  // setInterval 节拍一致，且卸载时自动清定时器。
+  useTimeoutPoll(() => {
+    void loadScheduler(false)
+    setNow(Date.now())
+  }, REFRESH_INTERVAL_MS)
+
+  // 回到前台 / 重新聚焦时立刻补一次刷新（离开期间轮询可能被浏览器节流）。
+  // reause 的 useEventListener 收的是 ref 目标（与 dsh-tauri-worktree 的 dialog 一致）。
+  const refreshOnResume = useCallback((): void => {
+    if (document.visibilityState === 'visible')
+      void loadScheduler(false)
+  }, [])
+  const documentRef = useRef<Document | null | undefined>(typeof document === 'undefined' ? undefined : document)
+  const windowRef = useRef<Window | null | undefined>(typeof window === 'undefined' ? undefined : window)
+  useEventListener(documentRef, 'visibilitychange', refreshOnResume)
+  useEventListener(windowRef, 'focus', refreshOnResume)
+
+  const filtered = filter(state.tasks, task =>
+    isEmpty(search) || includes(lowerCase(`${task.name} ${task.prompt}`), lowerCase(search)))
 
   return (
     <div className="dshp-scheduler__shell">
@@ -157,7 +155,7 @@ export function SchedulerPanel({ t, onViaChat }: SchedulerPanelProps): ReactElem
             <RunsTab
               t={t}
               runs={state.runs}
-              onDelete={id => void applyDeleteRun(id)}
+              onDelete={id => void deleteRun(id)}
             />
           )}
 

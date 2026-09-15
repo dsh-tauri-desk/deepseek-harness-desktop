@@ -3,7 +3,6 @@ import { cssr, styles as sharedStyles } from 'dsh-tauri-ui/client'
 const { c, bem: { b, e } } = cssr
 const { primary, tertiary, borderL2: border, business } = sharedStyles
 
-/** MCP 服务器编辑器（mcp-editor-form.tsx）：编辑器页签 + JSON 编辑区。 */
 export default b('extension', [
   e('editor-tabs', { display: 'flex', gap: '4px', borderBottom: `1px solid ${border}` }),
   e('editor-tab', {

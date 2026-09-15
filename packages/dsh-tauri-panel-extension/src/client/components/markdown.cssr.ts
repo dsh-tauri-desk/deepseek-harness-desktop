@@ -3,7 +3,6 @@ import { cssr, styles as sharedStyles } from 'dsh-tauri-ui/client'
 const { c, bem: { b, e } } = cssr
 const { primary, borderL2: border, business, layer1, layer3 } = sharedStyles
 
-/** 技能详情 Markdown 预览（markdown.tsx）。 */
 export default b('extension', [
   e('md-preview', {
     minHeight: '320px',

@@ -1,64 +1,28 @@
-/**
- * host/service/options.ts — 供客户端对话框/下拉使用的选项收集（工作区 / 权限 / 模型目录）。
- *
- * 对齐 dsh-automation（MichengAI）：
- *   - 权限选项来自宿主 `ctx.permissionPresets` 服务（names / optionOf / defaultPreset），
- *     不硬编码——宿主动态提供 read-only / workspace-write / danger-full-access 等；
- *   - 模型目录用 `ctx.llm.listProviders()/listModels()/resolveModelInfo()` 枚举（含 reasoning
- *     efforts / defaultEffort），`ctx.agentDefaultModel.currentSelection()` 定默认模型。
- * 能力探测约定：所有可选服务「探测后调用」，缺失即返回空，绝不断言存在。
- */
-
 import type { HostContext, ModelCatalogFailure, ModelOption, PermissionOption, SchedulerOptions } from '../types'
+import { defineService } from 'dsh-tauri'
+import { filter, find, head, isArray, isEmpty, isString, map, uniqBy } from 'lodash-es'
+import { getCurrentHostInstance } from '../config/runtime'
 
-/** 收集工作区列表：遍历 workspaceRegistry 的记录（id + path）。无法枚举时返回空数组。 */
-async function collectWorkspaces(ctx: HostContext): Promise<SchedulerOptions['workspaces']> {
-  try {
-    const registry = ctx.workspaceRegistry
-    const records = typeof registry?.list === 'function'
-      ? (await registry.list()) as unknown
-      : []
-    if (!Array.isArray(records))
-      return []
-    return records
-      .filter((record: unknown): record is { id: string, path?: unknown, title?: unknown } =>
-        typeof record === 'object' && record !== null && 'id' in record && typeof record.id === 'string')
-      .map(record => ({
-        id: record.id,
-        path: typeof record.path === 'string' ? record.path : record.id,
-        title: typeof record.title === 'string' ? record.title : record.id,
-      }))
-  }
-  catch {
-    return []
-  }
-}
+export const options = defineService({
+  async resolve(): Promise<SchedulerOptions> {
+    const ctx = getCurrentHostInstance()
+    const [workspaces, permission, catalog] = await Promise.all([
+      collectWorkspaces(ctx),
+      Promise.resolve(collectPermissions(ctx)),
+      collectModels(ctx),
+    ])
+    return {
+      workspaces,
+      permissions: permission.permissions,
+      defaultPermission: permission.defaultPermission,
+      models: catalog.models,
+      failures: catalog.failures,
+      defaultModel: catalog.defaultModel,
+    }
+  },
+})
 
-/** 收集权限选项与默认权限（宿主 permissionPresets 服务；缺失降级）。 */
-function collectPermissions(ctx: HostContext): { permissions: PermissionOption[], defaultPermission: string } {
-  try {
-    // permissionPresets 不在 inject 列表：直接属性访问抛 "cannot get property without inject"，
-    // 必须经 ctx.get 探测（与 collectModels 的 llm/agentDefaultModel 一致）。
-    const presets = (ctx as HostContext & {
-      get?: (name: string) => unknown
-    }).get?.('permissionPresets') as {
-      names?: readonly string[]
-      defaultPreset?: string
-      optionOf?: (name: string) => PermissionOption
-    } | undefined
-    const names = Array.isArray(presets?.names) ? presets.names : []
-    if (names.length === 0)
-      return { permissions: [], defaultPermission: 'read-only' }
-    const permissions = names.map(name => presets?.optionOf?.(name) ?? { value: name, name })
-    const defaultPermission = typeof presets?.defaultPreset === 'string' && presets.defaultPreset
-      ? presets.defaultPreset
-      : (names[0] ?? 'read-only')
-    return { permissions, defaultPermission }
-  }
-  catch {
-    return { permissions: [], defaultPermission: 'read-only' }
-  }
-}
+// --- internal ---
 
 interface LlmLike {
   listProviders?: () => readonly { id?: string, provider?: string, name?: string }[]
@@ -72,54 +36,90 @@ interface LlmLike {
   }>
 }
 
-/** 收集模型目录（flat，含 reasoning），并返回与当前默认匹配的 defaultModel。 */
+interface WorkspaceRecord {
+  id: string
+  path?: unknown
+  title?: unknown
+}
+
+async function collectWorkspaces(ctx: HostContext): Promise<SchedulerOptions['workspaces']> {
+  try {
+    const registry = ctx.workspaceRegistry
+    const records = typeof registry?.list === 'function' ? (await registry.list()) as unknown : []
+    if (!isArray(records))
+      return []
+    const valid = filter(records, (record: unknown): record is WorkspaceRecord =>
+      typeof record === 'object' && record !== null && 'id' in record && typeof record.id === 'string')
+    return map(valid, record => ({
+      id: record.id,
+      path: isString(record.path) ? record.path : record.id,
+      title: isString(record.title) ? record.title : record.id,
+    }))
+  }
+  catch {
+    return []
+  }
+}
+
+function collectPermissions(ctx: HostContext): { permissions: PermissionOption[], defaultPermission: string } {
+  try {
+    const presets = (ctx as HostContext & { get?: (name: string) => unknown }).get?.('permissionPresets') as {
+      names?: readonly string[]
+      defaultPreset?: string
+      optionOf?: (name: string) => PermissionOption
+    } | undefined
+    const names = isArray(presets?.names) ? presets.names : []
+    if (isEmpty(names))
+      return { permissions: [], defaultPermission: 'read-only' }
+    return {
+      permissions: map(names, name => presets?.optionOf?.(name) ?? { value: name, name }),
+      defaultPermission: isString(presets?.defaultPreset) && !isEmpty(presets.defaultPreset)
+        ? presets.defaultPreset
+        : (names[0] ?? 'read-only'),
+    }
+  }
+  catch {
+    return { permissions: [], defaultPermission: 'read-only' }
+  }
+}
+
 async function collectModels(ctx: HostContext): Promise<{ models: ModelOption[], failures: ModelCatalogFailure[], defaultModel: ModelOption | null }> {
   try {
-    const current = ((ctx as HostContext).get?.('agentDefaultModel') as { currentSelection?: () => unknown } | undefined)?.currentSelection?.() as
+    const current = (ctx.get?.('agentDefaultModel') as { currentSelection?: () => unknown } | undefined)?.currentSelection?.() as
       { provider?: unknown, model?: unknown } | undefined
-    const llm = (ctx as HostContext).get?.('llm') as LlmLike | undefined
+    const llm = ctx.get?.('llm') as LlmLike | undefined
     const found: ModelOption[] = []
     const failures: ModelCatalogFailure[] = []
-    const seen = new Set<string>()
+
     for (const item of llm?.listProviders?.() ?? []) {
       const provider = String(item.id ?? item.provider ?? '')
       if (provider === '')
         continue
       const providerLabel = String(item.name ?? provider)
       try {
-        const models = await llm?.listModels?.(provider) ?? []
-        for (const model of models) {
+        for (const model of await llm?.listModels?.(provider) ?? []) {
           const modelId = String(model.id ?? '')
           if (modelId === '')
             continue
-          const key = `${provider}::${modelId}`
-          if (seen.has(key))
-            continue
-          seen.add(key)
-          const resolved = llm?.resolveModelInfo === undefined
-            ? undefined
-            : await llm.resolveModelInfo(provider, modelId)
-          const reasoning = resolved?.reasoning === undefined
-            ? undefined
-            : {
-                efforts: resolved.reasoning.efforts.map(effort => ({
-                  id: String(effort.id),
-                  name: String(effort.name),
-                  ...(effort.description === undefined ? {} : { description: String(effort.description) }),
-                })),
-                ...(resolved.reasoning.defaultEffort === undefined
-                  ? {}
-                  : { defaultEffort: String(resolved.reasoning.defaultEffort) }),
-              }
+          const resolved = llm?.resolveModelInfo === undefined ? undefined : await llm.resolveModelInfo(provider, modelId)
           found.push({
             provider,
             providerLabel,
             model: modelId,
-            label: typeof model.name === 'string' && model.name.trim() ? model.name.trim() : modelId,
-            ...((resolved?.description ?? model.description) === undefined
-              ? {}
-              : { description: String(resolved?.description ?? model.description) }),
-            ...(reasoning === undefined ? {} : { reasoning }),
+            label: isString(model.name) && !isEmpty(model.name.trim()) ? model.name.trim() : modelId,
+            description: resolved?.description ?? model.description,
+            reasoning: resolved?.reasoning === undefined
+              ? undefined
+              : {
+                  efforts: map(resolved.reasoning.efforts, effort => ({
+                    id: String(effort.id),
+                    name: String(effort.name),
+                    description: effort.description === undefined ? undefined : String(effort.description),
+                  })),
+                  defaultEffort: resolved.reasoning.defaultEffort === undefined
+                    ? undefined
+                    : String(resolved.reasoning.defaultEffort),
+                },
           })
         }
       }
@@ -131,29 +131,14 @@ async function collectModels(ctx: HostContext): Promise<{ models: ModelOption[],
         })
       }
     }
-    const defaultModel = current == null
-      ? (found[0] ?? null)
-      : (found.find(item => item.provider === current.provider && item.model === current.model) ?? found[0] ?? null)
-    return { models: found, failures, defaultModel }
+
+    const models = uniqBy(found, item => `${item.provider}::${item.model}`)
+    const preferred = current == null
+      ? undefined
+      : find(models, { provider: String(current.provider), model: String(current.model) })
+    return { models, failures, defaultModel: preferred ?? head(models) ?? null }
   }
   catch {
     return { models: [], failures: [], defaultModel: null }
-  }
-}
-
-/** 收集全部选项。 */
-export async function collectSchedulerOptions(ctx: HostContext): Promise<SchedulerOptions> {
-  const [workspaces, permission, modelCatalog] = await Promise.all([
-    collectWorkspaces(ctx),
-    Promise.resolve(collectPermissions(ctx)),
-    collectModels(ctx),
-  ])
-  return {
-    workspaces,
-    permissions: permission.permissions,
-    defaultPermission: permission.defaultPermission,
-    models: modelCatalog.models,
-    failures: modelCatalog.failures,
-    defaultModel: modelCatalog.defaultModel,
   }
 }

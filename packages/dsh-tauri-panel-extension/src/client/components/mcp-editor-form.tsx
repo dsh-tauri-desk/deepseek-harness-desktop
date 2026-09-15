@@ -1,11 +1,6 @@
-/**
- * components/mcp-editor-form.tsx — MCP 服务器编辑器（json 粘贴 / 表单双 tab）。
- *
- * 纯受控表单：状态由父组件（McpTab）持有，这里只渲染与回调。
- */
-
 import type { ReactElement } from 'react'
-import type { McpEditorMode, McpEditorState, Translate } from '../types'
+import type { Translate } from '../locales/index.types'
+import type { McpEditorMode, McpEditorState } from './mcp-tab.types'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useMountStyle } from 'dsh-tauri-ui/client'
 import { MCP_EDITOR_FORM_STYLE_ID } from '../constants'

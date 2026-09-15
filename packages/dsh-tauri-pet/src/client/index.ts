@@ -1,41 +1,29 @@
-/**
- * client/index.ts — dsh-tauri-pet 客户端插件体（browser half）：侧栏入口 + 设置分区。
- *
- * 能力（零结构改壳、零新增运行时依赖）：
- *   - 侧栏入口：DOM 补丁把一个官方 `.rtSEdW_iconButton` 样式的切换按钮插到
- *     dsh-tauri-ui 设置触发器（`.dshp-settings-trigger`）右侧、同一容器内
- *     （`.sidebar.settings` 的子元素）。按钮只有激活/未激活两态（激活时右上角
- *     绿色小圆点），点击即切换桌宠启用状态，不弹面板。
- *   - 设置分区：注册进 `settings.section` 槽（与归档分区同点位），提供宠物开关、
- *     宠物大小拖动条、选择宠物；全部经 dsh-tauri invoke 桥调用桌面端 Tauri 命令
- *     （get_pet_status/set_pet_enabled/set_active_pet/set_pet_size）。
- *
- * 依赖：slots（注册 settings.section）、locale（双语文案）。invoke 桥来自
- * dsh-tauri/client。
- */
 import type { ClientContext } from 'dsh-tauri/client'
-import { mountStyle } from 'dsh-tauri-ui/client'
-import { PET_CLIENT_PLUGIN, PET_STYLES_EFFECT } from './constants'
-import { registerLocale } from './locales'
-import { registerPetIconPatch, registerPetPrefill, registerPetSection } from './register/pet'
-import petEntryStyle from './styles/index.cssr'
+import { PET_PLUGIN_NAME } from '../shared/constants'
+import {
+  PET_ICON_PATCH_EFFECT,
+  PET_LOCALE_EFFECT,
+  PET_PREFILL_EFFECT,
+  PET_SECTION_EFFECT,
+  PET_STYLES_EFFECT,
+} from './constants'
+import { locale } from './locales'
+import { petSectionFeature } from './register/pet-section'
+import { prefillFeature } from './register/prefill'
+import { sidebarIconFeature } from './register/sidebar-icon'
+import { stylesFeature } from './register/styles'
 
 /** 插件显示名（诊断元数据）。 */
-export const name = PET_CLIENT_PLUGIN
+export const name = PET_PLUGIN_NAME
 
-/** 需要的客户端服务：slots（注册 settings.section）、locale（双语文案）。 */
+/** 需要的客户端服务：slots（槽位注册）、locale（双语文案）、sessions/workspaces（新建会话）。 */
 export const inject = ['slots', 'locale', 'sessions', 'workspaces']
 
-/**
- * 插件体：安装文案、样式，注册宠物设置分区并安装侧栏入口补丁。
- * @param ctx - 客户端根上下文（须已注入 slots/locale）。
- */
+/** 插件体：安装文案与样式，注册设置分区、侧栏入口补丁与草稿注入。 */
 export function apply(ctx: ClientContext): void {
-  ctx.effect(() => mountStyle(petEntryStyle, `${PET_CLIENT_PLUGIN}-styles`), PET_STYLES_EFFECT)
-
-  registerLocale(ctx)
-
-  registerPetSection(ctx)
-  registerPetIconPatch(ctx)
-  registerPetPrefill(ctx)
+  ctx.effect(locale.registerLocale, PET_LOCALE_EFFECT)
+  ctx.effect(stylesFeature, PET_STYLES_EFFECT)
+  ctx.effect(petSectionFeature, PET_SECTION_EFFECT)
+  ctx.effect(sidebarIconFeature, PET_ICON_PATCH_EFFECT)
+  ctx.effect(prefillFeature, PET_PREFILL_EFFECT)
 }

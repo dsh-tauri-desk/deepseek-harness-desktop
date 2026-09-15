@@ -3,7 +3,6 @@ import { cssr, styles as sharedStyles } from 'dsh-tauri-ui/client'
 const { bem: { b, e, m } } = cssr
 const { secondary, tertiary } = sharedStyles
 
-/** MCP 批量导入弹窗（mcp-import-dialog.tsx）：分组滚动列表 + 勾选行。 */
 export default b('extension', [
   e('import-scroll', {
     display: 'flex',

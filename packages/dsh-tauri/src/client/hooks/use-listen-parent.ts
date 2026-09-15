@@ -1,4 +1,4 @@
-import type { ParentMessage, ParentMessageTypes } from '../types'
+import type { ParentMessage, ParentMessageTypes } from '../types/iframe'
 import { useEffect, useRef } from 'react'
 import { listenParent } from '../service/listen-parent'
 

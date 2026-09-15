@@ -1,30 +1,6 @@
-export { Icon } from './icon'
-export type { IconComponent, IconProps, SharedIconProps } from './icon'
-export {
-  ArrowDownToLine,
-  ArrowRight,
-  ArrowRotateRight,
-  ArrowUpRight,
-  ArrowUturnCcwLeft,
-  Calendar,
-  ChevronDown,
-  ChevronUp,
-  CirclePause,
-  CirclePlay,
-  CircleTree,
-  Clock,
-  CommentPlus,
-  Ellipsis,
-  EllipsisVertical,
-  FilePlus,
-  FolderOpen,
-  GraduationCap,
-  LogoGithub,
-  Magnifier,
-  PlugConnection,
-  Plus,
-  Puzzle,
-  TrashBin,
-} from './icons'
-export { MenuSelect } from './menu-select'
+export * from './icon'
+export type * from './icon'
+export * from './icons'
+export * from './menu-select'
+export * from './panel-width-sync'
 export { circleTreeSvg, clockSvg, FishMark, IconPlaceholder, PanelLeftOutline } from './special-icons'

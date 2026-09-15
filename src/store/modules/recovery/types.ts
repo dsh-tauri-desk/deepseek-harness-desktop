@@ -7,7 +7,7 @@ export interface PluginRecoveryInfo {
   /** 动态详情（冲突路由 / 槽位 / 服务组件 id），用于 I18n 插值 */
   detail: string
   /** 原始错误信息（技术详情查看） */
-  raw_error: string
+  rawError: string
 }
 
 /** 插件异常修复界面状态 */

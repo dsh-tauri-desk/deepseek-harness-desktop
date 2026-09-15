@@ -1,5 +1,5 @@
-import type { ExtensionClientContext } from '../types'
-import { LOCALE_NAMESPACE, PLUGIN_ID } from '../constants'
+import { defineLocale } from 'dsh-tauri/client'
+import { PLUGIN_ID } from '../constants'
 
 const zh = {
   extension: '扩展技能',
@@ -229,9 +229,4 @@ const en: Record<LocaleKey, string> = {
   shadowedByGlobal: 'a global row with the same id wins — this row has no effect',
 }
 
-export function registerExtensionLocale(ctx: ExtensionClientContext): void {
-  ctx.effect(() => [
-    ctx.locale.register(LOCALE_NAMESPACE, 'zh', zh),
-    ctx.locale.register(LOCALE_NAMESPACE, 'en', en),
-  ], `${PLUGIN_ID}: locale`)
-}
+export const locale = defineLocale(PLUGIN_ID, { zh, en })

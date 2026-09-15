@@ -1,40 +1,38 @@
-/** Shared protocol and UI constants for the dsh-tauri-rightclick client plugin. */
+import { RIGHTCLICK_PLUGIN_NAME } from '../../shared/constants'
 
-export const RIGHTCLICK_CLIENT_PLUGIN = 'dsh-tauri-rightclick'
-export const RIGHTCLICK_CLIENT_NS = RIGHTCLICK_CLIENT_PLUGIN
-export const RIGHTCLICK_API_PREFIX = '/api/dsh-rightclick-menu'
+export {
+  OPEN_PATH_ROUTE,
+  OPEN_URL_ROUTE,
+  RIGHTCLICK_API_PREFIX,
+  RIGHTCLICK_PLUGIN_NAME,
+} from '../../shared/constants'
 
-/** 用系统默认浏览器打开外链（POST，同源 JSON）。 */
-export const OPEN_URL_ROUTE = `${RIGHTCLICK_API_PREFIX}/open-url`
-/** 在系统文件管理器中打开目录（POST，同源 JSON；插件自家 node half 注册，不依赖核心 Remote）。 */
-export const OPEN_PATH_ROUTE = `${RIGHTCLICK_API_PREFIX}/open-path`
+export const LOCALE_EFFECT = `${RIGHTCLICK_PLUGIN_NAME}: locale`
+export const STYLES_EFFECT = `${RIGHTCLICK_PLUGIN_NAME}: styles`
+export const CONTEXT_MENU_EFFECT = `${RIGHTCLICK_PLUGIN_NAME}: context menu`
 
-/** css-render style id。 */
-export const RIGHTCLICK_STYLE_ID = 'dsh-tauri-rightclick-styles'
-export const RIGHTCLICK_MENU_STYLE_ID = 'dsh-tauri-rightclick-menu-styles'
-export const RIGHTCLICK_TOAST_STYLE_ID = 'dsh-tauri-rightclick-toast-styles'
+export const MENU_STYLE_ID = `${RIGHTCLICK_PLUGIN_NAME}-menu-styles`
 
-/** Effects / lifecycle ids（诊断元数据）。 */
-export const RIGHTCLICK_STYLES_EFFECT = `${RIGHTCLICK_CLIENT_PLUGIN}: styles`
-export const RIGHTCLICK_MENU_EFFECT = `${RIGHTCLICK_CLIENT_PLUGIN}: context menu`
+export const MENU_BLOCK = 'dshp-menu'
+export const MENU_ITEM_CLASS = `${MENU_BLOCK}__item`
+export const MENU_ITEM_DANGER_CLASS = `${MENU_ITEM_CLASS}--danger`
+export const MENU_SHORTCUT_CLASS = `${MENU_BLOCK}__shortcut`
+export const MENU_SEPARATOR_CLASS = `${MENU_BLOCK}__separator`
+export const TOAST_CLASS = 'dshp-toast'
 
-/**
- * css-render class 前缀（bem blockPrefix `.dshp-`，跨插件协议暴露给扩展事件
- * detail 的 DOM 结构保持稳定——修改必须同步 styles/*.cssr.ts）。
- */
+export const TREE_ITEM_SELECTOR = '[role="treeitem"]'
+export const TREE_ITEM_EXPANDED_SELECTOR = '[role="treeitem"][aria-expanded]'
+export const ACTION_BUTTON_SELECTOR = 'button[aria-label]'
+export const LINK_SELECTOR = 'a[href]'
+export const MENU_ITEM_SELECTOR = '[role="menuitem"]'
+export const EDITABLE_SELECTOR = 'input:not([type="button"]):not([type="submit"]),textarea,[contenteditable="true"]'
+export const CONVERSATION_SELECTOR = '[data-slot="conversation.session"]'
+export const DIALOG_SELECTOR = '[role="dialog"]'
+export const HERO_SELECTOR = '[data-phase="hero"]'
+export const CONVERSATION_SCROLL_SELECTOR = ':scope > [data-conversation-scroll]'
 
-/** 扩展注册表协议（其他 Web 插件经 globalThis[Symbol.for(KEY)] 登记扩展项）。 */
 export const EXTENSIONS_REGISTRY_KEY = 'dsh.rightclick-menu.extensions'
-/** 注册表租约协议（插件实例持有/释放全局注册表）。 */
-export const EXTENSIONS_LEASE_KEY = 'dsh.rightclick-menu.lease'
-
-/** 每次打开右键菜单时派发的事件（detail 含 row/action/session/workspace/target/x/y/extensions）。 */
 export const CONTEXT_MENU_EVENT = 'dsh:rightclick-menu'
 
-/** Toast 展示时长（毫秒）。 */
 export const TOAST_DURATION_MS = 1800
-
-/** 菜单最小/最大宽度与视口边距。 */
-export const MENU_MIN_WIDTH = 148
-export const MENU_MAX_WIDTH = 260
 export const MENU_VIEWPORT_MARGIN = 6

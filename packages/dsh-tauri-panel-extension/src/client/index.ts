@@ -1,28 +1,23 @@
-/**
- * client/index.ts — 扩展面板客户端装配入口。
- *
- * 只做 import + 组装（locale / styles / RPC / 注册）；无业务实现。
- * 结构分层见 AGENTS.md 客户端目录模板：types/ utils/ hooks/ config/ apis/
- * components/ register/ 各司其职。
- */
-
-import type { ExtensionClientContext, Translate } from './types'
-import { mountStyle } from 'dsh-tauri-ui/client'
-import { compat } from 'dsh-tauri/client'
-import { LOCALE_NAMESPACE, PLUGIN_ID, STYLE_ID } from './constants'
-import { registerExtensionLocale } from './locales'
-import { registerExtensionPanel } from './register/extension-panel'
-import { registerSkillCreatorPrefill } from './register/skill-creator-prefill'
-import extensionIndexStyle from './styles/index.cssr'
+import type { ClientContext } from 'dsh-tauri/client'
+import {
+  EXTENSION_PANEL_EFFECT,
+  LOCALE_EFFECT,
+  PLUGIN_ID,
+  SKILL_CREATOR_PREFILL_EFFECT,
+  STYLES_EFFECT,
+} from './constants'
+import { locale } from './locales'
+import { extensionPanelFeature } from './register/extension-panel'
+import { skillCreatorPrefillFeature } from './register/skill-creator-prefill'
+import { stylesFeature } from './register/styles'
 
 export const name = PLUGIN_ID
+
 export const inject = ['slots', 'locale', 'sessions', 'workspaces']
 
-export function apply(ctx: ExtensionClientContext): void {
-  const cx = compat(ctx)
-  registerExtensionLocale(ctx)
-  ctx.effect(() => mountStyle(extensionIndexStyle, STYLE_ID), `${PLUGIN_ID}: styles`)
-  const t = ctx.locale.bind(LOCALE_NAMESPACE) as Translate
-  registerSkillCreatorPrefill(ctx)
-  registerExtensionPanel(cx as ExtensionClientContext, t)
+export function apply(ctx: ClientContext): void {
+  ctx.effect(locale.registerLocale, LOCALE_EFFECT)
+  ctx.effect(stylesFeature, STYLES_EFFECT)
+  ctx.effect(skillCreatorPrefillFeature, SKILL_CREATOR_PREFILL_EFFECT)
+  ctx.effect(extensionPanelFeature, EXTENSION_PANEL_EFFECT)
 }

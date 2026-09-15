@@ -3,7 +3,6 @@ import { cssr, styles as sharedStyles } from 'dsh-tauri-ui/client'
 const { c, bem: { b, e, m } } = cssr
 const { primary, secondary, tertiary, borderL2: border, business, layer1, layer3, hover } = sharedStyles
 
-/** 跨组件通用：卡片列表 / 标签 / 空态文案 / 代码块（技能与 MCP 页共享）。 */
 export default b('extension', [
   e('intro', { margin: '0', fontSize: '13px', lineHeight: '20px', color: tertiary }),
   e('empty', { margin: '0', fontSize: '13px', lineHeight: '20px', color: tertiary }),
@@ -26,7 +25,6 @@ export default b('extension', [
       boxShadow: `0 0 0 2px color-mix(in srgb,${business} 18%,transparent)`,
     }),
   ]),
-  // 表单字段：技能编辑器 / MCP 编辑器 / 导入弹窗共享，挂载于 apply 全局生效。
   e('form', { display: 'flex', flexDirection: 'column', gap: '10px' }),
   e('label', {
     display: 'flex',
@@ -114,11 +112,8 @@ export default b('extension', [
     fontSize: '12px',
     lineHeight: '18px',
   }),
-  // Modal 根元素自身同时携带 .dshp-extension 与 __modal-wide/__modal-form：
-  // 必须用 & 复合选择器命中同一元素（后代选择器永远不中）。
   c('&.dshp-extension__modal-wide.dshp-extension__modal-wide', { width: 'min(680px,100%)' }),
   c('&.dshp-extension__modal-form.dshp-extension__modal-form', { width: 'min(760px,100%)' }),
-  // contentClassName 落在 Modal 内容层（dialog 根的后代），保持后代选择器。
   c('.dshp-extension__modal-scroll.dshp-extension__modal-scroll', { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto' }),
   e('cards', {
     display: 'grid',

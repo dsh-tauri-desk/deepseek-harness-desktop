@@ -31,19 +31,6 @@ export default c([
   c(`.dshp-session__delete-all.dshp-session__delete-all:hover:not(:disabled)`, {
     background: 'var(--dsw-alias-interactive-bg-hover-danger)',
   }),
-  c(`.dshp-session__archive-menu-item`, {
-    color: 'var(--dsw-alias-label-primary) !important',
-    background: 'transparent !important',
-  }, [
-    c('&:hover', {
-      color: 'var(--dsw-alias-label-primary) !important',
-      background: 'var(--dsw-alias-interactive-bg-hover) !important',
-    }),
-    c('&:focus', {
-      color: 'var(--dsw-alias-label-primary) !important',
-    }),
-  ]),
-
   c(`.dshp-session__toolbar`, {
     position: 'sticky',
     top: 0,

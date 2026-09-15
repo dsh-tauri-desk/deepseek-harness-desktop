@@ -1,6 +1,5 @@
 import type { ReactElement, SVGProps } from 'react'
 
-/** Brand fallback; Gravity UI has no equivalent for this mark. */
 export function FishMark({ width = 24, height = 24, ...props }: SVGProps<SVGSVGElement> = {}): ReactElement {
   return (
     <svg {...props} width={width} height={height} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -19,7 +18,6 @@ export function PanelLeftOutline({ width = 16, height = 16, ...props }: SVGProps
   )
 }
 
-/** Placeholder clock-like mark retained as a local special icon. */
 export function IconPlaceholder({ width = 24, height = 24, ...props }: SVGProps<SVGSVGElement> = {}): ReactElement {
   return (
     <svg {...props} width={width} height={height} viewBox="0 0 24 24" fill="none" aria-hidden="true">

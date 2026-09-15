@@ -1,13 +1,8 @@
-/** Bilingual copy for the pet settings section. */
-import type { ClientContext } from 'dsh-tauri/client'
-import type { LocaleKey } from '../types'
-import { createExternalStore } from 'dsh-tauri/client'
-import { useSyncExternalStore } from 'react'
-import { PET_CLIENT_NS as NS } from '../constants'
+import { defineLocale } from 'dsh-tauri/client'
+import { PET_PLUGIN_NAME } from '../../shared/constants'
 
-export { PET_CLIENT_NS as NS } from '../constants'
-
-const DICT_ZH: Record<LocaleKey, string> = {
+/** 桌宠设置分区的双语文案（`zh` 键集合为权威，`en` 缺键即编译错误）。 */
+const zh = {
   clear: '取消选择',
   clearFailed: '取消选择失败',
   closePet: '关闭宠物',
@@ -31,7 +26,7 @@ const DICT_ZH: Record<LocaleKey, string> = {
   toggleFailed: '切换桌宠开关失败',
 }
 
-const DICT_EN: Record<LocaleKey, string> = {
+const en: Record<keyof typeof zh, string> = {
   clear: 'Clear selection',
   clearFailed: 'Failed to clear pet selection',
   closePet: 'Close pet',
@@ -55,31 +50,4 @@ const DICT_EN: Record<LocaleKey, string> = {
   toggleFailed: 'Failed to toggle the pet',
 }
 
-let activeLocale = 'en'
-const localeRevision = createExternalStore({ revision: 0 })
-
-export function registerLocale(ctx: ClientContext): void {
-  activeLocale = ctx.locale.getLocale().active
-  ctx.locale.register(NS, 'zh', DICT_ZH)
-  ctx.locale.register(NS, 'en', DICT_EN)
-  ctx.locale.subscribe(() => {
-    try {
-      activeLocale = ctx.locale.getLocale().active
-    }
-    catch {
-      // 插件 reload/卸载时上下文会短暂失效（inactive context），服务访问器抛错；
-      // 此时无需更新本地 locale 快照，忽略本次通知避免 `locale subscriber crashed` 刷屏。
-      return
-    }
-    localeRevision.set(state => ({ revision: state.revision + 1 }))
-  })
-}
-
-export function usePetLocale(): void {
-  useSyncExternalStore(localeRevision.subscribe, () => localeRevision.getSnapshot().revision)
-}
-
-export function text(key: LocaleKey): string {
-  const dict = activeLocale.toLowerCase().startsWith('en') ? DICT_EN : DICT_ZH
-  return dict[key] ?? DICT_EN[key] ?? key
-}
+export const locale = defineLocale(PET_PLUGIN_NAME, { zh, en })

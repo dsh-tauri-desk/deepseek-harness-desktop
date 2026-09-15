@@ -1,7 +1,7 @@
 {
   "name": "dsh-tauri-panel-extension",
   "type": "module",
-  "version": "0.6.7",
+  "version": "1.0.0",
   "description": "Skills and MCP management in the DSH Tauri extension panel.",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
@@ -30,8 +30,6 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "README.md",
-    "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
     "dist",
     "skills"
@@ -65,13 +63,16 @@
     "dsh-tauri": "workspace:*",
     "dsh-tauri-ui": "workspace:*",
     "hookable": "catalog:utils",
+    "lodash-es": "catalog:utils",
     "ofetch": "catalog:utils",
     "pathe": "catalog:utils",
+    "unstorage": "catalog:utils",
     "yaml": "catalog:testing"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "catalog:dsh",
     "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
+    "@types/lodash-es": "catalog:types",
     "dompurify": "catalog:ui",
     "dsh-tauri-tsdown": "workspace:*",
     "marked": "catalog:ui",

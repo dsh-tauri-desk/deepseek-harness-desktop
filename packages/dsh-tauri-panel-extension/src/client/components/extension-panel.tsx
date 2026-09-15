@@ -1,25 +1,18 @@
-/**
- * components/extension-panel.tsx — 扩展面板：技能 / MCP 两个 tab 的容器 UI。
- *
- * 只负责 tab 切换（键盘导航 + visited 惰性挂载）；各 tab 内容由
- * SkillsTab / McpTab 子组件承担（直接消费 apis/）。
- */
-
 import type { ReactElement } from 'react'
-import type { Translate } from '../types'
 import { useMountStyle } from 'dsh-tauri-ui/client'
 import { useEffect, useId, useRef, useState } from 'react'
 import { EXTENSION_PANEL_STYLE_ID } from '../constants'
+import { locale } from '../locales'
 import extensionPanelStyle from './extension-panel.cssr'
 import { McpTab } from './mcp-tab'
 import { SkillsTab } from './skills-tab'
 
 export interface ExtensionPanelProps {
-  t: Translate
   createSkill: () => Promise<void>
 }
 
-export function ExtensionPanel({ t, createSkill }: ExtensionPanelProps): ReactElement {
+export function ExtensionPanel({ createSkill }: ExtensionPanelProps): ReactElement {
+  const t = locale.text
   useMountStyle(extensionPanelStyle, EXTENSION_PANEL_STYLE_ID)
   const tabsId = useId()
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])

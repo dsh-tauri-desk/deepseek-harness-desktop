@@ -219,3 +219,23 @@ jobs:
           else
             gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
           fi
+
+      # 文档站「安装」页的版本列表由 docs 仓库的 Sync releases workflow 生成。
+      # 跨仓库不会被 `on: release` 命中，也不支持跨仓库 workflow_run，所以在这里派发
+      # repository_dispatch（docs 仓库 workflow 的 on.repository_dispatch 类型为
+      # desktop-release）。手动触发的 test-* 构建不派发。
+      - name: Notify the docs repository to sync the release list
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          # 默认 GITHUB_TOKEN 只能操作本仓库，跨仓库派发需要 PAT 或 GitHub App token
+          # （对 docs 仓库有 contents: write）。未配置时只告警，不阻断发布。
+          GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::DOCS_DISPATCH_TOKEN is not configured; skipping the docs release sync"
+            exit 0
+          fi
+          gh api repos/dsh-tauri/deepseek-harness-desktop-docs/dispatches \
+            -f event_type=desktop-release \
+            -f "client_payload[tag]=$RELEASE_TAG"

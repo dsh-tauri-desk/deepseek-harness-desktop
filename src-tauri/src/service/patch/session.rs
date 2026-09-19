@@ -4,7 +4,9 @@
 //! 门面（facade），供桌面端插件安全地执行真正的内存内销毁，而不是让被删会话
 //! 残留在未分组状态。
 
-use crate::utils::{patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{patch_core_file, patch_dsh, PatchOutcome};
 
 const PATCH_MARKER: &str = "dsh-tauri-desktop: SessionStore.remove";
 const ANCHOR: &str =
@@ -33,6 +35,10 @@ fn patch_source(source: &str) -> PatchOutcome {
 
 /// 对活动核心的 dsh-session `lib/index.js` 应用补丁（幂等）。
 /// 返回 Err 表示读/写失败；文件缺失、已打过、锚点变更均静默跳过（Ok）。
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, SESSION_INDEX_JS, patch_source)
+}
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     patch_dsh(app_handle, SESSION_INDEX_JS, patch_source)
 }

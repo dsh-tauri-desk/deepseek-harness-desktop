@@ -6,6 +6,15 @@ mod service;
 mod task;
 mod utils;
 
+/// 对显式给定的核心安装目录施加全套 dsh 补丁（`--patch-core <dir>` 的入口）。
+///
+/// E2E 的插件 L2 直接起 `dsh web`，不经过桌面端启动路径；没有这一步，被测核心就缺少
+/// 桌面端运行时会打上的补丁（鉴权、渲染器、会话、工作区等），断言的前提不成立。
+/// 因此把补丁集暴露成一个不带 GUI 的入口，让编排复用同一份 Rust 实现，而不是另抄一份。
+pub fn patch_core_dir(core_dir: &std::path::Path) -> Result<(), String> {
+    service::patch::apply_all_at(core_dir)
+}
+
 /// 应用入口：先做 Wayland 环境兼容（见 `should_apply_wayland_egl_workaround`），
 /// 再初始化日志、装配桌面端并进入事件循环。
 pub fn run() {

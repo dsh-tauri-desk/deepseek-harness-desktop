@@ -5,7 +5,9 @@
 //! debug 桌面端本来就直接联接本地插件源码，因此将该坏 hot-swap 降级为页面自动刷新：
 //! 仍由 `/plugins/events` 精确触发，不轮询页面，也不会影响 release。
 
-use crate::utils::{patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{patch_core_file, patch_dsh, PatchOutcome};
 
 // HARDCODE：以下锚点绑定内置 DSH 0.1.1-rc.2 的 client-HMR bundle；仅 debug 生效。
 const PATCH_MARKER: &str = "dsh-tauri-desktop: debug client plugin reload fallback";
@@ -49,6 +51,18 @@ pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
 /// release 不修改客户端重载行为。
 #[cfg(not(debug_assertions))]
 pub fn apply(_app_handle: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+#[cfg(debug_assertions)]
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, CLIENT_HMR_CLIENT_JS, patch_source)
+}
+
+/// release 不修改客户端重载行为。
+#[cfg(not(debug_assertions))]
+pub fn apply_at(_core_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 

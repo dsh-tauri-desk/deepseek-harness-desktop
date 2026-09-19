@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
@@ -43,7 +43,19 @@ pub fn patch_dsh(
     rel_path: &str,
     patch: impl FnOnce(&str) -> PatchOutcome,
 ) -> Result<(), String> {
-    let target = active_core_install_dir(app_handle).join(rel_path);
+    patch_core_file(&active_core_install_dir(app_handle), rel_path, patch)
+}
+
+/// [`patch_dsh`] 的目录版本：对显式给定的核心安装目录施加同一个补丁。
+///
+/// 供 E2E 编排复用——那条链路没有运行中的桌面端，拿不到 `AppHandle`，
+/// 但必须让被测核心与本应用装配出的核心保持同一份补丁。
+pub fn patch_core_file(
+    core_dir: &Path,
+    rel_path: &str,
+    patch: impl FnOnce(&str) -> PatchOutcome,
+) -> Result<(), String> {
+    let target = core_dir.join(rel_path);
     if !target.exists() {
         log::info!("dsh patch target not found, skip: {}", target.display());
         return Ok(());

@@ -25,7 +25,9 @@
 //! 普通用户运行 `dsh web`（不带 `--skip-auth`）时鉴权行为与上游一致；旧核心无
 //! 上述锚点时 `patch_dsh` 安全跳过，不改变旧版行为。
 
-use crate::utils::{dsh_rel_contains, patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{dsh_rel_contains, patch_core_file, patch_dsh, PatchOutcome};
 
 const PATCH_MARKER: &str = "dsh-tauri-desktop: alpha embedded auth --skip-auth flag";
 
@@ -79,6 +81,12 @@ fn patch_connection(source: &str) -> PatchOutcome {
 
 /// 对活动核心应用「`--skip-auth` 可选鉴权」补丁。目标缺失或任一锚点变化时安全
 /// 跳过，不阻断启动。
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, WEB_STARTUP_REL, patch_startup)?;
+    patch_core_file(core_dir, CONNECTION_INDEX_JS, patch_connection)?;
+    Ok(())
+}
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     patch_dsh(app_handle, WEB_STARTUP_REL, patch_startup)?;
     patch_dsh(app_handle, CONNECTION_INDEX_JS, patch_connection)?;

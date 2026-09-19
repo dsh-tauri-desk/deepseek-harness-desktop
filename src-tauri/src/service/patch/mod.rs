@@ -15,3 +15,38 @@ pub(crate) mod renderer;
 pub(crate) mod session;
 pub(crate) mod workspace;
 pub(crate) mod workspace_view;
+
+use std::path::Path;
+
+/// 对显式给定的核心安装目录一次性施加全部补丁。
+///
+/// 与启动路径（`workflow::launch` 里逐个 `apply(&app_handle)`）等价，区别只是核心目录
+/// 由调用方给出。E2E 编排用它把 npm 装来的核心打成与桌面端装配核心同样的形态——
+/// 少了这些补丁，插件在 L2 里的行为与桌面端并不一致。
+///
+/// 单个补丁失败不阻断其余：与启动路径一样是「最佳努力」，但这里把错误汇总返回，
+/// 让编排层能看见哪一条出了问题。
+pub(crate) fn apply_all_at(core_dir: &Path) -> Result<(), String> {
+    let patches: [(&str, fn(&Path) -> Result<(), String>); 7] = [
+        ("alpha_auth", alpha_auth::apply_at),
+        ("renderer", renderer::apply_at),
+        ("session", session::apply_at),
+        ("llm_session", llm_session::apply_at),
+        ("workspace", workspace::apply_at),
+        ("workspace_view", workspace_view::apply_at),
+        ("client_hmr", client_hmr::apply_at),
+    ];
+    let mut failures = Vec::new();
+    for (name, apply) in patches {
+        if let Err(e) = apply(core_dir) {
+            if e.contains("DSH_PATCH_") {
+                failures.push(format!("{name}: {e}"));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}

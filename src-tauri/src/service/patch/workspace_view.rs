@@ -19,7 +19,9 @@
 //!
 //! 挂点：`service::workflow::launch` 启动 dsh 进程前的补丁链（最佳努力，失败只告警）。
 
-use crate::utils::{patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{patch_core_file, patch_dsh, PatchOutcome};
 
 /// 幂等/自识别标记：出现在被改写的三条语句末尾。
 const PATCH_MARKER: &str = "dsh-tauri: tolerate workspace view state written by a newer core";
@@ -62,6 +64,10 @@ fn patch_source(source: &str) -> PatchOutcome {
 
 /// 对活动核心的 dsh-client-ui-workspace `lib/client.js` 应用补丁（幂等）。
 /// 返回 Err 表示读/写失败；文件缺失、已打过、锚点变更均静默跳过（Ok）。
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, WORKSPACE_CLIENT_JS, patch_source)
+}
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     patch_dsh(app_handle, WORKSPACE_CLIENT_JS, patch_source)
 }

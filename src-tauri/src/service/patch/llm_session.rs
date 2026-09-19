@@ -17,7 +17,9 @@
 //! `dsh-llm-pi-ai` 的 `lib/index.js` 一个文件；内核升级重新解压后会在干净文件上重新
 //! 应用。已被上一发布版本改写过的内核保持原状，待核心重装或升级后自动切换到本版本。
 
-use crate::utils::{patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{patch_core_file, patch_dsh, PatchOutcome};
 
 /// 补丁标记：写入注入内容首行的注释，用于幂等判定。与上一发布版本保持一致，因此已经
 /// 被上一版补丁改写过的内核会命中该标记并跳过（保持原状，直到核心重装或升级）。
@@ -70,6 +72,10 @@ fn patch_source(source: &str) -> PatchOutcome {
 
 /// 对活动核心的 dsh-llm-pi-ai `lib/index.js` 应用补丁（幂等）。
 /// 返回 Err 表示读/写失败；文件缺失、已打过、锚点变更均静默跳过（Ok）。
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, PI_AI_INDEX_JS, patch_source)
+}
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     patch_dsh(app_handle, PI_AI_INDEX_JS, patch_source)
 }

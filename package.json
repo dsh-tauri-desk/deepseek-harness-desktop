@@ -17,6 +17,9 @@
     "tauri": "tauri",
     "release": "bumpp --pr",
     "test": "vitest",
+    "test:unit": "vitest --project unit",
+    "test:e2e:plugin": "vitest --project plugin",
+    "test:e2e:desktop": "vitest --project desktop",
     "lint": "eslint",
     "knip": "knip",
     "lint:fix": "eslint . --fix",
@@ -50,6 +53,7 @@
   "devDependencies": {
     "@antfu/eslint-config": "catalog:lint",
     "@deepseek-ai/cordis": "catalog:dsh",
+    "@deepseek-ai/dsh": "catalog:dsh",
     "@deepseek-ai/dsh-agent": "catalog:dsh",
     "@deepseek-ai/dsh-agent-default-model": "catalog:dsh",
     "@deepseek-ai/dsh-agent-presets": "catalog:dsh",
@@ -86,6 +90,7 @@
     "@types/react-dom": "catalog:types",
     "@types/semver": "catalog:types",
     "@vitejs/plugin-react": "catalog:build",
+    "@wdio/tauri-service": "catalog:testing",
     "babel-plugin-react-compiler": "catalog:build",
     "bumpp": "catalog:release",
     "changelogithub": "catalog:release",
@@ -102,6 +107,7 @@
     "tsx": "catalog:build",
     "typescript": "catalog:cli",
     "vite": "catalog:build",
-    "vitest": "catalog:testing"
+    "vitest": "catalog:testing",
+    "webdriverio": "catalog:testing"
   }
 }

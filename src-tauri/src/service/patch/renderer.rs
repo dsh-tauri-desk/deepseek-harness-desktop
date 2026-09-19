@@ -19,7 +19,9 @@
 //! 挂点：`service::workflow::launch` 启动 dsh 进程前，与 win_inspector / ensure_*
 //! 自愈链同一位置（最佳努力，失败只告警）。
 
-use crate::utils::{patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{patch_core_file, patch_dsh, PatchOutcome};
 
 /// 导出锚点的关键字（所在行的前导缩进随版本变化，不做硬编码）。
 const ANCHOR_KEYWORD: &str = "return module.exports;";
@@ -66,6 +68,10 @@ fn locate_return_module_exports(source: &str) -> Option<(usize, &str)> {
 
 /// 对活动核心的 dsh-client-ui-renderer `lib/client.js` 应用补丁（幂等）。
 /// 返回 Err 表示读/写失败；文件缺失、已打过、锚点变更均静默跳过（Ok）。
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, RENDERER_CLIENT_JS, patch_source)
+}
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     patch_dsh(app_handle, RENDERER_CLIENT_JS, patch_source)
 }

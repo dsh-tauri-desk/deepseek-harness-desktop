@@ -1,11 +1,18 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const BUNDLE_MANIFEST = new URL('../packages/dsh-tauri-bundle/package.json', import.meta.url)
 const RESOURCE_NODE_MODULES = new URL('../src-tauri/resources/node_modules/', import.meta.url)
 const DSH_STATIC_IMPORT = /\b(?:from|import)\s*['"]@deepseek-ai\/[^'"]+['"]|\brequire\s*\(\s*['"]@deepseek-ai\/[^'"]+['"]\s*\)/
+
+/**
+ * 部署产物 `src-tauri/resources/node_modules/` 由 `pnpm build:plugins` 生成，不随仓库提交。
+ * 未构建时整组用例跳过——否则每次干净检出都会报「文件不存在」，把缺前置误报成缺陷。
+ * CI 的 Plugins E2E job 会先构建，因此那一条链路下本组用例照常执行。
+ */
+const BUILT = existsSync(fileURLToPath(RESOURCE_NODE_MODULES))
 
 interface PluginManifest {
   name?: unknown
@@ -31,7 +38,7 @@ function packageJsonFiles(root: URL): string[] {
   return files
 }
 
-describe('bundled plugin resource closure', () => {
+describe.skipIf(!BUILT)('bundled plugin resource closure', () => {
   it('contains every bundled plugin with a valid entry', () => {
     for (const name of bundledPluginNames()) {
       const manifestUrl = new URL(`../src-tauri/resources/node_modules/${name}/package.json`, import.meta.url)

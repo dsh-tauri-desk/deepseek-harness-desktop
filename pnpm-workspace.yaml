@@ -1,6 +1,13 @@
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
   '@tailwindcss/oxide': true
+  edgedriver: false
   esbuild: true
+  geckodriver: false
+  koffi: true
+  node-pty: true
+  protobufjs: true
 
 catalogMode: prefer
 
@@ -47,6 +54,7 @@ catalogs:
     typescript: ~5.8.3
   dsh:
     '@deepseek-ai/cordis': ^4.0.1
+    '@deepseek-ai/dsh': 0.1.5-rc.2
     '@deepseek-ai/dsh-agent': 0.1.5-rc.2
     '@deepseek-ai/dsh-agent-default-model': 0.1.5-rc.2
     '@deepseek-ai/dsh-agent-presets': 0.1.5-rc.2
@@ -100,7 +108,9 @@ catalogs:
     '@tauri-apps/cli': ^2.11.4
     '@tauri-apps/plugin-http': ^2.6.0
   testing:
+    '@wdio/tauri-service': ^1.4.0
     vitest: ^4.1.11
+    webdriverio: ^9.31.9
     yaml: ^2.9.0
   types:
     '@types/lodash-es': ^4.17.12

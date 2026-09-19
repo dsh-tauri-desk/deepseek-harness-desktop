@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  nextZoomFactor,
   normalizeZoomFactor,
   zoomActionFromBridgeMessage,
   zoomActionFromShortcut,
@@ -91,12 +90,16 @@ describe('zoom factor stepping (mirrors Rust normalize_zoom_factor)', () => {
     expect(normalizeZoomFactor(Number.POSITIVE_INFINITY)).toBe(1)
   })
 
+  // `nextZoomFactor` 已从实现中移除：步进现在由 UI 组件按 ZOOM_FACTOR_STEP
+  // 计算后交给 normalizeZoomFactor 归一化。这里断言同一语义的现役路径。
   it('steps by 0.1 and resets to 100%', () => {
-    expect(nextZoomFactor(1, 'increase')).toBeCloseTo(1.1, 10)
-    expect(nextZoomFactor(1, 'decrease')).toBeCloseTo(0.9, 10)
-    expect(nextZoomFactor(1.7, 'reset')).toBe(1)
+    const step = (from: number, delta: number) => normalizeZoomFactor(from + delta)
+
+    expect(step(1, 0.1)).toBeCloseTo(1.1, 10)
+    expect(step(1, -0.1)).toBeCloseTo(0.9, 10)
+    expect(normalizeZoomFactor(1.7)).toBe(1.7)
     // 到顶/到底后不再越界
-    expect(nextZoomFactor(2, 'increase')).toBe(2)
-    expect(nextZoomFactor(0.5, 'decrease')).toBe(0.5)
+    expect(step(2, 0.1)).toBe(2)
+    expect(step(0.5, -0.1)).toBe(0.5)
   })
 })

@@ -40,9 +40,9 @@ jobs:
           skip_after_successful_duplicate: true
           paths_ignore: '["**/docs/**", "**/*.md"]'
 
-  # 插件（vitest + typecheck + lint）：
-  plugins:
-    name: Plugins (vitest + typecheck + lint)
+  # 单元测试（vitest）+ 类型检查 + lint：
+  unit:
+    name: Unit Tests (vitest)
     needs: pre_job
     if: ${{ needs.pre_job.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
@@ -68,12 +68,84 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Unit test
+        run: pnpm run test:unit -- --run
+
+  # 插件 L2 E2E（vitest + Playwright 库 API）：
+  # 打构建产物，起真实 `dsh web` 进程，断言宿主路由与客户端挂载点。
+  plugins-e2e:
+    name: Plugins E2E Tests (vitest + playwright)
+    needs: pre_job
+    if: ${{ needs.pre_job.outputs.should_skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # L2 只针对构建产物运行（官方「真实入口路径」要求），未构建会直接失败。
       - name: Build Plugins
         run: pnpm build:plugins
 
-      # 主逻辑在 Rust 侧，这里仅确认前端纯函数测试通过
-      - name: Unit test
-        run: pnpm run test -- --run
+      - name: Plugin L2 test
+        run: pnpm run test:e2e:plugin -- --run
+
+  # 桌面端 L3 E2E（vitest + WebdriverIO）：
+  # 驱动真实 Tauri 窗口，只能在 Windows 上跑（embedded WebDriver + WebView2）。
+  # 需要 dist/ 与内嵌前端的 debug 二进制；`tauri build` 会带上 custom-protocol，
+  # 否则应用走 devUrl 而不嵌 dist（页面为空，选择器全找不到）。
+  desktop-e2e:
+    name: Desktop E2E Tests (vitest + webdriverio)
+    needs: pre_job
+    if: ${{ needs.pre_job.outputs.should_skip != 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build core packages
+        run: pnpm --filter dsh-tauri build && pnpm --filter dsh-tauri-ui build
+
+      - name: Build Plugins
+        run: pnpm build:plugins
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # dist 已由上一步的 build:plugins 前置链路产出；这里显式再跑一次前端构建，
+      # 并清空 beforeBuildCommand 避免重复触发 pnpm build（其 prebuild 会重跑插件构建）。
+      - name: Build frontend
+        run: pnpm exec vite build
+
+      # 内联 JSON 经 pwsh → pnpm(.cmd) 转发时引号会被剥掉（实测报
+      # `key must be a string`），改为落一份配置文件再传路径。
+      # 清空 beforeBuildCommand 是为了避免重复触发 `pnpm build`
+      # （它的 prebuild 会再跑一遍 build:plugins）。
+      - name: Build debug binary
+        run: |
+          Set-Content -Path "$env:RUNNER_TEMP\tauri-e2e.json" -Value '{"build":{"beforeBuildCommand":""}}'
+          pnpm tauri build --debug --no-bundle --config "$env:RUNNER_TEMP\tauri-e2e.json"
+
+      - name: Desktop L3 test
+        run: pnpm run test:e2e:desktop -- --run
 
   # Rust 单元测试（应用主体逻辑）：
   # 这是 CI 此前完全缺失的部分。仓库里存在大量 #[cfg(windows)] 的 Windows 专属

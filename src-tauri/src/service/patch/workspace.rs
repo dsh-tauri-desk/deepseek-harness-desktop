@@ -5,7 +5,9 @@
 //! `cwd === workspace.path` 过滤，导致合法 worktree 会话只能落入“未分组”。本补丁仅
 //! 放宽显式 attach 后的归属保持；cwd 缺失、无法解析或不是目录的安全校验仍由上游保留。
 
-use crate::utils::{patch_dsh, PatchOutcome};
+use std::path::Path;
+
+use crate::utils::{patch_core_file, patch_dsh, PatchOutcome};
 
 // HARDCODE：以下锚点绑定内置 DSH 0.1.1-rc.2 的压缩后源码；锚点变化时安全跳过并告警。
 const PATCH_MARKER: &str = "dsh-tauri-worktree: relaxed explicit workspace membership";
@@ -39,6 +41,10 @@ fn patch_source(source: &str) -> PatchOutcome {
 
 /// 对活动核心的 dsh-workspace `lib/index.js` 应用补丁（幂等）。
 /// 返回 Err 表示读/写失败；文件缺失、已打过、锚点变更均静默跳过（Ok）。
+/// 对显式给定的核心安装目录施加本补丁（E2E 编排复用，无需运行中的桌面端）。
+pub fn apply_at(core_dir: &Path) -> Result<(), String> {
+    patch_core_file(core_dir, WORKSPACE_INDEX_JS, patch_source)
+}
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     patch_dsh(app_handle, WORKSPACE_INDEX_JS, patch_source)
 }

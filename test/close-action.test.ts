@@ -37,8 +37,9 @@ describe('config close action control contract', () => {
     expect(source).toContain('export function ConfigCloseAction')
     // 读走 setting store（与 Rust 共享 .store.dat，后端改动经 setting_updated 回流）
     expect(source).toContain('useStore(store.setting)')
-    // 写仍走命令：后端归一化并在锁内落盘，避免与 Rust 的整对象写入互相覆盖
-    expect(source).toContain('invoke(\'update_app_config\', { closeAction')
+    // 写走 store.setting.update：后端统一归一化并在锁内落盘，前端直接改 store
+    // 会与 Rust 的整对象写入互相覆盖；断言归一化后的 camelCase 字段名。
+    expect(source).toContain('closeAction: normalizeCloseAction(next)')
     // 受控值始终经归一化，未加载到配置时回落 tray 而不是给 HeroUI 传 undefined
     expect(source).toContain('selectedKey={normalizeCloseAction(')
   })

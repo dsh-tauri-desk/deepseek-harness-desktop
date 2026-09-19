@@ -16,7 +16,11 @@ const navbarSource = readFileSync(
 
 describe('menu restart backend contract', () => {
   it('places desktop-restart menu item after run_logs in help submenu', () => {
-    expect(builderSource).toContain('&run_logs, &restart, &check_update')
+    // 源码按项分行，不再是一行字面量：改为断言三者在该子菜单里的相对顺序。
+    const helpMenu = builderSource.slice(builderSource.indexOf('"desktop-help-menu"'))
+    const order = ['&run_logs', '&restart', '&check_update'].map(item => helpMenu.indexOf(item))
+    expect(order.every(index => index >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
   })
 
   it('emits macos-menu-action for desktop-restart in on_menu_event', () => {

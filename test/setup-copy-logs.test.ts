@@ -23,9 +23,10 @@ describe('setup error page copy-logs contract (SYST-04)', () => {
     const source = readFileSync(new URL('../src/layout/components/setup.tsx', import.meta.url), 'utf8')
     const nativeWrite = source.indexOf('writeClipboardText(')
     expect(nativeWrite).toBeGreaterThan(-1)
-    // 调用点只记录日志（失败提示统一由 helper 弹出），成功文案经第二个参数传入
+    // 调用点只记录日志（失败提示统一由 helper 弹出），成功文案经第二个参数传入。
+    // 实现走 Promise 链式 `.catch((err) =>`，不是 `try/catch`。
     const callSite = source.slice(nativeWrite, nativeWrite + 500)
-    expect(callSite).toContain('catch (err)')
+    expect(callSite).toContain('.catch((err) =>')
     expect(callSite).toContain('messages.logs_copied')
 
     const helper = readFileSync(new URL('../src/utils/clipboard.ts', import.meta.url), 'utf8')

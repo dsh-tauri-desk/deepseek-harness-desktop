@@ -1,4 +1,4 @@
-[
+﻿[
 
   {
     "id": "dshmarket",
@@ -23,5 +23,12 @@
     "description": "In-window conversation rewind that never forks a new session, with a lightweight workspace backup that restores files together with the rewind.",
     "repoUrl": "https://github.com/SiriLee/dsh-rewind",
     "recommended": true
+  },
+  {
+    "id": "dsh-plugin-followup",
+    "spec": "github:MasterZ9286/dsh-plugin-followup",
+    "name": "Selection Follow-up (划词追问)",
+    "description": "Selection follow-up for the conversation: right-click a selected passage to quote it, keep the follow-up Q&A in a per-session right-column panel, and hide that turn in the main conversation so the comparison survives scrolling. · 划词追问：选中回答里的文字右键追问，问答留在按会话独立的右侧面板，该轮从主对话隐藏，方便上下对照。",
+    "repoUrl": "https://github.com/MasterZ9286/dsh-plugin-followup"
   }
 ]
